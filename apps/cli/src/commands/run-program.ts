@@ -66,7 +66,12 @@ import type { ProgramSource } from "../program-source.js";
 import type { Session } from "../session.js";
 import { auditProgramGates, describeAudit } from "./gates.js";
 import { ratifyVersionOf } from "./plan.js";
-import { assertRemoteReady, dispatchRun, type RemoteReadiness } from "./remote.js";
+import {
+  assertDispatchable,
+  assertRemoteReady,
+  dispatchRun,
+  type RemoteReadiness,
+} from "./remote.js";
 import { listedSecrets } from "./secrets.js";
 import { watchDispatch } from "./watch.js";
 
@@ -556,6 +561,7 @@ export const runProgram = async (
 
   const before = await beforeStart(environment, ratified, options);
   const remote = before.remote;
+  if (remote !== undefined) await assertDispatchable(session, ratified, remote.readiness);
 
   let started: StartedRun;
   try {

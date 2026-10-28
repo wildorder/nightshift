@@ -24,12 +24,14 @@ import {
   HeartbeatBodySchema,
   type HeartbeatResponse,
   HeartbeatResponseSchema,
+  type IsoTimestamp,
   lastFourOf,
   type OrgComputeUsage,
   type OrgId,
   PROVIDERS,
   type Project,
   type Provider,
+  type Run,
   type RunId,
   refreshedCodexLogin,
 } from "@nightshift/contracts";
@@ -57,6 +59,7 @@ import {
   runHoursOf,
   runnerStopped,
   transitionDispatch,
+  transitionRun,
   volumeUsdPerHour,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
@@ -138,6 +141,30 @@ const concurrentOf = async (deps: ApiDeps, orgId: OrgId): Promise<number> =>
  * the checkout and the branch; the plane checks the records, and T3's dispatch
  * Lambda checks GitHub. Nothing a client claimed is trusted.
  */
+/**
+ * Ends a pending remote run whose dispatch was refused, as interrupted with the
+ * refusal as its reason, so the program is free for the next start and the run
+ * says why it never ran. A run that moved on meanwhile is left as it is.
+ */
+const endRefusedStart = async (
+  deps: ApiDeps,
+  run: Run,
+  error: unknown,
+  at: IsoTimestamp,
+): Promise<void> => {
+  const why = error instanceof Error ? error.message : String(error);
+  try {
+    await deps.stores.runs.put(
+      transitionRun(run, "interrupt", {
+        endedAt: at,
+        outcomeReason: `not started: the dispatch was refused: ${why}`,
+      }),
+    );
+  } catch (ending) {
+    if (!(ending instanceof IllegalTransitionError)) throw ending;
+  }
+};
+
 export const createDispatch: Handler = async ({ deps, request, params }) => {
   const scope = runScopeFrom(params);
   const body = parseBody(DispatchBodySchema, request.body);
@@ -166,49 +193,59 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
   if (run.status !== "pending") {
     throw new HttpError(409, "run_not_pending", `run ${scope.runId} is ${run.status}`);
   }
-  if (!isPlanned(program) || program.status !== "ratified") {
-    throw new HttpError(
-      409,
-      "plan_not_ratified",
-      `program ${scope.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
-    );
-  }
-  if (program.planHash !== body.input.planHash) {
-    throw new HttpError(
-      409,
-      "plan_changed",
-      "the plan hash dispatched is not the one ratified; the plan changed since",
-    );
-  }
+  // Every refusal from here on ends the run it was asked for: a pending run
+  // with no machine holds its program's one live slot (A-66), and a start the
+  // plane refused must not keep the program from the next one (2026-10-28).
+  const admit = async () => {
+    if (!isPlanned(program) || program.status !== "ratified") {
+      throw new HttpError(
+        409,
+        "plan_not_ratified",
+        `program ${scope.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
+      );
+    }
+    if (program.planHash !== body.input.planHash) {
+      throw new HttpError(
+        409,
+        "plan_changed",
+        "the plan hash dispatched is not the one ratified; the plan changed since",
+      );
+    }
 
-  const dispatcher = deps.dispatcher;
-  if (dispatcher === undefined) {
-    throw new HttpError(
-      501,
-      "dispatch_unavailable",
-      "this control plane was wired without a dispatcher; no machine would be provisioned",
-    );
-  }
+    const dispatcher = deps.dispatcher;
+    if (dispatcher === undefined) {
+      throw new HttpError(
+        501,
+        "dispatch_unavailable",
+        "this control plane was wired without a dispatcher; no machine would be provisioned",
+      );
+    }
 
-  const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
-  // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
-  // org's recorded installations must grant the repository, and the branch's
-  // head at GitHub must be the SHA dispatched.
-  await assertGithubInput(deps, orgConfig?.installations ?? [], body.input);
+    const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
+    // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
+    // org's recorded installations must grant the repository, and the branch's
+    // head at GitHub must be the SHA dispatched.
+    await assertGithubInput(deps, orgConfig?.installations ?? [], body.input);
 
-  const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-  const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
-  const estimatedUsd = estimateUsd(body.tier, runHours);
-  const usage = await usageOf(deps, project.orgId, at);
-  const refusal = mayDispatch({
-    ceilings,
-    tier: body.tier,
-    runHours,
-    estimatedUsd,
-    monthSpentUsd: usage.meteredUsd,
-    concurrentRuns: await concurrentOf(deps, project.orgId),
+    const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
+    const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
+    const estimatedUsd = estimateUsd(body.tier, runHours);
+    const usage = await usageOf(deps, project.orgId, at);
+    const refusal = mayDispatch({
+      ceilings,
+      tier: body.tier,
+      runHours,
+      estimatedUsd,
+      monthSpentUsd: usage.meteredUsd,
+      concurrentRuns: await concurrentOf(deps, project.orgId),
+    });
+    if (refusal !== undefined) throw new HttpError(409, refusal.reason, refusal.detail);
+    return { dispatcher, runHours, estimatedUsd };
+  };
+  const { dispatcher, runHours, estimatedUsd } = await admit().catch(async (error: unknown) => {
+    await endRefusedStart(deps, run, error, at);
+    throw error;
   });
-  if (refusal !== undefined) throw new HttpError(409, refusal.reason, refusal.detail);
 
   const spec = COMPUTE_TIERS[body.tier];
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);

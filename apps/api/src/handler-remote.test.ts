@@ -160,6 +160,19 @@ const seed = async (w: World, program: ProgramContract = ratified(w.f)) => {
   await w.stores.executionNodes.put(makeRootNode(w.f, { status: "validated" }));
 };
 
+/**
+ * Where the next start of the program dispatches: the seeded run while it is
+ * pending, and once a refusal has ended it, a new run of the program, as a
+ * second `nightshift run --remote` makes one (2026-10-28).
+ */
+const nextStart = async (w: World): Promise<string> => {
+  const seeded = await w.stores.runs.get(w.f.scope, w.f.scope.runId);
+  if (seeded?.status === "pending") return `${w.paths.run}/dispatch`;
+  const runId = w.f.ids.next("run") as never;
+  await w.stores.runs.put(makeRun(w.f, { runId, status: "pending", location: "remote" }));
+  return `${w.paths.program}/runs/${runId}/dispatch`;
+};
+
 const dispatchBody = (tier = "good", key = "key-1") => ({
   tier,
   idempotencyKey: key,
@@ -298,9 +311,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       "plan_not_ratified",
     );
     await w.stores.programContracts.put(ratified(w.f, { planHash: "1".repeat(64) }));
-    expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
-      "plan_changed",
-    );
+    expect(code(await call(w, "POST", await nextStart(w), dispatchBody()))).toBe("plan_changed");
   });
 
   it("refuses a tier over the org's ceiling, and a month over its cap", async () => {
@@ -318,7 +329,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       version: (current?.version ?? 0) + 1,
       updatedAt: NOW,
     });
-    expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody("best")))).toBe(
+    expect(code(await call(w, "POST", await nextStart(w), dispatchBody("best")))).toBe(
       "tier_over_ceiling",
     );
     await w.stores.computeLedger.put({
@@ -328,7 +339,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       meteredUsd: 9.5,
       updatedAt: NOW,
     });
-    expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody("better")))).toBe(
+    expect(code(await call(w, "POST", await nextStart(w), dispatchBody("better")))).toBe(
       "month_over_cap",
     );
   });
@@ -355,7 +366,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     await w.stores.runs.put(makeRun(w.f, { ...otherScope, status: "pending" }));
     const other = makeDispatch(w.f, { ...otherScope, status: "provisioning" });
     await w.stores.dispatches.put(other);
-    expect(code(await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
+    expect(code(await call(w, "POST", await nextStart(w), dispatchBody()))).toBe(
       "concurrency_over_ceiling",
     );
     // Its launch failed, as the dispatcher records it: no longer live, wherever it ended.
@@ -364,7 +375,45 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
       status: "failed",
       failure: { code: "provisioning_failed", message: "no capacity" },
     });
-    const accepted = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
+    const accepted = await call(w, "POST", await nextStart(w), dispatchBody());
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+  });
+
+  it("ends a run whose dispatch it refuses, so the program's next start is accepted (2026-10-28)", async () => {
+    const w = await setup();
+    await seed(w);
+    const current = await w.stores.orgConfigs.get(w.orgId);
+    await w.stores.orgConfigs.put({
+      schemaVersion: 1,
+      orgId: w.orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      installations: current?.installations ?? [],
+      compute: { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: 1 },
+      version: (current?.version ?? 0) + 1,
+      updatedAt: NOW,
+    });
+    // Both of the org's slots, here its one, are taken by another program's run.
+    const otherScope = {
+      programId: "prog_01M49ZZZZZZZZZZZZZZZZZZZZY" as never,
+      runId: "run_01M49ZZZZZZZZZZZZZZZZZZZZZ" as never,
+    };
+    await w.stores.runs.put(makeRun(w.f, { ...otherScope, status: "pending" }));
+    const other = makeDispatch(w.f, { ...otherScope, status: "provisioning" });
+    await w.stores.dispatches.put(other);
+    const refused = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
+    expect(code(refused)).toBe("concurrency_over_ceiling");
+    // The refused run is over, and says why it never ran.
+    const ended = await w.stores.runs.get(w.f.scope, w.f.scope.runId);
+    expect(ended).toMatchObject({ status: "interrupted" });
+    expect(ended?.outcomeReason).toMatch(/^not started: the dispatch was refused: 1 remote run/);
+    // The slot frees; the program's next run is not held off by the refused one.
+    await w.stores.dispatches.put({
+      ...other,
+      status: "failed",
+      failure: { code: "provisioning_failed", message: "no capacity" },
+    });
+    const accepted = await call(w, "POST", await nextStart(w), dispatchBody("good", "key-2"));
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
   });
 
@@ -389,12 +438,12 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     // Provisioning or running, the line holds the org's only slot.
     for (const status of ["provisioning", "running"] as const) {
       await setLine(status);
-      const run = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
+      const run = await call(w, "POST", await nextStart(w), dispatchBody());
       expect(code(run), status).toBe("concurrency_over_ceiling");
     }
     // Waiting for capacity, a line holds no slot: the run is accepted.
     await setLine("requested");
-    const accepted = await call(w, "POST", `${w.paths.run}/dispatch`, dispatchBody());
+    const accepted = await call(w, "POST", await nextStart(w), dispatchBody());
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
   });
 
@@ -428,11 +477,11 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     const w = await setup();
     await seed(w);
     const noDispatcher = omitting(w, "dispatcher");
-    expect(code(await call(noDispatcher, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
+    expect(code(await call(noDispatcher, "POST", await nextStart(w), dispatchBody()))).toBe(
       "dispatch_unavailable",
     );
     const noGithub = omitting(w, "github");
-    expect(code(await call(noGithub, "POST", `${w.paths.run}/dispatch`, dispatchBody()))).toBe(
+    expect(code(await call(noGithub, "POST", await nextStart(w), dispatchBody()))).toBe(
       "github_unavailable",
     );
     expect(await w.stores.dispatches.get(w.f.scope)).toBeUndefined();
@@ -444,7 +493,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     const other = dispatchBody();
     expect(
       code(
-        await call(w, "POST", `${w.paths.run}/dispatch`, {
+        await call(w, "POST", await nextStart(w), {
           ...other,
           input: { ...other.input, repositoryUrl: "https://github.com/wildorder/elsewhere" },
         }),
@@ -452,7 +501,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     ).toBe("repository_not_granted");
     expect(
       code(
-        await call(w, "POST", `${w.paths.run}/dispatch`, {
+        await call(w, "POST", await nextStart(w), {
           ...other,
           input: { ...other.input, branch: "program/unpushed" },
         }),
@@ -460,7 +509,7 @@ describe("dispatching a run (D-P10-18, D-P10-19, SC-P10-02, SC-P10-03)", () => {
     ).toBe("branch_missing");
     expect(
       code(
-        await call(w, "POST", `${w.paths.run}/dispatch`, {
+        await call(w, "POST", await nextStart(w), {
           ...other,
           input: { ...other.input, baseSha: SHA_B },
         }),
