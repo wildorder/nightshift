@@ -585,7 +585,12 @@ describe("the exit mapping", () => {
       child.emitStderr("Error: When using --print, --output-format=stream-json requires --verbose");
       child.close(1);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 1, ...UNSEEN });
+    expect(exit).toEqual({
+      kind: "failed",
+      exitCode: 1,
+      detail: expect.stringContaining("requires --verbose"),
+      ...UNSEEN,
+    });
     expect(endings(events)[0]?.payload.summary).toContain("requires --verbose");
   });
 
@@ -608,7 +613,12 @@ describe("the exit mapping", () => {
 
   it("maps a child that never ran to failed rather than a rejection", async () => {
     const { exit, events } = await run((child) => child.emitError("spawn claude ENOENT"));
-    expect(exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE, ...UNSEEN });
+    expect(exit).toEqual({
+      kind: "failed",
+      exitCode: SPAWN_FAILURE_EXIT_CODE,
+      detail: expect.stringContaining("ENOENT"),
+      ...UNSEEN,
+    });
     expect(endings(events)[0]?.payload.summary).toContain("ENOENT");
   });
 });
@@ -643,6 +653,7 @@ describe("exit settles exactly once", () => {
     expect(await handle.exit).toEqual({
       kind: "failed",
       exitCode: SPAWN_FAILURE_EXIT_CODE,
+      detail: expect.stringContaining("ENOSPC"),
       ...UNSEEN,
     });
     expect(calls).toHaveLength(0);
@@ -660,6 +671,7 @@ describe("exit settles exactly once", () => {
     expect(await handle.exit).toEqual({
       kind: "failed",
       exitCode: SPAWN_FAILURE_EXIT_CODE,
+      detail: expect.stringContaining("EACCES"),
       ...UNSEEN,
     });
     expect(events.map((event) => event.type)).toEqual(["agent.started", "agent.failed"]);

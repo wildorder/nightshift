@@ -414,7 +414,12 @@ describe("the exit mapping, as measured on 0.154.0", () => {
       child.emitStderr("error: unexpected argument '--nope' found");
       child.close(2);
     });
-    expect(exit).toEqual({ kind: "failed", exitCode: 2, coverage: "unknown" });
+    expect(exit).toEqual({
+      kind: "failed",
+      exitCode: 2,
+      coverage: "unknown",
+      detail: expect.stringContaining("--nope"),
+    });
     expect(endings(events)[0]?.payload.summary).toContain("--nope");
   });
 
@@ -453,7 +458,11 @@ describe("the exit mapping, as measured on 0.154.0", () => {
 
   it("maps a child that never ran to failed 127, never a rejection", async () => {
     const { exit } = await run((child) => child.emitError("spawn codex ENOENT"));
-    expect(exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE });
+    expect(exit).toEqual({
+      kind: "failed",
+      exitCode: SPAWN_FAILURE_EXIT_CODE,
+      detail: expect.stringContaining("ENOENT"),
+    });
 
     const events: HookEvent[] = [];
     const throwing = createCodexHarness({
@@ -465,7 +474,11 @@ describe("the exit mapping, as measured on 0.154.0", () => {
       platform: "darwin",
     });
     const handle = await throwing.start(startInput(events));
-    expect(await handle.exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE });
+    expect(await handle.exit).toEqual({
+      kind: "failed",
+      exitCode: SPAWN_FAILURE_EXIT_CODE,
+      detail: "could not start codex: spawn codex ENOENT",
+    });
     expect(events.map((event) => event.type)).toEqual(["agent.started", "agent.failed"]);
   });
 
@@ -474,7 +487,11 @@ describe("the exit mapping, as measured on 0.154.0", () => {
     const events: HookEvent[] = [];
     const harness = createCodexHarness({ ...world, env: PARENT_ENV, platform: "darwin" });
     const handle = await harness.start(startInput(events));
-    expect(await handle.exit).toEqual({ kind: "failed", exitCode: SPAWN_FAILURE_EXIT_CODE });
+    expect(await handle.exit).toEqual({
+      kind: "failed",
+      exitCode: SPAWN_FAILURE_EXIT_CODE,
+      detail: expect.stringContaining("git guard"),
+    });
     expect(world.calls).toHaveLength(0);
     expect(endings(events)[0]?.payload.summary).toContain("git guard");
   });

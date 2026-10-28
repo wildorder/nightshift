@@ -449,6 +449,13 @@ type HarnessExitBody =
   | {
       readonly kind: "failed";
       readonly exitCode: number;
+      /**
+       * The adapter's own words for why (2026-10-28): the tail of the agent's
+       * stderr, or why the launch never got off the ground. An exit code alone
+       * cannot tell an agent that ran and failed from one never started (both
+       * can be 127), and a caller with no event sink had nothing else.
+       */
+      readonly detail?: string;
       readonly usage?: RouteUsage;
       readonly sessionId?: string;
       /**

@@ -425,8 +425,13 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
      * adapter can report an ending the execution layer would translate
      * differently.
      */
-    const settle = (exit: HarnessExit, extra: Readonly<Record<string, unknown>> = {}): void => {
+    const settle = (given: HarnessExit, extra: Readonly<Record<string, unknown>> = {}): void => {
       if (state.settledExit !== undefined) return;
+      // A failure carries its summary on the exit too, for callers with no sink.
+      const exit: HarnessExit =
+        given.kind === "failed" && given.detail === undefined && typeof extra.summary === "string"
+          ? { ...given, detail: extra.summary }
+          : given;
       state.settledExit = exit;
       for (const timer of state.timers) clearTimeout(timer);
       state.timers = [];
