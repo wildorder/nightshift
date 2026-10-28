@@ -10,6 +10,7 @@ import { createTestEnvironment, type TestEnvironment } from "../testing/harness.
 const mocks = vi.hoisted(() => ({
   startRun: vi.fn(),
   dispatchRun: vi.fn(),
+  assertDispatchable: vi.fn(),
   watchDispatch: vi.fn(),
   ratified: undefined as unknown,
 }));
@@ -37,6 +38,7 @@ vi.mock("./remote.js", () => ({
     source: "default",
   }),
   dispatchRun: mocks.dispatchRun,
+  assertDispatchable: mocks.assertDispatchable,
 }));
 vi.mock("./watch.js", () => ({ watchDispatch: mocks.watchDispatch }));
 
@@ -46,6 +48,7 @@ const live: TestEnvironment[] = [];
 beforeEach(() => {
   mocks.startRun.mockReset();
   mocks.dispatchRun.mockReset();
+  mocks.assertDispatchable.mockReset();
   mocks.watchDispatch.mockReset();
 });
 afterEach(async () => {
@@ -99,5 +102,14 @@ describe.each([
     expect(exec).not.toHaveBeenCalled();
     expect(mocks.dispatchRun).not.toHaveBeenCalled();
     expect(mocks.watchDispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("nightshift run --remote that the CLI can refuse", () => {
+  it("refuses before the run exists, so no run holds the program (2026-10-28)", async () => {
+    mocks.assertDispatchable.mockRejectedValue(new Error("the tier is over the org's ceiling"));
+    await expect(attempt(true)).rejects.toThrow("the tier is over the org's ceiling");
+    expect(mocks.startRun).not.toHaveBeenCalled();
+    expect(mocks.dispatchRun).not.toHaveBeenCalled();
   });
 });

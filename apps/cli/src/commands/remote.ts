@@ -215,10 +215,55 @@ const orgOf = async (session: Session, projectId: string): Promise<string> =>
     }),
   ).orgId;
 
+/** What a dispatch of `contract` on `tier` will cost, under the org's ceilings. */
+const dispatchCost = async (
+  session: Session,
+  contract: ProgramContract,
+  tier: RemoteReadiness["tier"],
+): Promise<{
+  readonly ceilings: typeof DEFAULT_COMPUTE_CEILINGS;
+  readonly hours: number;
+  readonly estimated: number;
+}> => {
+  const orgId = await orgOf(session, contract.projectId);
+  const orgConfig = OrgConfigSchema.parse(
+    await send(session.transport, {
+      method: "GET",
+      path: routes.orgConfig(orgId as never),
+    }),
+  );
+  const ceilings = orgConfig.compute ?? DEFAULT_COMPUTE_CEILINGS;
+  const hours = runHoursOf(contract.costPolicy.maxWallClockSeconds, ceilings);
+  return { ceilings, hours, estimated: estimateUsd(tier, hours) };
+};
+
+/**
+ * What the CLI can refuse of a dispatch, said **before the run exists**: a run
+ * made and then refused would hold its program's one live slot (A-66) with
+ * nothing to run it (2026-10-28).
+ */
+export const assertDispatchable = async (
+  session: Session,
+  contract: ProgramContract,
+  readiness: RemoteReadiness,
+): Promise<void> => {
+  if (contract.planHash === undefined) throw new UsageError(REMOTE_NEEDS_PLAN);
+  const { ceilings, hours, estimated } = await dispatchCost(session, contract, readiness.tier);
+  const refusal = mayDispatch({
+    ceilings,
+    tier: readiness.tier,
+    runHours: hours,
+    estimatedUsd: estimated,
+    monthSpentUsd: 0,
+    concurrentRuns: 0,
+  });
+  if (refusal !== undefined) throw new UsageError(refusal.detail);
+};
+
 /**
  * After `startRun` has made the remote run: the dispatch itself, and what it
- * will cost. The ceilings are read so the refusal, when there is one, is the
- * CLI's as well as the plane's.
+ * will cost. What the CLI can refuse was refused before the run existed
+ * (`assertDispatchable`); a refusal from the plane ends the run there.
  */
 export const dispatchRun = async (
   environment: CliEnvironment,
@@ -234,26 +279,8 @@ export const dispatchRun = async (
     programId: started.run.programId,
     runId: started.run.runId,
   };
-  const orgId = await orgOf(session, scope.projectId);
-  const orgConfig = OrgConfigSchema.parse(
-    await send(session.transport, {
-      method: "GET",
-      path: routes.orgConfig(orgId as never),
-    }),
-  );
-  const ceilings = orgConfig.compute ?? DEFAULT_COMPUTE_CEILINGS;
-  const hours = runHoursOf(contract.costPolicy.maxWallClockSeconds, ceilings);
-  const estimated = estimateUsd(readiness.tier, hours);
-  const refusal = mayDispatch({
-    ceilings,
-    tier: readiness.tier,
-    runHours: hours,
-    estimatedUsd: estimated,
-    monthSpentUsd: 0,
-    concurrentRuns: 0,
-  });
-  if (refusal !== undefined) throw new UsageError(refusal.detail);
   if (contract.planHash === undefined) throw new UsageError(REMOTE_NEEDS_PLAN);
+  const { hours, estimated } = await dispatchCost(session, contract, readiness.tier);
 
   const spec = COMPUTE_TIERS[readiness.tier];
   const dispatch = DispatchSchema.parse(

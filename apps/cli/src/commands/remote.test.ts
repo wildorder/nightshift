@@ -39,6 +39,7 @@ import {
   type TestEnvironment,
 } from "../testing/harness.js";
 import {
+  assertDispatchable,
   assertRemoteReady,
   describeDispatch,
   dispatchRun,
@@ -264,7 +265,7 @@ describe("dispatchRun", () => {
     expect(printed).not.toContain("close the laptop");
   });
 
-  it("refuses, before posting, a tier above the org's ceiling", async () => {
+  it("refuses, before the run exists and before posting, a tier above the org's ceiling", async () => {
     const f = createFixtures();
     const project = makeProject(f);
     const plane = createFakeControlPlane({
@@ -297,26 +298,15 @@ describe("dispatchRun", () => {
     await signIn(created.environment);
     const session = await openSession(created.environment);
     const contract = ratified(f);
-    const rootNode = makeRootNode(f);
+    // Before the run exists: a run made and then refused would hold the program.
     await expect(
-      dispatchRun(
-        created.environment,
-        session,
-        {
-          program: contract,
-          run: makeRun(f, { status: "pending", location: "remote" }),
-          rootNode,
-          checkpoint: makeCheckpoint(f, rootNode.executionNodeId),
-          baseCommit: HEAD,
-        },
-        {
-          repositoryUrl: contract.repository.url,
-          branch: "program/fixture",
-          baseSha: HEAD,
-          tier: "best",
-          source: "flag",
-        },
-      ),
+      assertDispatchable(session, contract, {
+        repositoryUrl: contract.repository.url,
+        branch: "program/fixture",
+        baseSha: HEAD,
+        tier: "best",
+        source: "flag",
+      }),
     ).rejects.toThrow(/ceiling is good/);
     expect(plane.calls.some((call) => call.path.endsWith("/dispatch"))).toBe(false);
   });
