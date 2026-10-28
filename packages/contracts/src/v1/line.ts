@@ -169,7 +169,7 @@ export const LineDecisionSchema = LineResolverDecisionBodySchema.extend({
 });
 export type LineDecision = z.infer<typeof LineDecisionSchema>;
 
-/** `POST …/line/{branch}/decisions`. */
+/** `POST …/line/decisions?branch=`. */
 export const LineDecisionBodySchema = LineResolverDecisionBodySchema.extend({
   generation: z.int().min(1),
 });
@@ -345,7 +345,7 @@ export const LineDispatchSchema = z.strictObject({
 });
 export type LineDispatch = z.infer<typeof LineDispatchSchema>;
 
-/** `POST …/line/{branch}/batch`. */
+/** `POST …/line/batch?branch=`. */
 export const TakeLineBatchBodySchema = z.strictObject({
   generation: z.int().min(1),
 });
@@ -356,14 +356,14 @@ export const TakeLineBatchResponseSchema = z.strictObject({
 });
 export type TakeLineBatchResponse = z.infer<typeof TakeLineBatchResponseSchema>;
 
-/** `POST …/line/{branch}/agents`. */
+/** `POST …/line/agents?branch=`. */
 export const LineAgentBodySchema = z.strictObject({
   generation: z.int().min(1),
   agent: LineAgentSchema.omit({ generation: true }),
 });
 export type LineAgentBody = z.infer<typeof LineAgentBodySchema>;
 
-/** `POST …/line/{branch}/compositions`. */
+/** `POST …/line/compositions?branch=`. */
 export const LineCompositionBodySchema = z.strictObject({
   batchId: z.string().min(1),
   commit: CommitShaSchema,
@@ -374,7 +374,7 @@ export const LineCompositionBodySchema = z.strictObject({
 });
 export type LineCompositionBody = z.infer<typeof LineCompositionBodySchema>;
 
-/** `POST …/line/{branch}/parked`. */
+/** `POST …/line/parked?branch=`. */
 export const LineParkBodySchema = z.strictObject({
   batchId: z.string().min(1),
   ranges: z.array(LineRangeSchema).min(1),
@@ -386,11 +386,11 @@ export const LineParkBodySchema = z.strictObject({
 export type LineParkBody = z.infer<typeof LineParkBodySchema>;
 
 /**
- * `POST …/line/{branch}/settle`: one batch settled with what the composition
+ * `POST …/line/settle?branch=`: one batch settled with what the composition
  * engine produced, a composition and/or parked entries. Neither is allowed: a
  * batch whose ranges were all on the line already.
  */
-/** `POST …/line/{branch}/push`. */
+/** `POST …/line/push?branch=`. */
 export const LinePushBodySchema = LinePushSchema.pick({
   head: true,
   expectedPredecessor: true,
@@ -443,20 +443,20 @@ export const LineSettleBodySchema = z
   });
 export type LineSettleBody = z.infer<typeof LineSettleBodySchema>;
 
-/** `POST …/line/{branch}/bundle-upload-url`. */
+/** `POST …/line/bundle-upload-url?branch=`. */
 export const LineBundleUploadUrlBodySchema = z.strictObject({
   generation: z.int().min(1),
   id: z.string().min(1),
 });
 export type LineBundleUploadUrlBody = z.infer<typeof LineBundleUploadUrlBodySchema>;
 
-/** `POST …/line/{branch}/heartbeat`: a run's heartbeat, where it fits. */
+/** `POST …/line/heartbeat?branch=`: a run's heartbeat, where it fits. */
 export const LineHeartbeatBodySchema = HeartbeatBodySchema;
 export type LineHeartbeatBody = z.infer<typeof LineHeartbeatBodySchema>;
 export const LineHeartbeatResponseSchema = HeartbeatResponseSchema;
 export type LineHeartbeatResponse = z.infer<typeof LineHeartbeatResponseSchema>;
 
-/** `GET …/line/{branch}`. */
+/** `GET …/line?branch=`. */
 export const LineViewSchema = z.strictObject({
   record: LineRecordSchema,
   dispatch: LineDispatchSchema.optional(),

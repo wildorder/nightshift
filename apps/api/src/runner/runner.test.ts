@@ -6,6 +6,7 @@ import { generateKeyPairSync, sign as signWith } from "node:crypto";
 import type { Dispatch, ProgramContract } from "@nightshift/contracts";
 import type { ComputeControl, FirstTokenStore, InstanceDescription } from "@nightshift/core";
 import {
+  BOOT_LEASE_SECONDS,
   createFixedClock,
   createFixtures,
   type Fixtures,
@@ -198,6 +199,9 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
       amiVersion: "1.0.5",
     });
     expect(dispatch?.attempts[0]?.instanceId).toBe("i-1");
+    // Until its first heartbeat the machine holds a boot lease, so one that
+    // never reports in is lost like one that stopped (2026-10-28).
+    expect(dispatch?.leaseExpiresAt).toBe(new Date(NOW + BOOT_LEASE_SECONDS * 1000).toISOString());
     expect([...w.tokens.parameters.keys()]).toEqual([
       `/nightshift/dev/dispatch/${w.f.scope.runId}/1`,
     ]);

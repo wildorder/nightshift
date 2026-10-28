@@ -34,6 +34,13 @@ export interface Route {
    */
   readonly operation: Operation;
   readonly handler: Handler;
+  /**
+   * Parameters the route takes from the query string rather than the path, for
+   * values a path segment cannot carry: a branch name's `/`, which API Gateway
+   * decodes from `%2F` before the request arrives (2026-10-28). They reach the
+   * handler and the authorisation gate among the path's params.
+   */
+  readonly query?: readonly string[];
 }
 
 export type RouteMatch =
@@ -83,4 +90,19 @@ export const matchRoute = (routes: readonly Route[], method: string, path: strin
     allowed.push(route.method);
   }
   return allowed.length > 0 ? { kind: "method_not_allowed", allowed } : { kind: "not_found" };
+};
+
+/** The route's params with the query parameters it declares, where the request gave them. */
+export const paramsWithQuery = (
+  route: Route,
+  params: PathParams,
+  query: Readonly<Record<string, string | undefined>>,
+): PathParams => {
+  if (route.query === undefined) return params;
+  const merged: Record<string, string> = { ...params };
+  for (const name of route.query) {
+    const value = query[name];
+    if (value !== undefined && value !== "") merged[name] = value;
+  }
+  return merged;
 };

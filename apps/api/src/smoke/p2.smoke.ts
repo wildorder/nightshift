@@ -641,6 +641,16 @@ describe("phase 3: live-only assertions", () => {
     expect(listedAgents.items.map((a) => a.agentId)).toEqual([agent.agentId]);
   });
 
+  it("reaches a line route through the gateway with a branch that has a slash (Pipkin M1b)", async () => {
+    // API Gateway decodes `%2F` in a path, so the branch travels in the query:
+    // the route is reached, and answers that project A has no line.
+    const response = await api.get(
+      `${projectPath(worldA)}/line?branch=${encodeURIComponent("nightshift/develop")}`,
+    );
+    expectStatus(response, 404);
+    expect((response.body as { error: { code: string } }).error.code).toBe("not_found");
+  });
+
   it("refuses a second live run of a program, naming the one it has (A-66)", async () => {
     const second = makeRun(
       { ...worldA, scope: { ...worldA.scope, runId: ids.next("run") } },

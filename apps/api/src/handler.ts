@@ -124,14 +124,16 @@ import {
 } from "./operations/records.js";
 import { deleteProjectSecret, listProjectSecrets, putProjectSecret } from "./operations/secrets.js";
 import { createArtifactUploadUrl } from "./operations/uploads.js";
-import { matchRoute, type Route } from "./router.js";
+import { matchRoute, paramsWithQuery, type Route } from "./router.js";
 
 const PROJECT = "/projects/{projectId}";
 const PROGRAM = `${PROJECT}/programs/{programId}`;
 const RUN = `${PROGRAM}/runs/{runId}`;
 const NODE = `${RUN}/nodes/{nodeId}`;
-// The project line (Pipkin M1b): the branch is one URL-encoded segment, matching `routes.line`.
-const LINE = `${PROJECT}/line/{branch}`;
+// The project line (Pipkin M1b): the branch is the `branch` query parameter, matching
+// `routes.line`, since API Gateway decodes a `%2F` in the path (2026-10-28).
+const LINE = `${PROJECT}/line`;
+const LINE_QUERY = ["branch"] as const;
 
 /**
  * The API surface, grouped by aggregate. P11 will read this table, so it is kept
@@ -139,40 +141,75 @@ const LINE = `${PROJECT}/line/{branch}`;
  */
 export const ROUTES: readonly Route[] = [
   // The project line and its owner (Pipkin M1b).
-  { method: "GET", path: LINE, operation: "line.get", handler: getLine },
-  { method: "POST", path: `${LINE}/batch`, operation: "line.takeBatch", handler: takeLineBatch },
+  { method: "GET", path: LINE, operation: "line.get", query: LINE_QUERY, handler: getLine },
+  {
+    method: "POST",
+    path: `${LINE}/batch`,
+    operation: "line.takeBatch",
+    query: LINE_QUERY,
+    handler: takeLineBatch,
+  },
   {
     method: "POST",
     path: `${LINE}/compositions`,
     operation: "line.compose",
+    query: LINE_QUERY,
     handler: postLineComposition,
   },
   {
     method: "POST",
     path: `${LINE}/decisions`,
     operation: "line.decide",
+    query: LINE_QUERY,
     handler: postLineDecision,
   },
-  { method: "POST", path: `${LINE}/agents`, operation: "line.announce", handler: postLineAgent },
-  { method: "POST", path: `${LINE}/parked`, operation: "line.park", handler: postLineParked },
-  { method: "POST", path: `${LINE}/settle`, operation: "line.settle", handler: postLineSettle },
-  { method: "POST", path: `${LINE}/push`, operation: "line.push", handler: postLinePush },
+  {
+    method: "POST",
+    path: `${LINE}/agents`,
+    operation: "line.announce",
+    query: LINE_QUERY,
+    handler: postLineAgent,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/parked`,
+    operation: "line.park",
+    query: LINE_QUERY,
+    handler: postLineParked,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/settle`,
+    operation: "line.settle",
+    query: LINE_QUERY,
+    handler: postLineSettle,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/push`,
+    operation: "line.push",
+    query: LINE_QUERY,
+    handler: postLinePush,
+  },
   {
     method: "POST",
     path: `${LINE}/bundle-upload-url`,
     operation: "line.createBundleUploadUrl",
+    query: LINE_QUERY,
     handler: createLineBundleUploadUrl,
   },
   {
     method: "POST",
     path: `${LINE}/heartbeat`,
     operation: "line.heartbeat",
+    query: LINE_QUERY,
     handler: lineHeartbeat,
   },
   {
     method: "POST",
     path: `${LINE}/dispatch/cancel`,
     operation: "line.cancel",
+    query: LINE_QUERY,
     handler: cancelLineDispatch,
   },
 
@@ -693,10 +730,11 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
     // The one authorisation gate (SC-P4-08). Every route passes through it, and
     // it runs *before* the operation, so a caller in the wrong organisation is
     // refused without any record being read.
+    const params = paramsWithQuery(match.route, match.params, request.query);
     const principal = await enforce({
       principal: request.principal,
       operation: match.route.operation,
-      params: match.params,
+      params,
       body: request.body,
       memberships: deps.stores.memberships,
       nodes: deps.stores.executionNodes,
@@ -706,7 +744,7 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
         deps.projectOrgs ??
         createProjectOrgCache({ projects: deps.stores.projects, clock: deps.clock }),
     });
-    return await match.route.handler({ deps, request, params: match.params, principal });
+    return await match.route.handler({ deps, request, params, principal });
   } catch (error) {
     return toErrorResponse(error, {
       route: `${request.method.toUpperCase()} ${match.route.path}`,
