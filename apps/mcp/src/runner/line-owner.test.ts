@@ -892,10 +892,10 @@ describe("a replacement generation over held ranges only", () => {
     expect(lastBeat(plane)?.body.report).toBe("stopped");
   });
 
-  it("ends idle when held ranges do not come back", async () => {
+  it("releases and composes ranges held by this very generation, then ends idle", async () => {
     const machine = lineMachine();
     const aHead = world.head(world.branches.a);
-    // Held by this very generation, with no composer holding them: takeBatch gives nothing back.
+    // Held by this very generation, with no composer holding them: the fresh composer releases them.
     const plane = makePlane(world, machine, {
       record: {
         held: [{ program: world.programs.a, upTo: aHead, enqueuedAt: "2026-10-01T11:00:00.000Z" }],
@@ -904,6 +904,9 @@ describe("a replacement generation over held ranges only", () => {
     });
 
     expect(await own(machine, plane, { idleSeconds: 4 })).toBe(0);
+
+    expect(plane.settles[0]?.body.composition?.ranges[0]?.upTo).toBe(aHead);
+    expect(plane.record.held).toEqual([]);
     expect(lastBeat(plane)?.body.report).toBe("stopped");
   });
 });

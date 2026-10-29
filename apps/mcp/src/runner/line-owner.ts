@@ -362,6 +362,7 @@ const ownLine = async (
 
   const queue: LineQueuePort = {
     takeBatch: (release) => plane.takeBatch(release),
+    heldEntries: async () => (await plane.line()).record.held,
     lastComposed: async (program) => {
       const record = (await plane.line()).record;
       let newest: { at: number; upTo: CommitSha } | undefined;
@@ -473,18 +474,17 @@ const ownLine = async (
   const pendingPush = (record: LineRecord) =>
     record.push?.status === "pending" ? record.push : undefined;
   // Ranges the plane holds that this composer holds nothing for were left by an
-  // earlier owner: only a drain's takeBatch gives them back. The first drain of a
-  // fresh composer is always run, and a few more may follow while held ranges
-  // remain; held ranges that do not come back are then no work, so the owner can end.
+  // earlier owner: the composer releases them on its first step, so the owner
+  // drives it while it needs recovery. The capped retry below is only a last-resort
+  // safety: held ranges that still do not come back are then no work.
   const MAX_STRANDED_DRAINS = 3;
-  let started = false;
   let strandedDrains = 0;
   const stranded = (record: LineRecord): boolean =>
     record.held.length > 0 && composer.idle() && strandedDrains < MAX_STRANDED_DRAINS;
   const hasWork = (record: LineRecord): boolean =>
     record.queue.length > 0 ||
     record.batch !== undefined ||
-    !started ||
+    composer.needsRecovery() ||
     stranded(record) ||
     !composer.idle() ||
     !line.engine.idle() ||
@@ -510,7 +510,7 @@ const ownLine = async (
       record.queue.length > 0 ||
       record.batch !== undefined ||
       !composer.idle() ||
-      !started ||
+      composer.needsRecovery() ||
       stranded(record)
     ) {
       idleSince = undefined;
@@ -518,7 +518,6 @@ const ownLine = async (
         if (record.held.length > 0) strandedDrains += 1;
         say("taking back the ranges an earlier owner left held");
       }
-      started = true;
       say(record.batch === undefined ? "composing the queue" : "composing the held batch");
       const outcomes = await composer.drain();
       for (const outcome of outcomes) {
