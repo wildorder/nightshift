@@ -9,28 +9,32 @@
  * compare-and-swap `update`. The line run's heartbeat is a run's own
  * (`dispatch.ts`).
  */
+import { createHash } from "node:crypto";
 import {
   calendarMonthOf,
   EventSchema,
   type EventType,
   inlinePayloadBytes,
   LineBundleUploadUrlBodySchema,
-  type LineComposedPayload,
-  type LineParkedPayload,
+  type LineComposition,
+  type LineParked,
   LinePushBodySchema,
   type LineRecord,
   type LineSettleBody,
   LineSettleBodySchema,
+  type LineSettledPayload,
   type LineView,
   LineViewSchema,
   MAX_INLINE_PAYLOAD_BYTES,
+  MAX_LINE_SETTLED_ENTRIES_PER_EVENT,
   type Principal,
   type ProjectId,
-  summariseLineVerification,
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
+  composedEntryOf,
   createUlidIdGenerator,
+  entryText,
   LINE_RESOLVER_ATTEMPTS,
   type LineChange,
   type LineOwnerArg,
@@ -38,11 +42,14 @@ import {
   lineBundleObjectKey,
   lineProgramId,
   nowIso,
+  parkedEntryOf,
   type RunScope,
   requestPush,
   requireEffectivePolicy,
   settleBatch,
+  settledMarkers,
   settleIds,
+  settlementDigest,
   takeBatch,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
@@ -282,21 +289,93 @@ const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> =>
   });
 };
 
+/** What a chunk event's payload may weigh, with room under the inline bound for the envelope's own fields. */
+const CHUNK_PAYLOAD_BYTES = 6000;
+
+interface PlannedEvent {
+  readonly type: EventType;
+  readonly key: string;
+  readonly payload: Record<string, unknown>;
+}
+
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+/** An idempotency key within the schema's bound: an over-long id is stood for by its hash. */
+const keyOf = (...parts: readonly string[]): string => {
+  const key = parts.join(":");
+  return key.length <= 256
+    ? key
+    : [parts[0] ?? "", sha256(parts[1] ?? ""), ...parts.slice(2)].join(":");
+};
+
 /**
- * The settled entries as events of the run that held the batch: the run's own
- * history, beyond what the line record's window keeps. Written FIRST, before the
- * record changes, from the untruncated body and with ids derived from the batch,
- * so a failed append fails the settle with the record untouched and the
- * composer's retry rewrites the same keys (an already-stored key returns the
- * stored event) and then completes. An entry whose payload would not fit inline
- * keeps everything but its verification's command results, which a summary
- * replaces.
+ * Splits `text` into ordered slices whose chunk payloads each measure under
+ * `CHUNK_PAYLOAD_BYTES` by `inlinePayloadBytes` (not by string length), never
+ * between the halves of a surrogate pair.
  */
-const appendSettledEvents = async (
+const chunkText = (head: { kind: string; id: string; digest: string }, text: string): string[] => {
+  const slices: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let size = Math.min(text.length - start, CHUNK_PAYLOAD_BYTES);
+    const fits = (n: number) =>
+      inlinePayloadBytes({
+        ...head,
+        part: 99999,
+        parts: 99999,
+        text: text.slice(start, start + n),
+      }) <= CHUNK_PAYLOAD_BYTES;
+    while (size > 1 && !fits(size)) size = Math.max(1, Math.floor(size * 0.8));
+    const last = text.charCodeAt(start + size - 1);
+    if (size > 1 && last >= 0xd800 && last <= 0xdbff) size -= 1;
+    slices.push(text.slice(start, start + size));
+    start += size;
+  }
+  return slices;
+};
+
+/**
+ * An entry's events: one event carrying the entry with its id and digest, or,
+ * when that would not fit inline, ordered chunks of its JSON text. Keys carry
+ * the content digest, so a different body for the same id is a new event.
+ */
+const planEntry = (
+  type: "line.composed" | "line.parked",
+  entry: LineComposition | LineParked,
+): { events: PlannedEvent[]; digest: string } => {
+  const id = entry.compositionId;
+  const text = entryText(entry);
+  const digest = sha256(text);
+  const payload = { ...JSON.parse(text), id, digest } as Record<string, unknown>;
+  if (inlinePayloadBytes(payload) <= MAX_INLINE_PAYLOAD_BYTES) {
+    return { events: [{ type, key: keyOf(type, id, digest), payload }], digest };
+  }
+  const head = { kind: type === "line.composed" ? "composed" : "parked", id, digest };
+  const slices = chunkText(head, text);
+  return {
+    digest,
+    events: slices.map((slice, part) => ({
+      type: "line.entry_chunk" as const,
+      key: keyOf("line.entry_chunk", id, digest, String(part)),
+      payload: { ...head, part, parts: slices.length, text: slice },
+    })),
+  };
+};
+
+/**
+ * The settlement's events on the run that held the batch, in two steps around
+ * the record change. `appendEntryEvents` runs BEFORE it: content-addressed
+ * (keys carry the entry's digest) and reportable only once a `line.settled`
+ * marker names them, so an attempt that never commits (a failed append, a
+ * refused takeover, a superseded owner) is never a fact. `appendSettledMarker`
+ * runs AFTER the record committed; a failure there is a 5xx and the composer's
+ * retry of the same body recovers (the record's `lastSettled`). Nothing is
+ * truncated: an entry too large for one event is chunked.
+ */
+const appendPlanned = async (
   deps: ApiDeps,
   principal: Extract<Principal, { kind: "execution" }>,
-  body: LineSettleBody,
-  settleIds: { readonly compositionId?: string; readonly parkedIds: readonly string[] },
+  planned: readonly PlannedEvent[],
   at: string,
 ): Promise<void> => {
   const scope: RunScope = {
@@ -307,58 +386,19 @@ const appendSettledEvents = async (
   const nodes = await deps.stores.executionNodes.listByRun(scope);
   const executionNodeId = nodes.items.find((n) => n.parentNodeId === null)?.executionNodeId ?? null;
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
-  const entries: { type: EventType; id: string; payload: Record<string, unknown> }[] = [];
-  const composition = body.composition;
-  if (composition !== undefined) {
-    const id = settleIds.compositionId ?? "";
-    const payload: LineComposedPayload = {
-      compositionId: id,
-      commit: composition.commit,
-      parent: composition.parent,
-      ranges: composition.ranges,
-      verification: composition.verification,
-      ...(composition.resolver === undefined ? {} : { resolver: composition.resolver }),
-      ...(composition.repair === undefined ? {} : { repair: composition.repair }),
-      composedAt: at,
-    };
-    entries.push({ type: "line.composed", id, payload });
-  }
-  body.parked.forEach((entry, index) => {
-    const id = settleIds.parkedIds[index] ?? "";
-    const payload: LineParkedPayload = {
-      compositionId: id,
-      ranges: entry.ranges,
-      reason: entry.reason,
-      ...(entry.commit === undefined ? {} : { commit: entry.commit }),
-      ...(entry.verification === undefined ? {} : { verification: entry.verification }),
-      ...(entry.resolver === undefined ? {} : { resolver: entry.resolver }),
-      ...(entry.repair === undefined ? {} : { repair: entry.repair }),
-      parkedAt: at,
-    };
-    entries.push({ type: "line.parked", id, payload });
-  });
-  for (const entry of entries) {
-    let payload = entry.payload;
-    if (inlinePayloadBytes(payload) > MAX_INLINE_PAYLOAD_BYTES) {
-      const verification = payload.verification as
-        | Parameters<typeof summariseLineVerification>[0]
-        | undefined;
-      if (verification !== undefined && "commands" in verification) {
-        payload = { ...payload, verification: summariseLineVerification(verification) };
-      }
-    }
+  for (const event of planned) {
     await deps.stores.events.append(
       EventSchema.parse({
         schemaVersion: 1,
         ...scope,
         eventId: ids.next("evt"),
-        idempotencyKey: `${entry.type}:${entry.id}`,
+        idempotencyKey: event.key,
         sequence: null,
-        type: entry.type,
+        type: event.type,
         source: "control-plane",
         executionNodeId,
         agentId: null,
-        payload,
+        payload: event.payload,
         occurredAt: at,
         recordedAt: at,
       }),
@@ -366,11 +406,67 @@ const appendSettledEvents = async (
   }
 };
 
+interface SettlementPlan {
+  readonly events: PlannedEvent[];
+  readonly marked: LineSettledPayload["entries"];
+}
+
+const planSettlement = (
+  body: LineSettleBody,
+  ids: ReturnType<typeof settleIds>,
+  at: string,
+): SettlementPlan => {
+  const events: PlannedEvent[] = [];
+  const marked: LineSettledPayload["entries"][number][] = [];
+  const add = (type: "line.composed" | "line.parked", entry: LineComposition | LineParked) => {
+    const planned = planEntry(type, entry);
+    events.push(...planned.events);
+    marked.push({ type, id: entry.compositionId, digest: planned.digest });
+  };
+  if (body.composition !== undefined) {
+    add("line.composed", composedEntryOf(body.composition, ids.compositionId ?? "", at));
+  }
+  body.parked.forEach((entry, index) => {
+    add("line.parked", parkedEntryOf(entry, ids.parkedIds[index] ?? "", at));
+  });
+  return { events, marked };
+};
+
+const appendSettledMarker = async (
+  deps: ApiDeps,
+  principal: Extract<Principal, { kind: "execution" }>,
+  plan: SettlementPlan,
+  settlement: { batchId: string; generation: number; digest: string },
+  at: string,
+): Promise<void> => {
+  const markers = settledMarkers(
+    { ...settlement, entries: plan.marked },
+    MAX_LINE_SETTLED_ENTRIES_PER_EVENT,
+  );
+  await appendPlanned(
+    deps,
+    principal,
+    markers.map((payload) => ({
+      type: "line.settled" as const,
+      key: keyOf(
+        "line.settled",
+        settlement.batchId,
+        settlement.digest,
+        ...(markers.length > 1 ? [String(payload.part)] : []),
+      ),
+      payload,
+    })),
+    at,
+  );
+};
+
 /**
  * `POST …/line/settle?branch=` — the batch settled with a composition and/or
- * parked entries. Events first: the rule is dry-run against the current record
- * (a refusal writes nothing), the entries are appended as events under ids
- * derived from the batch, and only then is the record changed.
+ * parked entries. The rule is dry-run (a refusal writes nothing), the entry
+ * events are appended (not yet facts), the record is changed (the commit), and
+ * only then the `line.settled` marker is appended. A settle for a batch the
+ * record already shows settled with the same body is a retry of one whose
+ * marker was lost: its events and marker are re-appended and it answers 200.
  */
 export const postLineSettle: Handler = async (context) => {
   const { deps, request, params } = context;
@@ -380,16 +476,52 @@ export const postLineSettle: Handler = async (context) => {
   refuseResolverOver(raw?.composition);
   if (Array.isArray(raw?.parked)) for (const entry of raw.parked) refuseResolverOver(entry);
   const body: LineSettleBody = parseBody(LineSettleBodySchema, request.body);
-  const at = nowIso(deps.clock);
   const settled = settleIds(body);
   const owner = await ownerOf(context, undefined);
-  const dryRun = settleBatch(await requireLine(deps, target), body, settled, owner, at);
-  if (!dryRun.ok) throw refusalStatus(dryRun);
-  if (context.principal.kind === "execution") {
-    await appendSettledEvents(deps, context.principal, body, settled, at);
+  const principal = context.principal;
+  if (principal.kind !== "execution") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "only the line run's engine may settle",
+    );
   }
-  const record = await applyLineChange(deps, target, (current) =>
-    settleBatch(current, body, settled, owner, at),
+  const digest = settlementDigest(body);
+  const current = await requireLine(deps, target);
+  const prior = current.lastSettled;
+  const recovered =
+    prior !== undefined &&
+    prior.batchId === body.batchId &&
+    prior.digest === digest &&
+    current.batch?.batchId !== body.batchId &&
+    (prior.runId === undefined || prior.runId === principal.runId);
+  let record: LineRecord;
+  let at: string;
+  let generation: number;
+  let plan: SettlementPlan;
+  if (recovered) {
+    record = current;
+    at = prior.at;
+    generation = prior.generation;
+    plan = planSettlement(body, settled, at);
+    await appendPlanned(deps, principal, plan.events, at);
+  } else {
+    at = nowIso(deps.clock);
+    generation = typeof owner === "number" ? owner : owner.generation;
+    const dryRun = settleBatch(current, body, settled, owner, at);
+    if (!dryRun.ok) throw refusalStatus(dryRun);
+    plan = planSettlement(body, settled, at);
+    await appendPlanned(deps, principal, plan.events, at);
+    record = await applyLineChange(deps, target, (latest) =>
+      settleBatch(latest, body, settled, owner, at),
+    );
+  }
+  await appendSettledMarker(
+    deps,
+    principal,
+    plan,
+    { batchId: body.batchId, generation, digest },
+    at,
   );
   if (
     body.push !== undefined &&

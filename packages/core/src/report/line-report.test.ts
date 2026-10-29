@@ -4,6 +4,7 @@
  */
 import type { IsoTimestamp, LineRepairRef, Run } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
+import { entryDigest, entryText, sha256Hex } from "../line/settlement.js";
 import type { ProjectStores } from "../ports/stores.js";
 import {
   createFixtures,
@@ -193,6 +194,39 @@ describe("a line run's report", () => {
     recordedAt: occurredAt,
   });
 
+  type Entry = Parameters<typeof entryDigest>[0];
+  const entryEvent = (f: Fixtures, type: string, entry: Entry, seq: number) =>
+    eventOf(
+      f,
+      type,
+      { ...entry, id: entry.compositionId, digest: entryDigest(entry) },
+      seq,
+      at(seq),
+    );
+  const markerEvent = (
+    f: Fixtures,
+    entries: readonly { type: string; entry: Entry }[],
+    seq: number,
+  ) =>
+    eventOf(
+      f,
+      "line.settled",
+      {
+        batchId: "comp_batch",
+        generation: 1,
+        digest: sha256Hex("settlement"),
+        part: 0,
+        parts: 1,
+        entries: entries.map((e) => ({
+          type: e.type,
+          id: e.entry.compositionId,
+          digest: entryDigest(e.entry),
+        })),
+      },
+      seq,
+      at(seq),
+    );
+
   it("reports entries the line record has evicted, from the run's events, with reasons", async () => {
     const f = createFixtures();
     const ended = makeRun(f, {
@@ -201,10 +235,21 @@ describe("a line run's report", () => {
       endedAt: at(9000),
     });
     const base = setup(f, ended);
+    const gone = base.composition("comp_gone", at(2000));
+    const parked = base.parkedEntry(at(3000));
+    const both = base.composition("comp_both", at(4000));
     const events = [
-      eventOf(f, "line.composed", base.composition("comp_gone", at(2000)), 0, at(2000)),
-      eventOf(f, "line.parked", base.parkedEntry(at(3000)), 1, at(3000)),
-      eventOf(f, "line.composed", base.composition("comp_both", at(4000)), 2, at(4000)),
+      entryEvent(f, "line.composed", gone, 0),
+      entryEvent(f, "line.parked", parked, 1),
+      entryEvent(f, "line.composed", both, 2),
+      markerEvent(
+        f,
+        [
+          { type: "line.composed", entry: gone },
+          { type: "line.parked", entry: parked },
+        ],
+        3,
+      ),
     ];
     const { stores } = setup(f, ended, [], events);
     const line = makeLineRecord(f, {
@@ -232,11 +277,62 @@ describe("a line run's report", () => {
       endedAt: at(900_000),
     });
     const base = setup(f, ended);
-    const events = Array.from({ length: 75 }, (_, i) =>
-      eventOf(f, "line.composed", base.composition(`comp_${i}`, at(2000 + i)), i, at(2000 + i)),
+    const entries = Array.from({ length: 75 }, (_, i) =>
+      base.composition(`comp_${i}`, at(2000 + i)),
     );
+    const events = [
+      ...entries.map((entry, i) => entryEvent(f, "line.composed", entry, i)),
+      ...[0, 20, 40, 60].map((from) =>
+        markerEvent(
+          f,
+          entries.slice(from, from + 20).map((entry) => ({ type: "line.composed", entry })),
+          100 + from,
+        ),
+      ),
+    ];
     const { stores } = setup(f, ended, [], events);
     const gathered = await gatherReport(stores(makeLineRecord(f, {})), f.scope);
     expect(gathered.line?.compositions).toHaveLength(75);
+  });
+
+  it("never reports an entry event that no marker names and the record does not hold", async () => {
+    const f = createFixtures();
+    const ended = makeRun(f, { status: "succeeded", startedAt: at(1000), endedAt: at(9000) });
+    const base = setup(f, ended);
+    const phantom = base.composition("comp_phantom", at(2000));
+    const other = base.composition("comp_other", at(3000));
+    const swapped = { ...base.composition("comp_other", at(3000)), commit: sha("f") };
+    const events = [
+      entryEvent(f, "line.composed", phantom, 0),
+      entryEvent(f, "line.composed", swapped, 1),
+      markerEvent(f, [{ type: "line.composed", entry: other }], 2),
+    ];
+    const { stores } = setup(f, ended, [], events);
+    const gathered = await gatherReport(stores(makeLineRecord(f, {})), f.scope);
+    expect(gathered.line?.compositions).toEqual([]);
+  });
+
+  it("reassembles a complete chunk set that hashes to its digest, and only that", async () => {
+    const f = createFixtures();
+    const ended = makeRun(f, { status: "succeeded", startedAt: at(1000), endedAt: at(9000) });
+    const base = setup(f, ended);
+    const entry = { ...base.parkedEntry(at(3000)), reason: "p ".repeat(9000) };
+    const text = entryText(entry);
+    const head = { kind: "parked", id: entry.compositionId, digest: entryDigest(entry) };
+    const slices = [text.slice(0, 7000), text.slice(7000, 14000), text.slice(14000)];
+    const chunk = (part: number) =>
+      eventOf(
+        f,
+        "line.entry_chunk",
+        { ...head, part, parts: 3, text: slices[part] },
+        part,
+        at(3000 + part),
+      );
+    const marker = markerEvent(f, [{ type: "line.parked", entry }], 9);
+    const complete = setup(f, ended, [], [chunk(0), chunk(1), chunk(2), marker]).stores;
+    const gathered = await gatherReport(complete(makeLineRecord(f, {})), f.scope);
+    expect(gathered.line?.parked.map((p) => p.reason)).toEqual([entry.reason]);
+    const missing = setup(f, ended, [], [chunk(0), chunk(2), marker]).stores;
+    expect((await gatherReport(missing(makeLineRecord(f, {})), f.scope)).line?.parked).toEqual([]);
   });
 });

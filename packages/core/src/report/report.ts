@@ -33,12 +33,17 @@ import {
   type GateHealthVerdict,
   type IsoTimestamp,
   type JobContract,
-  type LineComposedPayload,
   LineComposedPayloadSchema,
-  type LineParkedPayload,
+  type LineComposition,
+  LineCompositionSchema,
+  LineEntryChunkPayloadSchema,
+  type LineParked,
   LineParkedPayloadSchema,
+  LineParkedSchema,
   type LineRange,
+  type LineRecord,
   type LineRepairRef,
+  LineSettledPayloadSchema,
   lifecycleObservationsOf,
   type MeasurementSummary,
   type Prerequisite,
@@ -58,6 +63,7 @@ import {
   VerificationStepSchema,
 } from "@nightshift/contracts";
 import { humanDuration } from "../forecast/model.js";
+import { entryDigest, sha256Hex } from "../line/settlement.js";
 import type { ProjectStores } from "../ports/stores.js";
 import { type PublicationState, publicationStateOf } from "../rules/dispatch.js";
 import { buildTree, descendantsOf, type ExecutionTree } from "../rules/execution-tree.js";
@@ -288,10 +294,10 @@ export interface LineRunReport {
   readonly branch: string;
   /** The line's head at GitHub as last known; absent when no line record exists. */
   readonly head?: string;
-  /** From the run's `line.composed` events, with in-window entries still on the line record; a verification may be summarised. */
-  readonly compositions: readonly LineComposedPayload[];
+  /** From the run's `line.composed` events, with in-window entries still on the line record. */
+  readonly compositions: readonly LineComposition[];
   /** From the run's `line.parked` events, with in-window entries still on the line record. */
-  readonly parked: readonly LineParkedPayload[];
+  readonly parked: readonly LineParked[];
   /** The run's repair jobs; each composition's or parked entry's `repair` names one of them. */
   readonly repairs: readonly RepairReport[];
 }
@@ -1366,12 +1372,104 @@ const inRunWindow = (run: Run, at: string, repair: LineRepairRef | undefined): b
     (run.endedAt === undefined || Date.parse(at) <= Date.parse(run.endedAt)));
 
 /**
- * A line run's part of the report: the run's own `line.composed` and
- * `line.parked` events, uncapped, unioned with the line record's entries that
- * belong to the run (by repair ref, or by time within the run's window; a live
- * run has no upper bound), so runs from before the events existed still show
- * what the record holds. Deduped by compositionId, the event first. A missing
- * line record yields none, not a throw.
+ * The line entries the run's events establish as facts. An entry event (inline,
+ * or reassembled from a complete set of `line.entry_chunk`s whose text hashes
+ * to its digest) counts only if a `line.settled` marker of the run names its
+ * (type, id, digest), or the line record currently holds an entry of that id
+ * with that digest. Events of an attempt that never committed, was refused, or
+ * was superseded by a replacement owner are therefore never reported.
+ */
+const settledEntriesOf = (
+  events: readonly Event[],
+  record: LineRecord | undefined,
+): { composed: LineComposition[]; parked: LineParked[] } => {
+  const named = new Set<string>();
+  for (const event of events) {
+    if (event.type !== "line.settled") continue;
+    const parsed = LineSettledPayloadSchema.safeParse(event.payload);
+    if (!parsed.success) continue;
+    for (const e of parsed.data.entries) named.add(`${e.type}\n${e.id}\n${e.digest}`);
+  }
+  const held = new Set<string>([
+    ...(record?.compositions ?? []).map(
+      (c) => `line.composed\n${c.compositionId}\n${entryDigest(c)}`,
+    ),
+    ...(record?.parked ?? []).map((p) => `line.parked\n${p.compositionId}\n${entryDigest(p)}`),
+  ]);
+  const counts = (type: string, id: string, digest: string): boolean =>
+    named.has(`${type}\n${id}\n${digest}`) || held.has(`${type}\n${id}\n${digest}`);
+  const composed: LineComposition[] = [];
+  const parked: LineParked[] = [];
+  const chunks = new Map<string, Map<number, string>>();
+  const chunkInfo = new Map<
+    string,
+    { kind: "composed" | "parked"; id: string; digest: string; parts: number }
+  >();
+  for (const event of events) {
+    if (event.type === "line.composed") {
+      const parsed = LineComposedPayloadSchema.safeParse(event.payload);
+      if (!parsed.success) continue;
+      const { id, digest, ...entry } = parsed.data;
+      if (
+        id === entry.compositionId &&
+        entryDigest(entry) === digest &&
+        counts(event.type, id, digest)
+      )
+        composed.push(entry);
+    } else if (event.type === "line.parked") {
+      const parsed = LineParkedPayloadSchema.safeParse(event.payload);
+      if (!parsed.success) continue;
+      const { id, digest, ...entry } = parsed.data;
+      if (
+        id === entry.compositionId &&
+        entryDigest(entry) === digest &&
+        counts(event.type, id, digest)
+      )
+        parked.push(entry);
+    } else if (event.type === "line.entry_chunk") {
+      const parsed = LineEntryChunkPayloadSchema.safeParse(event.payload);
+      if (!parsed.success || parsed.data.part >= parsed.data.parts) continue;
+      const key = `${parsed.data.kind}\n${parsed.data.id}\n${parsed.data.digest}`;
+      const info = chunkInfo.get(key);
+      if (info !== undefined && info.parts !== parsed.data.parts) continue;
+      chunkInfo.set(key, parsed.data);
+      const parts = chunks.get(key) ?? new Map<number, string>();
+      parts.set(parsed.data.part, parsed.data.text);
+      chunks.set(key, parts);
+    }
+  }
+  for (const [key, parts] of chunks) {
+    const info = chunkInfo.get(key);
+    if (info === undefined || parts.size !== info.parts) continue;
+    const type = info.kind === "composed" ? "line.composed" : "line.parked";
+    if (!counts(type, info.id, info.digest)) continue;
+    const text = Array.from({ length: info.parts }, (_, i) => parts.get(i) ?? "").join("");
+    if (sha256Hex(text) !== info.digest) continue;
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    if (info.kind === "composed") {
+      const entry = LineCompositionSchema.safeParse(json);
+      if (entry.success && entry.data.compositionId === info.id) composed.push(entry.data);
+    } else {
+      const entry = LineParkedSchema.safeParse(json);
+      if (entry.success && entry.data.compositionId === info.id) parked.push(entry.data);
+    }
+  }
+  return { composed, parked };
+};
+
+/**
+ * A line run's part of the report: the entries its committed settlements
+ * established (`settledEntriesOf`), uncapped, unioned with the line record's
+ * entries that belong to the run (by repair ref, or by time within the run's
+ * window; a live run has no upper bound), so runs from before the events
+ * existed still show what the record holds. Deduped by compositionId, the
+ * record's copy winning on overlap (a push lands on it). A missing line record
+ * yields none, not a throw.
  */
 const gatherLine = async (
   stores: ProjectStores,
@@ -1404,27 +1502,17 @@ const gatherLine = async (
     }
     return out.sort((a, b) => Date.parse(stamp(a)) - Date.parse(stamp(b)));
   };
-  const composedEvents: LineComposedPayload[] = [];
-  const parkedEvents: LineParkedPayload[] = [];
-  for (const event of events) {
-    if (event.type === "line.composed") {
-      const parsed = LineComposedPayloadSchema.safeParse(event.payload);
-      if (parsed.success) composedEvents.push(parsed.data);
-    } else if (event.type === "line.parked") {
-      const parsed = LineParkedPayloadSchema.safeParse(event.payload);
-      if (parsed.success) parkedEvents.push(parsed.data);
-    }
-  }
+  const settled = settledEntriesOf(events, record);
   return {
     branch,
     ...(record?.head === undefined ? {} : { head: record.head }),
     compositions: union(
-      composedEvents,
+      settled.composed,
       (record?.compositions ?? []).filter((c) => inRunWindow(run, c.composedAt, c.repair)),
       (c) => c.composedAt,
     ),
     parked: union(
-      parkedEvents,
+      settled.parked,
       (record?.parked ?? []).filter((p) => inRunWindow(run, p.parkedAt, p.repair)),
       (p) => p.parkedAt,
     ),

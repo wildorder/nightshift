@@ -159,6 +159,21 @@ export const EventTypeSchema = z.enum([
    */
   "line.parked",
   /**
+   * One ordered piece of a line entry (a composition or a parked entry) whose
+   * JSON text would not fit inline, so the entry's own event is replaced by
+   * `parts` of these. Payload: `LineEntryChunkPayload`.
+   */
+  "line.entry_chunk",
+  /**
+   * The commit marker of a line settlement, appended only after the line
+   * record changed (like `gate.repaired` for a repair, it states a fact that
+   * already holds). It names the (type, id, digest) of each entry the settle
+   * recorded; an entry event is a reportable fact only if a marker names it.
+   * Split into `parts` events when many entries would overflow the inline
+   * bound. Payload: `LineSettledPayload`.
+   */
+  "line.settled",
+  /**
    * Added in P16 (D-07). Gates green in the reference audit (the laptop's) are
    * red on the run's machine: the machine is at fault, not the project, so the
    * run is cancelled before the root starts and nothing is repaired. Recorded
