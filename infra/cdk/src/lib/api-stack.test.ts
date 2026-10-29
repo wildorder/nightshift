@@ -84,6 +84,17 @@ describe("NightshiftApiStack", () => {
     expect(() => synth()).not.toThrow();
   });
 
+  it("lets the API query both indexes, the node index and events by sequence (2026-10-22)", () => {
+    const { template } = synth();
+    const queried = statementsOf(template)
+      .filter((statement) => actionsOf(statement).includes("dynamodb:Query"))
+      .flatMap((statement) => stringsIn(statement.Resource));
+    expect(queried.some((value) => value.includes("/index/gsi_node"))).toBe(true);
+    // Granted on the table and gsi_node only, every events listing was refused
+    // AccessDenied on the first deploy of the index.
+    expect(queried.some((value) => value.includes("/index/gsi_event_sequence"))).toBe(true);
+  });
+
   it("is named nightshift-<stage>-api, including for a non-default stage", () => {
     const app = testApp();
     expect(new NightshiftApiStack(app, "Dev", { stage: "dev" }).stackName).toBe(
@@ -414,7 +425,12 @@ describe("NightshiftApiStack", () => {
         new Set([
           "dynamodb:GetItem",
           "dynamodb:PutItem",
+          // A-66: the condition checks inside TransactWriteItems (the one-live-run guard).
+          "dynamodb:ConditionCheckItem",
           "dynamodb:Query",
+          // A-62: a project's secret is deleted from the credentials table; A-66: an
+          // ended run's live-run marker from the main one.
+          "dynamodb:DeleteItem",
           "s3:PutObject",
           // P7 (D-P7-02): ratification reads the uploaded plan document back.
           "s3:GetObject",
@@ -466,6 +482,8 @@ describe("NightshiftApiStack", () => {
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:DeleteItem",
         ]),
       );
       expect([...actions].filter((action) => !action.startsWith("dynamodb:"))).toContain(

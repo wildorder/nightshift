@@ -6,7 +6,7 @@ import { App, Token } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { dataExportName } from "./data-exports.js";
-import { ENGINE_USER, RUNNER_TOOLCHAIN, WORKER_USERS } from "./runner-image.js";
+import { ENGINE_USER, PROJECT_USER, RUNNER_TOOLCHAIN } from "./runner-image.js";
 import {
   AMI_VERSION_TAG,
   ARCHITECTURE_TAG,
@@ -122,15 +122,27 @@ describe("NightshiftRunnerStack", () => {
   });
 
   describe("the image (D-P10-16, D-P10-17)", () => {
-    it("builds an arm64 image and an x86_64 image, each from its own Amazon Linux 2023, three versioned components apiece, run by hand", () => {
+    it("builds both architectures from Canonical Ubuntu 24.04, with three versioned components apiece, run by hand", () => {
       const { template } = synth();
       const recipes = template.findResources("AWS::ImageBuilder::ImageRecipe");
       const ids = Object.keys(recipes);
       expect(ids).toHaveLength(2);
       const x86 = recipes[ids.find((id) => id.startsWith("RunnerRecipeX86")) ?? ""] as Resource;
       const arm = recipes[ids.find((id) => !id.startsWith("RunnerRecipeX86")) ?? ""] as Resource;
-      expect(arm?.Properties?.ParentImage).toContain("al2023-ami-kernel-default-arm64");
-      expect(x86?.Properties?.ParentImage).toContain("al2023-ami-kernel-default-x86_64");
+      expect(arm?.Properties?.ParentImage).toBe(
+        "{{resolve:ssm:/aws/service/canonical/ubuntu/server/noble/stable/current/arm64/hvm/ebs-gp3/ami-id}}",
+      );
+      expect(x86?.Properties?.ParentImage).toBe(
+        "{{resolve:ssm:/aws/service/canonical/ubuntu/server/noble/stable/current/amd64/hvm/ebs-gp3/ami-id}}",
+      );
+      for (const recipe of [arm, x86]) {
+        expect(recipe.Properties?.BlockDeviceMappings).toEqual([
+          {
+            DeviceName: "/dev/sda1",
+            Ebs: { VolumeSize: 40, VolumeType: "gp3", DeleteOnTermination: true },
+          },
+        ]);
+      }
       expect(arm?.Properties?.Version).toBe("1.0.0");
       const components = resourcesOf(template, "AWS::ImageBuilder::Component");
       expect(components).toHaveLength(6);
@@ -171,13 +183,17 @@ describe("NightshiftRunnerStack", () => {
       expect(data).not.toMatch(/@latest/);
     });
 
-    it("lays down the engine, the worker users, the sudoers rule and the IMDS firewall", () => {
+    it("lays down the engine and the project user, the sudoers rule and the IMDS firewall", () => {
       const data = resourcesOf(synth().template, "AWS::ImageBuilder::Component")
         .map((component) => String(component.Properties?.Data))
         .join("\n");
       expect(data).toContain(`useradd --system --create-home --home-dir /home/${ENGINE_USER}`);
-      expect(data).toContain(`useradd --create-home --home-dir /home/worker-${WORKER_USERS}`);
-      expect(data).toContain(`${ENGINE_USER} ALL=(WORKERS) NOPASSWD: ALL`);
+      expect(data).toContain(
+        `for w in ${PROJECT_USER}; do { useradd --create-home --home-dir /home/$w`,
+      );
+      expect(data).toContain(`${ENGINE_USER} ALL=(PROJECT) NOPASSWD: ALL`);
+      // One project user, no worker-N users (D-P10-30).
+      expect(data).not.toMatch(/worker-\d/);
       expect(data).toContain("169.254.169.254");
       expect(data).toContain(`meta skuid != \\"${ENGINE_USER}\\"`);
       expect(data).toContain("systemctl disable --now docker.service");
@@ -253,16 +269,53 @@ describe("NightshiftRunnerStack", () => {
       template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(1 minute)" });
     });
 
-    it("lets only the publisher read the GitHub App's secret, and no machine", () => {
+    it("lets only the publisher and the reconciler read the GitHub App's secret, and no machine", () => {
       const { template } = synth();
       const secretReaders = resourcesOf(template, "AWS::IAM::Policy").filter((policy) =>
         JSON.stringify(policy.Properties?.PolicyDocument).includes("secretsmanager:GetSecretValue"),
       );
-      expect(secretReaders).toHaveLength(1);
-      expect(stringsIn(secretReaders[0]?.Properties?.Roles)[0]).toMatch(/^PublisherFunctionRole/);
-      expect(JSON.stringify(secretReaders[0]?.Properties?.PolicyDocument)).toContain(
-        GITHUB_APP_SECRET_NAME,
-      );
+      // The publisher pushes and starts line runs; the reconciler starts line
+      // runs, which verifies the line's base through the App.
+      expect(secretReaders).toHaveLength(2);
+      const readers = secretReaders.map((reader) => stringsIn(reader.Properties?.Roles)[0] ?? "");
+      expect(readers.some((role) => role.startsWith("PublisherFunctionRole"))).toBe(true);
+      expect(readers.some((role) => role.startsWith("ReconcilerFunctionRole"))).toBe(true);
+      for (const reader of secretReaders) {
+        expect(JSON.stringify(reader.Properties?.PolicyDocument)).toContain(GITHUB_APP_SECRET_NAME);
+      }
+    });
+
+    it("gives the functions that start line runs the store grants and environment that path needs", () => {
+      const { template } = synth();
+      for (const role of ["PublisherFunctionRole", "ReconcilerFunctionRole"]) {
+        const actions = actionsOfRole(template, role);
+        // A refused line start ends its run, which deletes the live-run marker.
+        for (const action of [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:ConditionCheckItem",
+          "dynamodb:Query",
+        ]) {
+          expect(actions, `${role} ${action}`).toContain(action);
+        }
+        // The adapter issues no update on this path, and a transaction is
+        // authorised per item: neither action is granted.
+        expect(actions, role).not.toContain("dynamodb:UpdateItem");
+        expect(actions, role).not.toContain("dynamodb:TransactWriteItems");
+      }
+      const variables = (roleName: string): Record<string, unknown> => {
+        const fn = resourcesOf(template, "AWS::Lambda::Function").find((candidate) =>
+          JSON.stringify(candidate.Properties?.Role).includes(roleName),
+        );
+        return property<{ Variables: Record<string, unknown> }>(fn, "Environment").Variables;
+      };
+      const publisher = variables("PublisherFunctionRole");
+      expect(publisher.NIGHTSHIFT_RUNNER_AMI_VERSION).toBe("1.0.0");
+      expect(publisher.NIGHTSHIFT_GITHUB_APP_SECRET).toBe(GITHUB_APP_SECRET_NAME);
+      const reconciler = variables("ReconcilerFunctionRole");
+      expect(reconciler.NIGHTSHIFT_GITHUB_APP_SECRET).toBe(GITHUB_APP_SECRET_NAME);
+      expect(reconciler.NIGHTSHIFT_IMAGE_VERSION).toBe("1.0.0");
     });
 
     it("lets the dispatch and the reconciler touch only managed machines and volumes", () => {
@@ -324,18 +377,40 @@ describe("NightshiftRunnerStack", () => {
       expect(actionsOfRole(template, "PublisherFunctionRole")).not.toContain("ec2:RunInstances");
     });
 
-    it("lets the reconciler query the node index, where dispatches are listed by status", () => {
+    it("lets the reconciler, the dispatch function and the publisher query the node index", () => {
       const { template } = synth();
       const queries = statementsOf(template).filter(
         (statement) =>
           actionsOf(statement).includes("dynamodb:Query") &&
           stringsIn(statement.Resource).some((value) => value.includes("/index/gsi_node")),
       );
-      // The reconciler's, and no one else's: the dispatch Lambda and the
-      // publisher read a dispatch by its run, never across projects.
-      expect(queries).toHaveLength(1);
+      // The reconciler lists dispatches and lines across projects; provisioning
+      // (the dispatch function) counts live run and line dispatches; the
+      // publisher's line-run start admits a dispatch, which counts them too.
+      expect(queries).toHaveLength(3);
       expect(actionsOfRole(template, "ReconcilerFunctionRole")).toContain("dynamodb:Query");
-      expect(actionsOfRole(template, "PublisherFunctionRole")).not.toContain("dynamodb:Query");
+      expect(actionsOfRole(template, "DispatchFunctionRole")).toContain("dynamodb:Query");
+      expect(actionsOfRole(template, "PublisherFunctionRole")).toContain("dynamodb:Query");
+    });
+
+    it("lets the publisher and the reconciler invoke the dispatch function, and tells the publisher its ARN", () => {
+      const { template } = synth();
+      for (const role of ["PublisherFunctionRole", "ReconcilerFunctionRole"]) {
+        expect(actionsOfRole(template, role)).toContain("lambda:InvokeFunction");
+      }
+      expect(actionsOfRole(template, "DispatchFunctionRole")).not.toContain(
+        "lambda:InvokeFunction",
+      );
+      const publisher = resourcesOf(template, "AWS::Lambda::Function").find((fn) =>
+        JSON.stringify(fn.Properties?.Role).includes("PublisherFunctionRole"),
+      );
+      const environment = property<{ Variables: Record<string, unknown> }>(
+        publisher,
+        "Environment",
+      );
+      expect(JSON.stringify(environment.Variables.NIGHTSHIFT_DISPATCH_FUNCTION_ARN)).toContain(
+        "DispatchFunction",
+      );
     });
 
     it("exports the dispatch function's ARN for the API stack to invoke", () => {

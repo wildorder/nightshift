@@ -26,8 +26,15 @@ import { type DataExportKey, dataExportName } from "./data-exports.js";
 import { studioOriginsFor } from "./hostnames.js";
 import { assertValidStage, type NightshiftStackProps, stackNameFor } from "./stack-props.js";
 
-/** The one GSI (contract §4.2). */
+/** The node GSI (contract §4.2). */
 export const NODE_INDEX_NAME = "gsi_node";
+
+/**
+ * The event-sequence GSI (2026-10-22): a run's numbered events by `sequence`,
+ * sparse, so a read from sequence N costs what it returns. The persistence
+ * adapter names the same index and attributes.
+ */
+export const EVENT_SEQUENCE_INDEX_NAME = "gsi_event_sequence";
 
 /** Monthly budget in USD, with headroom for P8's model spend (T8). */
 export const BUDGET_LIMIT_USD = 500;
@@ -159,7 +166,7 @@ export class NightshiftDataStack extends Stack {
     });
     this.stage = stage;
 
-    // --- DynamoDB: one table, one GSI (D-P2-02, contract §4) --------------------
+    // --- DynamoDB: one table, two GSIs (D-P2-02, contract §4; events by sequence 2026-10-22)
     this.table = new dynamodb.Table(this, "Table", {
       partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
@@ -178,6 +185,13 @@ export class NightshiftDataStack extends Stack {
       sortKey: { name: "GSI1SK", type: dynamodb.AttributeType.STRING },
       // ALL: every `listByNode` returns whole records, so a narrower projection
       // would force a second read per item.
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+    this.table.addGlobalSecondaryIndex({
+      indexName: EVENT_SEQUENCE_INDEX_NAME,
+      partitionKey: { name: "SEQPK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "SEQ", type: dynamodb.AttributeType.NUMBER },
+      // ALL: a reader from a sequence wants whole events in one read, as above.
       projectionType: dynamodb.ProjectionType.ALL,
     });
 

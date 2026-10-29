@@ -2,17 +2,38 @@
  * What the Nightshift runner image is made of (P10, D-P10-16).
  *
  * EC2 Image Builder components, as the YAML documents Image Builder runs on a
- * build instance, each pinned to a version. The image is Amazon Linux 2023 on
- * arm64 with everything a worker legitimately needs (Node, git, Docker without
+ * build instance, each pinned to a version. The image is Ubuntu 24.04 LTS on
+ * arm64 and x86_64 with the shared toolchain (Node, git, Docker without
  * root, a browser's libraries, build tools, Rust, pnpm, Python, the two harness
  * CLIs) and the Nightshift runner itself, built from this repository at the
  * commit the pipeline was told.
  *
  * The containment D-P10-17 asks for is laid down here too: an `engine` user the
- * runner runs as, sixteen `worker-N` users with rootless Docker, a sudoers rule
- * that lets `engine` run commands as a worker and nothing else, and a boot unit
+ * runner runs as, one `project` user that runs all project code, with rootless
+ * Docker (D-P10-30), a sudoers rule that lets `engine` run commands as it and
+ * little else, and a boot unit
  * that mounts the workspace volume and closes the instance metadata endpoint to
  * everyone but `engine`.
+ *
+ * P16 S-01 adds two things. mise, the polyglot version manager, is on the image
+ * for the engine alone (D-04): a pinned, checksum-verified binary at
+ * `/usr/local/bin/mise` with a system config that reads the projects' idiomatic
+ * version files, and never a shell hook or a shim, so projects never see it.
+ * The engine installs a dispatch's runtimes with it under `RUNTIMES_DIR`.
+ * And the project user's rootless Docker starts on the first connection to its
+ * socket (D-05): `dockerd-rootless-setuptool.sh` installs the user's
+ * `docker.service` while the daemon still listens on the conventional
+ * `/run/user/<uid>/docker.sock` (the tool smoke-tests exactly that socket), and
+ * only then is the daemon moved to a private socket, `docker.service` disabled,
+ * and an enabled `docker-proxy.socket` put on the conventional path. Each
+ * connection to it starts one `docker-proxy@` instance, a `socat` that pulls
+ * the daemon up and carries that connection to it, half-closes included. An
+ * idle project user has the socket listening and no dockerd.
+ *
+ * Not `systemd-socket-proxyd` (2026-10-10): it does not carry the upgraded
+ * stream `docker exec` and `docker attach` use, so every `docker exec` returned
+ * 0 with no output. keki-backend's readiness check (`docker exec … pg_isready`)
+ * then "passed" at once, and its migrations met a database still starting.
  */
 
 /** Pinned toolchain. Every version is a decision; none is "latest". */
@@ -25,7 +46,49 @@ export const RUNNER_TOOLCHAIN = {
   /** Docker's rootless extras (rootlesskit and the setup tool), from Docker's static builds. */
   dockerRootlessExtras: "27.5.1",
   slirp4netns: "1.3.1",
+  /** The polyglot version manager the engine installs a project's runtimes with (D-04). */
+  mise: "2026.10.5",
+  /** Bootstrap's CLI, independent of the project's Python and the base image. */
+  awscli: "2.37.12",
 } as const;
+
+/** SHA-256 of AWS's versioned Linux installers, checked before extraction. */
+export const AWSCLI_SHA256: Readonly<Record<"arm64" | "x86_64", string>> = {
+  arm64: "829c76096e05f743267d75098bc7cc7cfae799fc7e568554ebaa6d78e6aba753",
+  x86_64: "e6d3c672fb36ed4b12c354c39a993eee2b34da1437cafb10bac4480840cfa83f",
+};
+
+/**
+ * The sha256 of each architecture's mise binary, from that release's
+ * SHASUMS256.txt. Pinned here rather than fetched beside the binary, so a
+ * tampered release fails the build instead of vouching for itself.
+ */
+export const MISE_SHA256: Readonly<Record<"arm64" | "x86_64", string>> = {
+  arm64: "a30504fb4fc738cba08a1fe7db7a8b2554af8543748720a138b329eedbf0c19f",
+  x86_64: "8a223b5f8ca71100220a3e5bef259614c348e7b1d80e6b15c2a9c9aa3affe5e4",
+};
+
+/** Where the engine has mise install a dispatch's runtimes (`MISE_DATA_DIR`), on the warm volume. */
+export const RUNTIMES_DIR = "/workspace/stores/runtimes";
+/** mise's system config: the only mise configuration on the image. */
+export const MISE_SYSTEM_CONFIG = "/etc/mise/config.toml";
+
+/**
+ * What carries one connection from a worker's socket to its daemon: `socat`,
+ * which forwards both directions and each direction's close on its own, as
+ * Docker's upgraded exec and attach streams need. `-t` keeps the other
+ * direction open after one closes, for as long as an exec's output runs.
+ */
+export const DOCKER_FORWARD = "/usr/bin/socat -t 86400 STDIO";
+/** The socket unit, and so (with `Accept=yes`) the per-connection template's name. */
+export const DOCKER_SOCKET_UNIT = "docker-proxy.socket";
+/**
+ * Each worker's Docker socket, the one projects get as `DOCKER_HOST`; `%t` is
+ * the user's runtime directory, `/run/user/<uid>`. It belongs to `docker-proxy.socket`.
+ */
+export const DOCKER_SOCKET = "%t/docker.sock";
+/** The real rootless daemon's socket, private behind the proxy. */
+export const DOCKER_PRIVATE_SOCKET = "%t/docker-rootless/docker.sock";
 
 /** The repository the runner is built from on the image, and where it lands. */
 export const RUNNER_REPOSITORY = "https://github.com/wildorder/nightshift.git";
@@ -33,8 +96,15 @@ export const RUNNER_INSTALL_DIR = "/opt/nightshift";
 export const RUNNER_WORKSPACE = "/workspace";
 /** The device the dispatch Lambda attaches the workspace volume as (T3). */
 export const WORKSPACE_DEVICE = "/dev/xvdf";
-/** How many worker users the image carries: the largest tier's vCPUs. */
-export const WORKER_USERS = 16;
+/**
+ * The one user project code runs as on a machine (D-P10-30, amending
+ * D-P10-25): setup, gates and every job's agent. Sixteen `worker-N` users could
+ * not share package stores, since only a file's owner may chmod it.
+ */
+export const PROJECT_USER = "project";
+
+/** Image Builder's limit on a component's inline document, in characters. */
+export const IMAGE_COMPONENT_MAX_CHARS = 16_000;
 export const ENGINE_USER = "engine";
 /** The group the engine and the workers share (D-P10-25); `apps/mcp/src/run-as.ts` names the same. */
 export const WORKER_GROUP = "nightshift";
@@ -63,16 +133,31 @@ export type ImageArchitecture = (typeof IMAGE_ARCHITECTURES)[number];
 
 /** How each upstream names the architecture in its download. */
 const ARCH_NAMES: Readonly<
-  Record<ImageArchitecture, { node: string; docker: string; slirp: string; uv: string }>
+  Record<
+    ImageArchitecture,
+    { node: string; docker: string; slirp: string; uv: string; mise: string; awscli: string }
+  >
 > = {
   arm64: {
     node: "linux-arm64",
     docker: "aarch64",
     slirp: "aarch64",
     uv: "aarch64-unknown-linux-gnu",
+    mise: "linux-arm64",
+    awscli: "aarch64",
   },
-  x86_64: { node: "linux-x64", docker: "x86_64", slirp: "x86_64", uv: "x86_64-unknown-linux-gnu" },
+  x86_64: {
+    node: "linux-x64",
+    docker: "x86_64",
+    slirp: "x86_64",
+    uv: "x86_64-unknown-linux-gnu",
+    mise: "linux-x64",
+    awscli: "x86_64",
+  },
 };
+
+const miseAsset = (architecture: ImageArchitecture): string =>
+  `mise-v${RUNNER_TOOLCHAIN.mise}-${ARCH_NAMES[architecture].mise}`;
 
 export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): string =>
   component(
@@ -81,17 +166,38 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
     [
       shell("packages", [
         "set -euo pipefail",
-        "dnf -y update --security",
-        "dnf -y install git tar gzip xz unzip jq nftables shadow-utils sudo rsync",
-        // Docker from AL2023; its rootless pieces come from Docker's static builds
-        // below, because AL2023 packages neither rootlesskit nor slirp4netns.
-        "dnf -y install docker shadow-utils-subid iptables-nft",
-        "dnf -y install gcc gcc-c++ make cmake pkgconf openssl-devel python3 python3-pip",
-        // Chromium's shared libraries, for playwright and puppeteer (the audit's Keki
-        // and Keyart). Not strict: a library AL2023 names differently is reported by
-        // the browser measurement (T2 §15), not a reason the whole image fails.
-        "dnf -y --setopt=strict=0 install atk at-spi2-atk cups-libs libXcomposite libXdamage libXrandr libXfixes libXext libX11 pango alsa-lib nss nspr libxkbcommon mesa-libgbm libdrm expat glib2 dbus-libs",
+        "export DEBIAN_FRONTEND=noninteractive",
+        "apt-get -o Acquire::Retries=3 update",
+        "apt-get -y -o Dpkg::Options::=--force-confold upgrade",
+        "apt-get -y install ca-certificates curl git tar gzip xz-utils unzip jq nftables passwd sudo rsync util-linux e2fsprogs",
+        // Preserve EC2's attachment names on Nitro (for example /dev/xvdf).
+        // Without these udev rules, Ubuntu exposes only nvme names and a host
+        // with both local NVMe and EBS cannot identify its workspace volume.
+        "apt-get -y install amazon-ec2-utils",
+        // Keep Docker rootless under the project user. The static rootless tools
+        // below retain their existing pins; the daemon comes from Ubuntu.
+        "apt-get -y install docker.io uidmap iptables socat dbus-user-session systemd-container apparmor fuse-overlayfs",
+        "apt-get -y install build-essential cmake pkgconf libssl-dev python3 python3-pip python3-venv",
+        // Noble's Chromium dependencies. Missing packages fail the image build,
+        // not a project's later browser launch. Browser binaries remain project-owned.
+        "apt-get -y install libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libpango-1.0-0 libasound2t64 libnss3 libnspr4 libxkbcommon0 libgbm1 libdrm2 libexpat1 libglib2.0-0t64 libdbus-1-3 libatspi2.0-0t64 libcairo2 fonts-liberation xvfb",
         "systemctl disable --now docker.service docker.socket || true",
+        // An image is a version: nothing upgrades a running machine under a run.
+        // Ubuntu's daily unattended upgrade re-executed systemd on P20's first
+        // machine (2026-10-21 06:49 UTC), which stopped the runner, the root, a
+        // strand's orchestrator and its workers twenty-two hours in.
+        "systemctl mask --now apt-daily.timer apt-daily-upgrade.timer",
+        "systemctl disable --now unattended-upgrades.service || true",
+      ]),
+      shell("aws-cli", [
+        "set -euo pipefail",
+        // Noble does not ship awscli in its release package indexes. Bootstrap
+        // invokes it before the first heartbeat; install AWS's bundled runtime.
+        `curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-${ARCH_NAMES[architecture].awscli}-${RUNNER_TOOLCHAIN.awscli}.zip -o /tmp/nightshift-awscli.zip`,
+        `echo '${AWSCLI_SHA256[architecture]}  /tmp/nightshift-awscli.zip' | sha256sum --check --strict -`,
+        "unzip -q /tmp/nightshift-awscli.zip -d /tmp/nightshift-awscli",
+        "/tmp/nightshift-awscli/aws/install --install-dir /usr/local/aws-cli --bin-dir /usr/local/bin",
+        "aws --version",
       ]),
       shell("node", [
         "set -euo pipefail",
@@ -113,10 +219,16 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
       shell("rootless-docker", [
         "set -euo pipefail",
         // rootlesskit, dockerd-rootless.sh and dockerd-rootless-setuptool.sh; the
-        // kernel's overlay2 works in a user namespace on AL2023, so no fuse-overlayfs.
+        // daemon stays rootless; fuse-overlayfs is available as a storage fallback.
         `curl -fsSL https://download.docker.com/linux/static/stable/${ARCH_NAMES[architecture].docker}/docker-rootless-extras-${RUNNER_TOOLCHAIN.dockerRootlessExtras}.tgz -o /tmp/rootless.tgz`,
         "tar -xzf /tmp/rootless.tgz -C /tmp && install -m 0755 /tmp/docker-rootless-extras/* /usr/local/bin/",
+        // The setup tool runs `docker` from its own directory to smoke-test the daemon.
+        "ln -sfn /usr/bin/docker /usr/local/bin/docker",
         `curl -fsSL https://github.com/rootless-containers/slirp4netns/releases/download/v${RUNNER_TOOLCHAIN.slirp4netns}/slirp4netns-${ARCH_NAMES[architecture].slirp} -o /usr/local/bin/slirp4netns && chmod 0755 /usr/local/bin/slirp4netns`,
+        // Ubuntu 24.04 restricts unprivileged user namespaces. Allow only our
+        // rootlesskit path rather than disabling AppArmor or the host restriction.
+        "printf '%s\\n' 'abi <abi/4.0>,' 'include <tunables/global>' '/usr/local/bin/rootlesskit flags=(unconfined) {' '  userns,' '}' > /etc/apparmor.d/nightshift-rootlesskit",
+        "apparmor_parser -r /etc/apparmor.d/nightshift-rootlesskit",
         "rootlesskit --version && slirp4netns --version",
       ]),
       shell("rust-and-uv", [
@@ -131,15 +243,50 @@ export const toolchainComponent = (architecture: ImageArchitecture = "arm64"): s
         `curl -fsSL https://github.com/astral-sh/uv/releases/download/${RUNNER_TOOLCHAIN.uv}/uv-${ARCH_NAMES[architecture].uv}.tar.gz -o /tmp/uv.tar.gz`,
         `tar -xzf /tmp/uv.tar.gz -C /tmp && install -m 0755 /tmp/uv-${ARCH_NAMES[architecture].uv}/uv /usr/local/bin/uv`,
       ]),
+      shell("mise", [
+        "set -euo pipefail",
+        // For the engine only (D-04): no activation in any profile or rc file and
+        // no shims directory on PATH. The engine runs it with MISE_DATA_DIR at
+        // RUNTIMES_DIR and puts each runtime's own bin first on a project's PATH.
+        `curl -fsSL https://github.com/jdx/mise/releases/download/v${RUNNER_TOOLCHAIN.mise}/${miseAsset(architecture)} -o /tmp/${miseAsset(architecture)}`,
+        `echo '${MISE_SHA256[architecture]}  /tmp/${miseAsset(architecture)}' | sha256sum --check --strict -`,
+        `install -m 0755 /tmp/${miseAsset(architecture)} /usr/local/bin/mise`,
+        // Idiomatic version files (.nvmrc, .node-version, .python-version) are off
+        // unless a tool is named here.
+        "mkdir -p /etc/mise",
+        `printf '%s\\n' '[settings]' 'idiomatic_version_file_enable_tools = ["node", "python"]' > ${MISE_SYSTEM_CONFIG}`,
+        "mise --version",
+      ]),
     ].join("\n"),
   );
 
+/**
+ * A command run as a worker against its own systemd user manager. `$uid` is the
+ * worker's uid, set by the line that runs it; the PATH puts the rootless extras
+ * first, and is the one the setup tool writes into the worker's `docker.service`.
+ */
+const asWorker = (worker: string, command: string): string =>
+  `sudo -u ${worker} -H env XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin ${command}`;
+
+/** The user units every worker's Docker is made of (D-05), as `printf` lines that write them. */
+const dockerUserUnits = (): string[] => [
+  "mkdir -p /etc/systemd/user/docker.service.d",
+  // The setup tool's own ExecStart, with the daemon moved to the private socket.
+  // No setup flags are lost: --skip-iptables is not used.
+  `printf '%s\\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p %t/docker-rootless' 'ExecStart=' 'ExecStart=/usr/local/bin/dockerd-rootless.sh -H unix://${DOCKER_PRIVATE_SOCKET}' > /etc/systemd/user/docker.service.d/nightshift-private-socket.conf`,
+  // Accept=yes: each connection is its own docker-proxy@ instance, never
+  // dockerd, and docker.service inherits no descriptor from the socket.
+  `printf '%s\\n' '[Unit]' 'Description=The worker Docker socket: the first connection starts the rootless daemon (D-05)' '[Socket]' 'ListenStream=${DOCKER_SOCKET}' 'SocketMode=0600' 'Accept=yes' '[Install]' 'WantedBy=sockets.target' > /etc/systemd/user/${DOCKER_SOCKET_UNIT}`,
+  `printf '%s\\n' '[Unit]' 'Description=Carries one connection on the worker Docker socket to its rootless daemon (D-05)' 'Requires=docker.service' 'After=docker.service' '[Service]' 'ExecStartPre=/usr/bin/timeout 60 /bin/sh -c "until [ -S ${DOCKER_PRIVATE_SOCKET} ]; do sleep 0.2; done"' 'ExecStart=${DOCKER_FORWARD} UNIX-CONNECT:${DOCKER_PRIVATE_SOCKET}' 'StandardInput=socket' 'StandardOutput=socket' 'StandardError=journal' > /etc/systemd/user/docker-proxy@.service`,
+];
+
 /** The users, the sudoers rule, the firewall unit and the runner's units (D-P10-17). */
 export const containmentComponent = (): string => {
-  const workers = Array.from({ length: WORKER_USERS }, (_, index) => `worker-${index + 1}`);
+  // A list of one: the steps below stay loops that stop on the first failure.
+  const workers = [PROJECT_USER];
   return component(
     "nightshift-containment",
-    "The engine and worker users, rootless Docker per worker, the sudoers rule and the IMDS firewall",
+    "The engine and project users, the project user's rootless Docker, the sudoers rule and the IMDS firewall",
     [
       shell("users", [
         "set -euo pipefail",
@@ -151,23 +298,36 @@ export const containmentComponent = (): string => {
         // here the checkout is the engine's and the workers commit into it, and
         // every user on the machine is Nightshift's, so every directory is safe.
         "git config --system --add safe.directory '*'",
-        ...workers.map(
-          (worker) =>
-            `useradd --create-home --home-dir /home/${worker} --shell /bin/bash -G ${WORKER_GROUP} ${worker} && loginctl enable-linger ${worker}`,
-        ),
-        // Subordinate ids for rootless Docker's user namespaces, one block per user.
-        ...workers.map(
-          (worker, index) =>
-            `echo "${worker}:${100000 + index * 65536}:65536" >> /etc/subuid && echo "${worker}:${100000 + index * 65536}:65536" >> /etc/subgid`,
-        ),
-        `echo "${ENGINE_USER}:${100000 + WORKER_USERS * 65536}:65536" >> /etc/subuid`,
+        // One loop per step over the workers, never a line per worker: an Image
+        // Builder component's document is capped at 16,000 characters, and the
+        // unrolled form passed it at sixteen workers (2026-10-09).
+        // Let useradd allocate unused subordinate ranges: Ubuntu's existing
+        // login user may already own 100000:65536. Never append overlapping ids.
+        `for w in ${workers.join(" ")}; do { useradd --create-home --home-dir /home/$w --shell /bin/bash -G ${WORKER_GROUP} -K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 $w && loginctl enable-linger $w; } || exit 1; done`,
+      ]),
+      shell("rootless-docker", [
+        "set -euo pipefail",
+        "cd /",
+        // First each worker's docker.service, installed by Docker's own tool while
+        // the daemon listens on the conventional /run/user/<uid>/docker.sock: the
+        // tool starts the daemon and smoke-tests exactly that socket with
+        // `docker version`, so nothing may move the daemon off it yet. The tool
+        // enables and starts docker.service; it is disabled and stopped at once,
+        // because no worker's daemon starts at boot (D-05).
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && systemctl start user@$uid.service && ${asWorker("$w", "dockerd-rootless-setuptool.sh install")} && ${asWorker("$w", "systemctl --user disable --now docker.service")}; } || exit 1; done`,
+        // Then the daemon moves to a private socket, and the worker's socket path
+        // belongs to docker-proxy.socket, each of whose connections is forwarded.
+        ...dockerUserUnits(),
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && ${asWorker("$w", "systemctl --user daemon-reload")} && ${asWorker("$w", `systemctl --user enable ${DOCKER_SOCKET_UNIT}`)}; } || exit 1; done`,
+        // An idle worker after boot: the socket enabled, the daemon not.
+        `for w in ${workers.join(" ")}; do { uid=$(id -u $w) && [ "$(${asWorker("$w", "systemctl --user is-enabled docker.service")} || true)" = disabled ] && [ "$(${asWorker("$w", `systemctl --user is-enabled ${DOCKER_SOCKET_UNIT}`)})" = enabled ] && systemctl stop user@$uid.service; } || exit 1; done`,
       ]),
       shell("sudoers", [
         "set -euo pipefail",
-        // `engine` may become any worker (to start a worker's process in its
+        // `engine` may become the project user (to start project processes in
         // worktree) and run exactly the root commands the runner needs at boot.
         // No password, no shell escape, nothing else.
-        `printf '%s\\n' 'Defaults:${ENGINE_USER} !requiretty' 'Runas_Alias WORKERS = ${workers.join(", ")}' '${ENGINE_USER} ALL=(WORKERS) NOPASSWD: ALL' '${ENGINE_USER} ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/bin/mount, /usr/bin/umount, /usr/sbin/mkfs.ext4, /usr/sbin/blkid, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/rsync, /usr/bin/loginctl, /usr/bin/machinectl, /usr/bin/systemctl' > /etc/sudoers.d/nightshift-engine`,
+        `printf '%s\\n' 'Defaults:${ENGINE_USER} !requiretty' 'Runas_Alias PROJECT = ${workers.join(", ")}' '${ENGINE_USER} ALL=(PROJECT) NOPASSWD: ALL' '${ENGINE_USER} ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/bin/mount, /usr/bin/umount, /usr/sbin/mkfs.ext4, /usr/sbin/blkid, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/rsync, /usr/bin/loginctl, /usr/bin/machinectl, /usr/bin/systemctl' > /etc/sudoers.d/nightshift-engine`,
         "chmod 0440 /etc/sudoers.d/nightshift-engine && visudo -cf /etc/sudoers.d/nightshift-engine",
       ]),
       shell("imds-firewall", [
@@ -202,7 +362,7 @@ export const runnerComponent = (commit: string): string =>
       ]),
       shell("unit", [
         "set -euo pipefail",
-        `printf '%s\\n' '[Unit]' 'Description=Nightshift runner: the engine on this machine' 'After=network-online.target nightshift-imds.service' 'Wants=network-online.target' '[Service]' 'Type=simple' 'User=${ENGINE_USER}' 'UMask=0002' 'WorkingDirectory=${RUNNER_INSTALL_DIR}' 'Environment=NIGHTSHIFT_WORKSPACE=${RUNNER_WORKSPACE}' 'Environment=NIGHTSHIFT_WORKER_USERS=${WORKER_USERS}' 'Environment=NIGHTSHIFT_WORKSPACE_DEVICE=${WORKSPACE_DEVICE}' 'ExecStart=/usr/local/bin/node ${RUNNER_INSTALL_DIR}/apps/mcp/dist/bin/nightshift-runner.js' 'Restart=on-failure' 'RestartSec=5' 'StandardOutput=journal' 'StandardError=journal' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/nightshift-runner.service`,
+        `printf '%s\\n' '[Unit]' 'Description=Nightshift runner: the engine on this machine' 'After=network-online.target nightshift-imds.service' 'Wants=network-online.target' '[Service]' 'Type=simple' 'User=${ENGINE_USER}' 'UMask=0002' 'WorkingDirectory=${RUNNER_INSTALL_DIR}' 'Environment=NIGHTSHIFT_WORKSPACE=${RUNNER_WORKSPACE}' 'Environment=NIGHTSHIFT_PROJECT_USER=${PROJECT_USER}' 'Environment=NIGHTSHIFT_WORKSPACE_DEVICE=${WORKSPACE_DEVICE}' 'ExecStart=/usr/local/bin/node ${RUNNER_INSTALL_DIR}/apps/mcp/dist/bin/nightshift-runner.js' 'Restart=on-failure' 'RestartSec=5' 'StandardOutput=journal' 'StandardError=journal' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/nightshift-runner.service`,
         "systemctl enable nightshift-runner.service",
       ]),
     ].join("\n"),
