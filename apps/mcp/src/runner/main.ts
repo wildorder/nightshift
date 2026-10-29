@@ -128,6 +128,17 @@ export interface LineRunnerContext {
   readonly inheritedPath?: string;
   /** How long to wait for the plane to hand over the credentials. */
   readonly credentialTimeoutMs?: number;
+  /**
+   * A line is a run (S-02, D-01): the run's own scope, plane, dispatch and
+   * program, as the run path prepared them, and the project environment its
+   * checkout was given.
+   */
+  readonly scope: RunScope;
+  readonly runPlane: RunnerPlane;
+  readonly dispatch: Dispatch;
+  readonly program: ProgramContract;
+  readonly projectEnv: Readonly<Record<string, string>>;
+  readonly projectEnvFile: string;
 }
 
 /**
@@ -213,17 +224,26 @@ export const awaitGithubToken = async (
   }
 };
 
-/** A run's machine: its dispatch, program and plan, the headless root as the work. */
-const runMode = (options: RunnerOptions, identity: RunnerIdentity): Mode => {
+/**
+ * A run's machine: its dispatch, program and plan, the headless root as the
+ * work. A line owner's machine is a run's too (S-02): the same dispatch,
+ * program, token and heartbeat, but the program has no plan and, in place of a
+ * root agent, `lineWork` is handed the context.
+ */
+const runMode = (options: RunnerOptions, identity: RunnerIdentity | LineIdentity): Mode => {
   const { machine, log } = options;
+  const line = isLineIdentity(identity) ? identity : undefined;
+  const onLineToken = options.onLineToken;
   return {
-    key: identity.scope.runId,
+    key: machineKeyOf(identity),
     identity,
     onToken:
-      options.onToken === undefined
-        ? undefined
-        : (renewed) =>
-            (options.onToken as NonNullable<typeof options.onToken>)(renewed, identity.scope),
+      line !== undefined && onLineToken !== undefined
+        ? (renewed) => onLineToken(renewed, line)
+        : options.onToken === undefined
+          ? undefined
+          : (renewed) =>
+              (options.onToken as NonNullable<typeof options.onToken>)(renewed, identity.scope),
     readCachedToken:
       options.readCachedToken === undefined
         ? undefined
@@ -233,6 +253,18 @@ const runMode = (options: RunnerOptions, identity: RunnerIdentity): Mode => {
             ),
     connect: (tokens) => {
       const plane = options.plane(identity.apiEndpoint, tokens);
+      const linePlane =
+        line === undefined
+          ? undefined
+          : options.linePlane?.(identity.apiEndpoint, tokens, {
+              projectId: line.projectId,
+              branch: line.branch,
+              scope: line.scope,
+              generation: line.generation,
+            });
+      if (line !== undefined && linePlane === undefined) {
+        throw new Error("this machine is a line owner's, and the runner was given no line plane");
+      }
       return {
         postHeartbeat: (body) => plane.heartbeat(identity.scope, body),
         startedAt: async () => {
@@ -251,18 +283,23 @@ const runMode = (options: RunnerOptions, identity: RunnerIdentity): Mode => {
           if (dispatch === undefined || program === undefined) {
             throw new Error("the plane has no dispatch or program for this run");
           }
-          const planDocument =
-            program.planDocument === undefined
-              ? undefined
-              : await plane.planDocument(identity.scope, program.planDocument.sha256);
-          if (planDocument === undefined) {
-            throw new Error("the ratified plan's document is not on the plane");
+          // A line program has no plan document and no plan hash to check.
+          let planText: string | undefined;
+          if (program.kind !== "line") {
+            const planDocument =
+              program.planDocument === undefined
+                ? undefined
+                : await plane.planDocument(identity.scope, program.planDocument.sha256);
+            if (planDocument === undefined) {
+              throw new Error("the ratified plan's document is not on the plane");
+            }
+            planText = planDocument.text;
           }
           const prepared = await prepareCheckout(machine, {
             layout,
             dispatch,
             program,
-            planText: planDocument.text,
+            ...(planText === undefined ? {} : { planText }),
             githubToken: () =>
               awaitGithubToken(heartbeat, machine, options.credentialTimeoutMs ?? 2 * 60_000),
             log,
@@ -275,6 +312,44 @@ const runMode = (options: RunnerOptions, identity: RunnerIdentity): Mode => {
           log(
             `workspace ${prepared.warm ? "warm" : "cold"}: checkout ready; project setup belongs to the orchestrator`,
           );
+          if (line !== undefined && linePlane !== undefined) {
+            const lineContext: LineRunnerContext = {
+              identity: line,
+              plane: linePlane,
+              heartbeat,
+              machine,
+              layout,
+              log,
+              workspace: options.workspace,
+              scope: identity.scope,
+              runPlane: plane,
+              dispatch,
+              program,
+              projectEnv: prepared.environment,
+              projectEnvFile: prepared.environmentFile,
+              ...(options.projectUser === undefined ? {} : { projectUser: options.projectUser }),
+              ...(options.inheritedPath === undefined
+                ? {}
+                : { inheritedPath: options.inheritedPath }),
+              ...(options.credentialTimeoutMs === undefined
+                ? {}
+                : { credentialTimeoutMs: options.credentialTimeoutMs }),
+            };
+            return {
+              start: () => {
+                heartbeat.progress({
+                  stage: "orchestrating",
+                  detail: "the line owner is starting",
+                });
+                // The line work says where it stands itself; no root is watched.
+                const working =
+                  options.lineWork === undefined
+                    ? new Promise<RunnerWorkEnd | undefined>(() => undefined)
+                    : options.lineWork(lineContext);
+                return { working, stopWatching: () => undefined };
+              },
+            };
+          }
           const context: RunnerContext = {
             identity,
             scope: identity.scope,
@@ -325,75 +400,10 @@ const runMode = (options: RunnerOptions, identity: RunnerIdentity): Mode => {
   };
 };
 
-/** A line owner's machine: the line's view, and `lineWork` (`runLineOwner`) as the work. */
-const lineMode = (options: RunnerOptions, identity: LineIdentity): Mode => {
-  const { machine, log } = options;
-  const linePlane = options.linePlane;
-  if (linePlane === undefined) {
-    throw new Error("this machine is a line owner's, and the runner was given no line plane");
-  }
-  const onLineToken = options.onLineToken;
-  return {
-    key: machineKeyOf(identity),
-    identity,
-    onToken: onLineToken === undefined ? undefined : (renewed) => onLineToken(renewed, identity),
-    readCachedToken: undefined,
-    connect: (tokens) => {
-      const plane = linePlane(identity.apiEndpoint, tokens, {
-        projectId: identity.projectId,
-        branch: identity.branch,
-        scope: identity.scope,
-        generation: identity.generation,
-      });
-      return {
-        postHeartbeat: (body) => plane.heartbeat(body),
-        startedAt: async () => {
-          const attempt = (await plane.dispatch())?.attempts.find(
-            (entry) => entry.generation === identity.generation,
-          );
-          return attempt === undefined ? undefined : Date.parse(attempt.startedAt);
-        },
-        askedDisk: async () => (await plane.dispatch())?.workspace?.disk,
-        prepare: async ({ heartbeat, layout }) => {
-          // The mirror and the checkout are the owner's to keep (`runLineOwner`),
-          // once the read token has come; the machine's directory is made now.
-          await machine.exec("mkdir", ["-p", layout.stores, layout.run, `${layout.run}/worktrees`]);
-          const context: LineRunnerContext = {
-            identity,
-            plane,
-            heartbeat,
-            machine,
-            layout,
-            log,
-            workspace: options.workspace,
-            ...(options.projectUser === undefined ? {} : { projectUser: options.projectUser }),
-            ...(options.inheritedPath === undefined
-              ? {}
-              : { inheritedPath: options.inheritedPath }),
-            ...(options.credentialTimeoutMs === undefined
-              ? {}
-              : { credentialTimeoutMs: options.credentialTimeoutMs }),
-          };
-          return {
-            start: () => {
-              heartbeat.progress({ stage: "orchestrating", detail: "the line owner is starting" });
-              const working =
-                options.lineWork === undefined
-                  ? new Promise<RunnerWorkEnd | undefined>(() => undefined)
-                  : options.lineWork(context);
-              return { working, stopWatching: () => undefined };
-            },
-          };
-        },
-      };
-    },
-  };
-};
-
 export const runRunner = async (options: RunnerOptions): Promise<number> => {
   const { machine, log } = options;
   const identity = await readIdentity(machine);
-  const mode = isLineIdentity(identity) ? lineMode(options, identity) : runMode(options, identity);
+  const mode = runMode(options, identity);
   log(
     isLineIdentity(identity)
       ? `line ${identity.branch} of ${identity.projectId}, generation ${identity.generation}, on ${identity.instanceId}`

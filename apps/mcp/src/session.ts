@@ -287,14 +287,19 @@ const repositoryProgram = async (
  * is what is actually orchestrating — and its model is what `run.attach` was
  * told. Neither is guessed: an agent record claiming a model nobody chose would
  * poison the routing dataset it sits beside.
+ *
+ * A code agent is honest about what it is (the line's composer, S-02): `identity`
+ * gives its own provider and client, in place of the MCP handshake's and
+ * "anthropic".
  */
 const createOrchestratorAgent = async (
   state: OrchestratorSession,
   scope: RunScope,
   rootNodeId: ExecutionNode["executionNodeId"],
   model: string,
+  identity: AgentIdentity = {},
 ): Promise<AgentId> => {
-  const client = state.clientInfo();
+  const client = identity.clientInfo ?? state.clientInfo();
   const { stores, clock, ids } = state.runtime;
   if (state.rootAgentId !== undefined) {
     const launched = await stores.agents.get(scope, state.rootAgentId);
@@ -314,7 +319,7 @@ const createOrchestratorAgent = async (
     executionNodeId: rootNodeId,
     role: "orchestrator",
     harness: client.name,
-    provider: "anthropic",
+    provider: identity.provider ?? "anthropic",
     model,
     status: "created",
     createdAt: nowIso(clock),
@@ -443,7 +448,13 @@ const contractDrifted = async (
   }
 };
 
-export interface AttachInput {
+/** What an orchestrator says it is, when the MCP handshake and the default provider would not be true. */
+export interface AgentIdentity {
+  readonly provider?: string;
+  readonly clientInfo?: { readonly name: string; readonly version: string };
+}
+
+export interface AttachInput extends AgentIdentity {
   readonly model: string;
   readonly runId?: string;
 }
@@ -548,6 +559,7 @@ export const attachRun = async (
     scope,
     rootNode.executionNodeId,
     input.model,
+    input,
   );
   const outbox = createEventOutbox({
     events: runtime.stores.events,
@@ -566,7 +578,10 @@ export const attachRun = async (
   outbox.emit({
     type: "run.started",
     source: "control-plane",
-    payload: { orchestrator: state.clientInfo().name, model: input.model },
+    payload: {
+      orchestrator: (input.clientInfo ?? state.clientInfo()).name,
+      model: input.model,
+    },
     executionNodeId: rootNode.executionNodeId,
     agentId,
   });

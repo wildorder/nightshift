@@ -595,9 +595,17 @@ const ownerFor = async (
     engineUser: "engine",
     // The machine's PATH, as the runner binary passes it: steps find the toolchain where it is installed.
     ...(process.env.PATH === undefined ? {} : { inheritedPath: process.env.PATH }),
-    plane: () => {
-      throw new Error("this is a line machine: the run plane is not used");
-    },
+    // A line is a run: its dispatch, program and heartbeat come over the run plane.
+    plane: () => ({
+      dispatch: async () => linePlane.dispatch(),
+      program: (scope) => plane.stores.programContracts.get(scope.projectId, scope.programId),
+      planDocument: async () => {
+        throw new Error("a line program has no plan document");
+      },
+      heartbeat: async (_scope, body) => linePlane.heartbeat(body),
+      nodes: async () => [],
+      jobs: async () => [],
+    }),
     linePlane: () => linePlane,
     lineWork: (context) =>
       runLineOwner(context, {

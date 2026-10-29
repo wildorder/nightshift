@@ -18,6 +18,7 @@ import {
   lineProgramId,
   makeDispatch,
   makeLineRecord,
+  makeProgramContract,
   resolvePush,
   settleBatch,
   systemClock,
@@ -28,8 +29,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BootstrapError, IMDS, LINE_TAG, RUNNER_TAGS, readIdentity } from "./bootstrap.js";
 import { runLineOwner } from "./line-owner.js";
 import type { CommandResult, Machine } from "./machine.js";
-import { runRunner } from "./main.js";
-import type { LineRunnerPlane } from "./plane.js";
+import { type LineRunnerContext, runRunner } from "./main.js";
+import type { LineRunnerPlane, RunnerPlane } from "./plane.js";
 
 const f = createFixtures();
 const LINE = "nightshift/develop";
@@ -358,9 +359,29 @@ const makePlane = (
 
 // --- running it ---------------------------------------------------------------------------
 
-const notRun = () => {
-  throw new Error("this is a line machine: the run plane is not used");
-};
+/**
+ * A line is a run (S-02): its dispatch, program and heartbeat come over the run
+ * plane, here the same fake the line's view is read from. The program has no plan.
+ */
+const runPlaneOf = (plane: FakePlane): RunnerPlane => ({
+  dispatch: async () => {
+    const dispatch = await plane.dispatch();
+    return dispatch === undefined
+      ? undefined
+      : { ...dispatch, input: { ...dispatch.input, repositoryUrl: world.origin } };
+  },
+  program: async () =>
+    makeProgramContract(f, {
+      kind: "line",
+      repository: { ...makeProgramContract(f).repository, programBranch: LINE },
+    }),
+  planDocument: async () => {
+    throw new Error("a line program has no plan document");
+  },
+  heartbeat: (_scope, body) => plane.heartbeat(body),
+  nodes: async () => [],
+  jobs: async () => [],
+});
 
 let world: World;
 beforeEach(() => {
@@ -388,7 +409,7 @@ const own = (
     engineUser: "engine",
     // The machine's PATH, as the runner binary passes it: steps find the toolchain where it is installed.
     ...(process.env.PATH === undefined ? {} : { inheritedPath: process.env.PATH }),
-    plane: notRun as never,
+    plane: () => runPlaneOf(plane),
     linePlane: (_endpoint, _tokens, target) => {
       expect(target).toEqual({
         projectId: f.scope.projectId,
@@ -428,6 +449,74 @@ const own = (
   });
 
 const lastBeat = (plane: FakePlane) => plane.heartbeats.at(-1);
+
+describe("a line machine boots as any run", () => {
+  it("prepares the run's dispatch and program, starts no root, and hands its context to the line work", async () => {
+    const machine = lineMachine();
+    const plane = makePlane(world, machine);
+    const runPlane = runPlaneOf(plane);
+    const seen: LineRunnerContext[] = [];
+    let rootStarted = false;
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: world.workspace,
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: () => ({
+        ...runPlane,
+        // A plan document is never asked for: a line program has none.
+        planDocument: async () => {
+          throw new Error("asked for a plan document");
+        },
+      }),
+      linePlane: () => plane,
+      work: async () => {
+        rootStarted = true;
+        return undefined;
+      },
+      lineWork: async (context) => {
+        seen.push(context);
+        return undefined;
+      },
+    });
+    expect(code).toBe(0);
+    expect(rootStarted).toBe(false);
+    expect(seen).toHaveLength(1);
+    const context = seen[0] as LineRunnerContext;
+    expect(context.scope).toEqual(f.scope);
+    expect(context.identity.branch).toBe(LINE);
+    expect(context.program.kind).toBe("line");
+    expect(context.dispatch.runId).toBe(f.scope.runId);
+    expect(context.projectEnvFile).toBe(`${context.layout.run}/project.env`);
+    // The checkout was made by the run's prepare, on the line's branch at its head.
+    expect(git(context.layout.checkout, "rev-parse", "HEAD")).toBe(world.head(LINE));
+    expect(plane.heartbeats.map((beat) => beat.body)).toContainEqual(
+      expect.objectContaining({ report: "ready" }),
+    );
+  });
+
+  it("starts a line that is not at the remote yet from main's head", async () => {
+    const machine = lineMachine();
+    const plane = makePlane(world, machine);
+    git(world.origin, "branch", "-D", LINE);
+    let head: string | undefined;
+    await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: world.workspace,
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: () => runPlaneOf(plane),
+      linePlane: () => plane,
+      lineWork: async (context) => {
+        head = git(context.layout.checkout, "rev-parse", "HEAD");
+        return undefined;
+      },
+    });
+    expect(head).toBe(world.head("main"));
+  });
+});
 
 describe("a line machine's bootstrap", () => {
   it("reads a line identity from the run's tags and takes its first token from the run's parameter", async () => {

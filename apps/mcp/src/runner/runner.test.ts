@@ -1772,6 +1772,23 @@ describe("placing provider credentials (D-P10-23, D-P10-30)", () => {
 });
 
 describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
+  it("never names a publication base for a line run, so the engine publishes no landing", () => {
+    const env = rootEnvironment({
+      context: {
+        scope: f.scope,
+        program: makeProgramContract(f, { kind: "line" }),
+        dispatch: makeDispatch(f),
+        layout: layoutOf("/workspace", f.scope.runId),
+      } as never,
+      apiEndpoint: "https://api.dev.nightshift.invalid",
+      parentEnv: { PATH: "/usr/bin" },
+    });
+    expect(env).not.toHaveProperty("NIGHTSHIFT_PUBLISH_BASE");
+    expect(env.NIGHTSHIFT_PINNED_RUN).toBe(
+      `${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}`,
+    );
+  });
+
   it("names the plane, the token file, the state directory, the publication base and the pinned run", () => {
     const dispatch = makeDispatch(f, {
       input: { ...makeDispatch(f).input, baseSha: "b".repeat(40) },
@@ -1779,6 +1796,7 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
     const env = rootEnvironment({
       context: {
         scope: f.scope,
+        program: makeProgramContract(f),
         dispatch,
         layout: layoutOf("/workspace", f.scope.runId),
       } as never,
@@ -1813,6 +1831,7 @@ describe("the project's secrets on a machine (A-62)", () => {
     const env = rootEnvironment({
       context: {
         scope: f.scope,
+        program: makeProgramContract(f),
         dispatch: makeDispatch(f),
         layout: layoutOf("/workspace", f.scope.runId),
       } as never,
@@ -1836,6 +1855,7 @@ describe("the root's project environment (P16 S-01)", () => {
     const env = rootEnvironment({
       context: {
         scope: f.scope,
+        program: makeProgramContract(f),
         dispatch: makeDispatch(f),
         layout,
         projectEnv,
