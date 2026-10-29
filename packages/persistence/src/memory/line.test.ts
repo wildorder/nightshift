@@ -1,9 +1,8 @@
-import type { LineDispatch, LineRecord, ProgramId } from "@nightshift/contracts";
+import type { LineRecord, ProgramId } from "@nightshift/contracts";
 import {
   appendQueueEntry,
   createFixtures,
   lineAdmission,
-  makeLineDispatch,
   makeLineRecord,
   makeProject,
   meterProjectUsage,
@@ -98,99 +97,6 @@ describe("lines.update", () => {
     expect(withWork.map((line) => `${line.projectId}/${line.branch}`).sort()).toEqual(
       [`${projectId}/${OTHER_BRANCH}`, `${elsewhere.scope.projectId}/${BRANCH}`].sort(),
     );
-  });
-});
-
-describe("lineDispatches.start", () => {
-  const settle = (
-    dispatch: LineDispatch,
-    status: "stopped" | "failed" = "stopped",
-  ): LineDispatch => ({
-    ...dispatch,
-    status,
-    cleanup: { ...dispatch.cleanup, settledAt: "2026-10-27T11:00:00.000Z" },
-  });
-
-  it("stores the first dispatch, and exactly one of two concurrent starts", async () => {
-    const { f, stores, projectId } = world();
-    const results = await Promise.all([
-      stores.lineDispatches.start(makeLineDispatch(f)),
-      stores.lineDispatches.start(makeLineDispatch(f)),
-    ]);
-    expect(results.filter((result) => result === "started")).toHaveLength(1);
-    expect(results.filter((result) => result === "live")).toHaveLength(1);
-    expect((await stores.lineDispatches.get(projectId, BRANCH))?.version).toBe(1);
-  });
-
-  it("answers live while the stored dispatch is not terminal", async () => {
-    const { f, stores, projectId } = world();
-    const first = makeLineDispatch(f);
-    await stores.lineDispatches.start(first);
-    for (const status of ["requested", "provisioning", "ready", "running", "stopping"] as const) {
-      await stores.lineDispatches.update(projectId, BRANCH, (current) => ({ ...current, status }));
-      expect(await stores.lineDispatches.start(makeLineDispatch(f, { generation: 2 }))).toBe(
-        "live",
-      );
-    }
-    expect((await stores.lineDispatches.get(projectId, BRANCH))?.generation).toBe(1);
-  });
-
-  it("answers live while a terminal dispatch's cleanup has not settled", async () => {
-    const { f, stores, projectId } = world();
-    await stores.lineDispatches.start(makeLineDispatch(f));
-    await stores.lineDispatches.update(projectId, BRANCH, (current) => ({
-      ...current,
-      status: "failed",
-    }));
-    expect(await stores.lineDispatches.start(makeLineDispatch(f, { generation: 2 }))).toBe("live");
-    await stores.lineDispatches.update(projectId, BRANCH, (current) => ({
-      ...current,
-      status: "stopped",
-    }));
-    expect(await stores.lineDispatches.start(makeLineDispatch(f, { generation: 2 }))).toBe("live");
-  });
-
-  it("after a settled one needs the generation to be exactly the next", async () => {
-    for (const status of ["stopped", "failed"] as const) {
-      const { f, stores, projectId } = world();
-      const first = makeLineDispatch(f);
-      await stores.lineDispatches.start(first);
-      await stores.lineDispatches.update(projectId, BRANCH, (current) => settle(current, status));
-      expect(await stores.lineDispatches.start(makeLineDispatch(f, { generation: 1 }))).toBe(
-        "live",
-      );
-      expect(await stores.lineDispatches.start(makeLineDispatch(f, { generation: 3 }))).toBe(
-        "live",
-      );
-      expect(await stores.lineDispatches.start(makeLineDispatch(f, { generation: 2 }))).toBe(
-        "started",
-      );
-      const stored = await stores.lineDispatches.get(projectId, BRANCH);
-      expect(stored).toMatchObject({ generation: 2, status: "requested" });
-      expect(stored?.version).toBeGreaterThan(1);
-    }
-  });
-
-  it("updates by compare-and-swap, listing by status", async () => {
-    const { f, stores, projectId } = world();
-    expect(await stores.lineDispatches.update(projectId, BRANCH, (c) => c)).toBeUndefined();
-    await stores.lineDispatches.start(makeLineDispatch(f));
-    const [one, two] = await Promise.all([
-      stores.lineDispatches.update(projectId, BRANCH, (current) => ({
-        ...current,
-        instanceId: "i-1",
-      })),
-      stores.lineDispatches.update(projectId, BRANCH, (current) => ({
-        ...current,
-        spend: { ...current.spend, meteredSeconds: current.spend.meteredSeconds + 20 },
-      })),
-    ]);
-    expect([one?.version, two?.version].sort()).toEqual([2, 3]);
-    const stored = await stores.lineDispatches.get(projectId, BRANCH);
-    expect(stored).toMatchObject({ instanceId: "i-1", version: 3 });
-    expect(stored?.spend.meteredSeconds).toBe(20);
-    expect(await stores.lineDispatches.listByStatus(["requested"])).toHaveLength(1);
-    expect(await stores.lineDispatches.listByStatus(["running", "ready"])).toHaveLength(0);
   });
 });
 

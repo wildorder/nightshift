@@ -275,28 +275,6 @@ export const keys = {
 
   lineWorkIndexPartition: () => ({ GSI1PK: "LINEWORK", prefix: "" }),
 
-  /** A line owner's dispatch (Pipkin M1b): one row per line branch. */
-  lineDispatch: (projectId: ProjectId, branch: string): TableKey => ({
-    PK: `PROJ#${projectId}`,
-    SK: `LINEDISPATCH#${branch}`,
-  }),
-
-  /** The line dispatches by status, on the node index as `dispatchIndex` is. */
-  lineDispatchIndex: (
-    status: DispatchStatus,
-    updatedAt: string,
-    projectId: ProjectId,
-    branch: string,
-  ): NodeIndexKey => ({
-    GSI1PK: `LINEDISPATCH#${status}`,
-    GSI1SK: `${updatedAt}#${projectId}#${branch}`,
-  }),
-
-  lineDispatchIndexPartition: (status: DispatchStatus) => ({
-    GSI1PK: `LINEDISPATCH#${status}`,
-    prefix: "",
-  }),
-
   /** What a project's plane-started runs have cost it in one month. */
   projectSelfStartedUsage: (projectId: ProjectId, month: CalendarMonth): TableKey => ({
     PK: `PROJ#${projectId}`,

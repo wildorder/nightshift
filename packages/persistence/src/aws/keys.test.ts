@@ -23,12 +23,6 @@ describe("key schema matches contract §4.1 and §4.2", () => {
     ["completion history", keys.completionHistory(p, "comp_X"), `PROJ#${p}`, "COMPLETION#comp_X"],
     ["line", keys.line(p, "nightshift/develop"), `PROJ#${p}`, "LINE#nightshift/develop"],
     [
-      "line dispatch",
-      keys.lineDispatch(p, "nightshift/develop"),
-      `PROJ#${p}`,
-      "LINEDISPATCH#nightshift/develop",
-    ],
-    [
       "project self-started usage",
       keys.projectSelfStartedUsage(p, "2026-01"),
       `PROJ#${p}`,
@@ -93,13 +87,5 @@ describe("the line indexes on the node GSI", () => {
       GSI1PK: keys.lineWorkIndexPartition().GSI1PK,
       GSI1SK: `${p}#line/x`,
     });
-  });
-
-  it("places a line dispatch under its status, oldest update first", () => {
-    expect(keys.lineDispatchIndex("running", "2026-01-01T00:00:00.000Z", p, "line/x")).toEqual({
-      GSI1PK: "LINEDISPATCH#running",
-      GSI1SK: `2026-01-01T00:00:00.000Z#${p}#line/x`,
-    });
-    expect(keys.lineDispatchIndexPartition("running").GSI1PK).toBe("LINEDISPATCH#running");
   });
 });

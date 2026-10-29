@@ -1,16 +1,16 @@
 /**
- * The project-line port conformance suite (Pipkin M1b, S-02): `LineStore`,
- * `LineDispatchStore` and `ProjectSelfStartedUsageStore`, run against every
+ * The project-line port conformance suite (Pipkin M1b, S-02): `LineStore`
+ * and `ProjectSelfStartedUsageStore`, run against every
  * adapter beside `persistence-ports.ts`.
  */
-import type { CalendarMonth, IsoTimestamp, LineDispatch } from "@nightshift/contracts";
+import type { CalendarMonth, IsoTimestamp, JobContractId, RunId } from "@nightshift/contracts";
 import {
   createCountingIdGenerator,
   createFixtures,
   FIXTURE_COMMIT,
   type Fixtures,
-  makeLineDispatch,
   makeLineRecord,
+  makeLineVerification,
   type ProjectStores,
 } from "@nightshift/core";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -51,14 +51,6 @@ export const describeLinePortConformance = <S extends ProjectStores>(
       a = createFixtures(ids);
       b = createFixtures(ids);
     });
-
-    const settledStopped = (f: Fixtures, generation: number, overrides = {}): LineDispatch =>
-      makeLineDispatch(f, {
-        status: "stopped",
-        generation,
-        cleanup: { volumeDeleted: true, failures: [], settledAt: AT },
-        ...overrides,
-      });
 
     describe("lines", () => {
       it("creates, reads and versions a line", async () => {
@@ -175,108 +167,133 @@ export const describeLinePortConformance = <S extends ProjectStores>(
       });
     });
 
-    describe("line dispatches", () => {
-      it("starts a dispatch and reads it back", async () => {
-        const dispatch = makeLineDispatch(a);
-        expect(await stores.lineDispatches.get(a.scope.projectId, BRANCH)).toBeUndefined();
-        expect(await stores.lineDispatches.start(dispatch)).toBe("started");
-        expect(await stores.lineDispatches.get(a.scope.projectId, BRANCH)).toEqual(dispatch);
-      });
+    describe("line contents", () => {
+      const runId = "run_01J0000000000000000000000A" as RunId;
+      const jobContractId = "job_01J0000000000000000000000A" as JobContractId;
+      const range = (f: Fixtures) => ({ program: f.scope.programId, upTo: FIXTURE_COMMIT });
+      const repair = { runId, jobContractId };
 
-      it("answers started for exactly one of two concurrent starts", async () => {
-        const answers = await Promise.all([
-          stores.lineDispatches.start(makeLineDispatch(a)),
-          stores.lineDispatches.start(makeLineDispatch(a)),
-        ]);
-        expect([...answers].sort()).toEqual(["live", "started"]);
-      });
-
-      it("answers live while the stored dispatch is not terminal", async () => {
-        await stores.lineDispatches.start(makeLineDispatch(a, { status: "running" }));
-        expect(await stores.lineDispatches.start(makeLineDispatch(a, { generation: 2 }))).toBe(
-          "live",
-        );
-        expect((await stores.lineDispatches.get(a.scope.projectId, BRANCH))?.generation).toBe(1);
-      });
-
-      it("answers live for a terminal dispatch whose cleanup has not settled", async () => {
-        await stores.lineDispatches.start(makeLineDispatch(a, { status: "failed" }));
-        expect(await stores.lineDispatches.start(makeLineDispatch(a, { generation: 2 }))).toBe(
-          "live",
-        );
-        await stores.lineDispatches.start(makeLineDispatch(b, { status: "stopped" }));
-        expect(await stores.lineDispatches.start(makeLineDispatch(b, { generation: 2 }))).toBe(
-          "live",
-        );
-      });
-
-      it("starts after a settled terminal dispatch only at generation prev+1", async () => {
-        await stores.lineDispatches.start(settledStopped(a, 1));
-        expect(await stores.lineDispatches.start(makeLineDispatch(a, { generation: 1 }))).toBe(
-          "live",
-        );
-        expect(await stores.lineDispatches.start(makeLineDispatch(a, { generation: 3 }))).toBe(
-          "live",
-        );
-        const next = makeLineDispatch(a, { generation: 2 });
-        expect(await stores.lineDispatches.start(next)).toBe("started");
-        const stored = await stores.lineDispatches.get(a.scope.projectId, BRANCH);
-        expect(stored?.generation).toBe(2);
-        expect(stored?.status).toBe("requested");
-        expect(stored?.version).toBeGreaterThan(1);
-      });
-
-      it("starts after a settled failed dispatch", async () => {
-        await stores.lineDispatches.start(settledStopped(a, 1, { status: "failed" }));
-        expect(await stores.lineDispatches.start(makeLineDispatch(a, { generation: 2 }))).toBe(
-          "started",
-        );
-      });
-
-      it("updates by compare-and-swap, keeping every concurrent change", async () => {
+      it("keeps a batch with the run that holds it, and clears it", async () => {
         const { projectId } = a.scope;
-        await stores.lineDispatches.start(makeLineDispatch(a));
-        await Promise.all(
-          Array.from({ length: 6 }, () =>
-            stores.lineDispatches.update(projectId, BRANCH, (current) => ({
-              ...current,
-              spend: { ...current.spend, meteredSeconds: current.spend.meteredSeconds + 1 },
-            })),
+        await stores.lines.update(projectId, BRANCH, () =>
+          makeLineRecord(a, {
+            queue: [entry(a)],
+            batch: { batchId: "b1", entries: [entry(a)], takenAt: AT, generation: 2, runId },
+          }),
+        );
+        expect((await stores.lines.get(projectId, BRANCH))?.batch).toEqual({
+          batchId: "b1",
+          entries: [entry(a)],
+          takenAt: AT,
+          generation: 2,
+          runId,
+        });
+        const cleared = await stores.lines.update(projectId, BRANCH, (current) =>
+          current === undefined ? undefined : { ...current, batch: undefined, queue: [] },
+        );
+        expect(cleared?.batch).toBeUndefined();
+        expect((await stores.lines.get(projectId, BRANCH))?.batch).toBeUndefined();
+      });
+
+      it("keeps compositions and parked entries naming a repair's run and job contract", async () => {
+        const { projectId } = a.scope;
+        const verification = makeLineVerification(a);
+        const composition = {
+          compositionId: "comp-1",
+          commit: FIXTURE_COMMIT,
+          parent: FIXTURE_COMMIT,
+          ranges: [range(a)],
+          verification,
+          resolver: { decision: "resolved" as const, attempts: 1 },
+          repair,
+          composedAt: AT,
+          pushed: { at: LATER },
+        };
+        const parked = {
+          compositionId: "comp-2",
+          ranges: [range(a)],
+          reason: "the repair ran out of budget",
+          verification,
+          resolver: { decision: "gave_up" as const, attempts: 3, detail: "conflict" },
+          repair,
+          parkedAt: LATER,
+        };
+        await stores.lines.update(projectId, BRANCH, () =>
+          makeLineRecord(a, { compositions: [composition], parked: [parked] }),
+        );
+        const stored = await stores.lines.get(projectId, BRANCH);
+        expect(stored?.compositions).toEqual([composition]);
+        expect(stored?.parked).toEqual([parked]);
+        expect(stored?.compositions[0]?.repair).toEqual(repair);
+        expect(stored?.parked[0]?.repair).toEqual(repair);
+      });
+
+      it("keeps a push in flight and a waiting reason, and drops them when cleared", async () => {
+        const { projectId } = a.scope;
+        const push = {
+          head: FIXTURE_COMMIT,
+          expectedPredecessor: FIXTURE_COMMIT,
+          bundleKey: "bundles/k",
+          generation: 1,
+          status: "pending" as const,
+          requestedAt: AT,
+        };
+        const waiting = { reason: "monthly_cap" as const, detail: "cap reached", since: AT };
+        await stores.lines.update(projectId, BRANCH, () =>
+          makeLineRecord(a, { push, waiting, head: FIXTURE_COMMIT }),
+        );
+        const stored = await stores.lines.get(projectId, BRANCH);
+        expect(stored).toMatchObject({ push, waiting, head: FIXTURE_COMMIT });
+        const published = await stores.lines.update(projectId, BRANCH, (current) =>
+          current === undefined
+            ? undefined
+            : {
+                ...current,
+                push: { ...push, status: "published" as const, resolvedAt: LATER },
+                waiting: undefined,
+              },
+        );
+        expect(published?.push?.status).toBe("published");
+        expect(published?.waiting).toBeUndefined();
+        expect((await stores.lines.get(projectId, BRANCH))?.waiting).toBeUndefined();
+      });
+
+      it("refuses nothing to a stale writer silently: a lost race re-reads and applies once", async () => {
+        const { projectId } = a.scope;
+        await stores.lines.update(projectId, BRANCH, () => makeLineRecord(a));
+        let calls = 0;
+        const [x, y] = await Promise.all(
+          [0, 1].map(() =>
+            stores.lines.update(projectId, BRANCH, (current) => {
+              calls += 1;
+              return current === undefined
+                ? undefined
+                : { ...current, queue: [...current.queue, entry(a)] };
+            }),
           ),
         );
-        const stored = await stores.lineDispatches.get(projectId, BRANCH);
-        expect(stored?.spend.meteredSeconds).toBe(6);
-        expect(stored?.version).toBe(7);
+        expect(calls).toBeGreaterThanOrEqual(2);
+        expect([x?.version, y?.version].sort()).toEqual([2, 3]);
+        expect((await stores.lines.get(projectId, BRANCH))?.queue).toHaveLength(2);
       });
 
-      it("changes nothing for an undefined change, and answers undefined when absent", async () => {
+      it("reads a stored line record that still carries decisions, without them", async () => {
         const { projectId } = a.scope;
-        expect(
-          await stores.lineDispatches.update(projectId, BRANCH, (current) => current),
-        ).toBeUndefined();
-        await stores.lineDispatches.start(makeLineDispatch(a));
-        const same = await stores.lineDispatches.update(projectId, BRANCH, () => undefined);
-        expect(same?.version).toBe(1);
-      });
-
-      it("lists dispatches by status, following a status change", async () => {
-        await stores.lineDispatches.start(makeLineDispatch(a));
-        await stores.lineDispatches.start(makeLineDispatch(b, { status: "running" }));
-        const branches = async (
-          statuses: Parameters<typeof stores.lineDispatches.listByStatus>[0],
-        ) => (await stores.lineDispatches.listByStatus(statuses)).map((d) => d.projectId).sort();
-        expect(await branches(["requested"])).toEqual([a.scope.projectId]);
-        expect(await branches(["running"])).toEqual([b.scope.projectId]);
-        expect(await branches(["requested", "running"])).toHaveLength(2);
-        expect(await branches(["failed"])).toEqual([]);
-
-        await stores.lineDispatches.update(a.scope.projectId, BRANCH, (current) => ({
-          ...current,
-          status: "running",
-          updatedAt: LATER,
-        }));
-        expect(await branches(["requested"])).toEqual([]);
-        expect(await branches(["running"])).toHaveLength(2);
+        const legacy = {
+          ...makeLineRecord(a, { queue: [entry(a)] }),
+          decisions: [{ decisionId: "d1", choice: "keep both", generation: 1 }],
+          agents: [],
+        };
+        await stores.lines.update(projectId, BRANCH, () => legacy as never);
+        const stored = await stores.lines.get(projectId, BRANCH);
+        expect(stored).toBeDefined();
+        expect(stored?.queue).toEqual([entry(a)]);
+        expect(stored).not.toHaveProperty("decisions");
+        expect(stored).not.toHaveProperty("agents");
+        const next = await stores.lines.update(projectId, BRANCH, (current) =>
+          current === undefined ? undefined : { ...current, updatedAt: LATER },
+        );
+        expect(next?.version).toBe(2);
       });
     });
 

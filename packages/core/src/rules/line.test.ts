@@ -3,11 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   createFixtures,
   makeDispatch,
-  makeLineDispatch,
   makeLineRecord,
   makeLineVerification,
 } from "../testing/factories.js";
-import { beginReplacement, leaseLost, runnerStopped, transitionDispatch } from "./dispatch.js";
 import {
   appendQueueEntry,
   capReached,
@@ -493,28 +491,6 @@ describe("occupiesComputeSlot", () => {
     ["failed", false],
   ] as const)("%s occupies a slot: %s", (status, occupies) => {
     expect(occupiesComputeSlot(status)).toBe(occupies);
-  });
-});
-
-describe("the dispatch machine rules over a line dispatch", () => {
-  it("drive a line dispatch as they do a run's", () => {
-    const requested = makeLineDispatch(f);
-    const provisioning = transitionDispatch(requested, "provision", AT);
-    expect(provisioning.status).toBe("provisioning");
-    const running = transitionDispatch(transitionDispatch(provisioning, "ready", AT), "start", AT);
-    expect(leaseLost({ ...running, leaseExpiresAt: AT }, Date.parse(LATER))).toBe(true);
-    const replaced = beginReplacement(
-      { ...running, instanceId: "i-1", leaseExpiresAt: AT },
-      "lease_lost",
-      LATER,
-    );
-    expect(replaced).toMatchObject({ generation: 2, status: "provisioning" });
-    expect(replaced.instanceId).toBeUndefined();
-    const failed = runnerStopped(replaced, { code: "setup_failed", message: "no" }, LATER);
-    expect(failed).toMatchObject({
-      status: "failed",
-      failure: { code: "setup_failed" },
-    });
   });
 });
 

@@ -5,7 +5,6 @@ import {
   LineBundleUploadUrlBodySchema,
   LineCompositionBodySchema,
   LineConfigSchema,
-  LineDispatchSchema,
   LineParkBodySchema,
   LinePushBodySchema,
   LineRecordSchema,
@@ -18,7 +17,6 @@ import { ProgramContractSchema } from "./program-contract.js";
 
 const PROJECT = "proj_01J0000000000000000000000A";
 const PROGRAM = "prog_01J0000000000000000000000A";
-const AGENT = "agent_01J0000000000000000000000A";
 const VER = "ver_01J0000000000000000000000A";
 const A = "a".repeat(40);
 const B = "b".repeat(40);
@@ -258,42 +256,10 @@ describe("the line's request bodies and view", () => {
   });
 });
 
-describe("the line dispatch", () => {
-  const dispatch = {
-    schemaVersion: 1,
-    projectId: PROJECT,
-    branch: "nightshift/develop",
-    version: 1,
-    status: "stopped",
-    tier: "good",
-    instanceType: "c8id.2xlarge",
-    usdPerHour: 0.4,
-    amiVersion: "1.0.0",
-    generation: 3,
-    engineAgentId: AGENT,
-    attempts: [{ generation: 3, reason: "dispatch", startedAt: AT }],
-    spend: { estimatedUsd: 0.4, meteredUsd: 0.1, meteredSeconds: 900 },
-    cleanup: { volumeDeleted: true, failures: [], settledAt: AT },
-    requestedAt: AT,
-    updatedAt: AT,
-  };
-
-  it("records when its cleanup settled, and the line's own failure codes", () => {
-    expect(LineDispatchSchema.parse(dispatch).cleanup.settledAt).toBe(AT);
-    for (const code of ["line_cap", "org_month"]) {
-      expect(
-        LineDispatchSchema.safeParse({
-          ...dispatch,
-          status: "failed",
-          failure: { code, message: "m" },
-        }).success,
-      ).toBe(true);
-    }
-    expect(
-      LineDispatchSchema.safeParse({
-        ...dispatch,
-        failure: { code: "input_refused", message: "m" },
-      }).success,
-    ).toBe(false);
+describe("a legacy line record", () => {
+  it("reads with its decisions and agents stripped", () => {
+    const parsed = LineRecordSchema.parse({ ...record, decisions: [{ choice: "x" }], agents: [] });
+    expect(parsed).toEqual(record);
+    expect("decisions" in parsed).toBe(false);
   });
 });

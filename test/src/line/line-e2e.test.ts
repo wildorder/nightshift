@@ -682,7 +682,6 @@ describe("the project line, end to end", () => {
       { program: plane.programs.a.scope.programId, upTo: commits.a2, from: commits.a1 },
     ]);
     expect(record.parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
-    expect(record.decisions ?? []).toEqual([]);
 
     // The owner idled out: the dispatch ended stopped with no failure, and its run with it.
     const { dispatch, runId } = await plane.lineRun();
