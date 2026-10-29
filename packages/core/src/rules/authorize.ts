@@ -211,10 +211,16 @@ export type Operation =
  *   record carries the cross-account role the Bedrock route assumes (A-25), and
  *   the project's gate-health record is the run's to update (P15, D-P15-07).
  *   A write at this reach is held to the generation like any other.
+ * - `own_project_line` — the engine of a *line* run, on its own project's line
+ *   branch: the target project is the principal's, the target branch is the
+ *   branch the caller's program contract names for its line, and a write also
+ *   needs the caller's run to be live and the generation fence to hold. An
+ *   absent fact refuses.
  */
 export type ExecutionAccess =
   | "forbidden"
   | "own_project"
+  | "own_project_line"
   | "own_program"
   | "own_run"
   | "own_node"
@@ -699,15 +705,15 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "own_run",
-  "line.get": "forbidden",
-  "line.takeBatch": "forbidden",
+  "line.get": "own_project_line",
+  "line.takeBatch": "own_project_line",
   "line.compose": "forbidden",
   "line.park": "forbidden",
   "line.decide": "forbidden",
   "line.announce": "forbidden",
-  "line.settle": "forbidden",
-  "line.push": "forbidden",
-  "line.createBundleUploadUrl": "forbidden",
+  "line.settle": "own_project_line",
+  "line.push": "own_project_line",
+  "line.createBundleUploadUrl": "own_project_line",
   "line.heartbeat": "forbidden",
   "line.cancel": "forbidden",
   "publication.request": "own_run",
@@ -855,6 +861,14 @@ export interface AuthorizationTarget {
    * refuses every write.
    */
   readonly currentGeneration?: number;
+  /**
+   * For an engine's `line.*` request: the caller's program contract's
+   * `repository.programBranch` when its kind is "line". Absent (no contract,
+   * or not a line program) refuses.
+   */
+  readonly lineBranchOfProgram?: string;
+  /** For an engine's `line.*` write: whether the caller's run record is non-terminal. */
+  readonly callerRunLive?: boolean;
 }
 
 /**
@@ -1039,6 +1053,34 @@ const authorizeLine = (
   return ALLOWED;
 };
 
+/** A line run's engine (`own_project_line`): see `ExecutionAccess`. */
+const authorizeOwnProjectLine = (
+  principal: Extract<Principal, { kind: "execution" }>,
+  operation: Operation,
+  target: AuthorizationTarget,
+): Authorization => {
+  if (
+    target.projectId !== principal.projectId ||
+    target.lineBranchOfProgram === undefined ||
+    target.branch !== target.lineBranchOfProgram
+  ) {
+    return refuse(
+      "execution_out_of_scope",
+      `an engine token may only ${operation} for its own project's line branch`,
+    );
+  }
+  if (!READ_OPERATIONS.has(operation)) {
+    if (target.callerRunLive !== true) {
+      return refuse(
+        "stale_generation",
+        `an engine token may ${operation} only while its run is live`,
+      );
+    }
+    return authorizeGeneration(principal, operation, target) ?? ALLOWED;
+  }
+  return ALLOWED;
+};
+
 /**
  * The one place a principal's reach is decided (D-P4-05).
  *
@@ -1070,6 +1112,7 @@ export const authorize = (
     }
     return ALLOWED;
   }
+  if (access === "own_project_line") return authorizeOwnProjectLine(principal, operation, target);
   if (access === "own_program") return authorizeOwnProgram(principal, operation, target);
   if (principal.role === "engine" && !READ_OPERATIONS.has(operation)) {
     const stale = authorizeGeneration(principal, operation, target);

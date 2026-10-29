@@ -80,6 +80,8 @@ export const LineBatchSchema = z.strictObject({
   entries: z.array(LineQueueEntrySchema).min(1),
   takenAt: IsoTimestampSchema,
   generation: z.int().min(1),
+  /** The run that holds the batch, when a line run owns it; with `generation` it is the owner. */
+  runId: RunIdSchema.optional(),
 });
 export type LineBatch = z.infer<typeof LineBatchSchema>;
 

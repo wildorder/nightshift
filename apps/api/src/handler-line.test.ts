@@ -22,12 +22,15 @@ import {
   dispatchChargeKey,
   type Fixtures,
   lineBundleObjectKey,
+  lineProgramId,
+  makeDispatch,
   makeLineDispatch,
   makeLineRecord,
   makeLineVerification,
   makeMembership,
   makeProgramContract,
   makeProject,
+  makeRun,
   nextUserId,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
@@ -651,8 +654,14 @@ describe("the heartbeat", () => {
 
   it("refuses a body generation that is not the current one", async () => {
     const w = await setup();
-    await seedLine(w, { dispatch: { generation: 2 } });
-    const response = await call(w, "POST", lineUrl(w, BRANCH, "/heartbeat"), beat(1));
+    const dispatch = await seedLine(w, { dispatch: { generation: 2 } });
+    const response = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/heartbeat"),
+      beat(1),
+      linePrincipal(w, dispatch),
+    );
     expect(response.status).toBe(409);
     expect(code(response)).toBe("stale_generation");
   });
@@ -1150,5 +1159,217 @@ describe("GET the line's policy", () => {
       examinationPolicy: DEFAULT_EXAMINATION_POLICY,
       orgConfigVersion: 1,
     });
+  });
+});
+
+describe("a line run's engine token", () => {
+  const settleBody = (w: World, batchId: string) => ({
+    batchId,
+    parked: [
+      {
+        ranges: [{ program: w.f.scope.programId, upTo: SHA }],
+        reason: "conflict",
+      },
+    ],
+  });
+  const pushBody = {
+    head: SHA_B,
+    expectedPredecessor: SHA,
+    bundleKey: "bundles/k",
+  };
+
+  const engineOf = (
+    w: World,
+    runId: string,
+    overrides: Record<string, unknown> = {},
+  ): RequestPrincipal =>
+    ({
+      kind: "execution",
+      projectId: w.f.scope.projectId,
+      programId: lineProgramId(w.f.scope.projectId, BRANCH),
+      runId,
+      nodeId: w.f.rootNodeId,
+      agentId: w.f.ids.next("agent"),
+      role: "engine",
+      generation: 1,
+      ...overrides,
+    }) as RequestPrincipal;
+
+  /** Starts a run of the line program with a dispatch at generation 1. */
+  const startRun = async (w: World, programId = lineProgramId(w.f.scope.projectId, BRANCH)) => {
+    const runId = w.f.ids.next("run");
+    await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "pending" }));
+    await w.stores.dispatches.put(makeDispatch(w.f, { programId, runId, generation: 1 }));
+    await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "running" }));
+    return runId;
+  };
+
+  const endRun = async (w: World, runId: string) => {
+    const programId = lineProgramId(w.f.scope.projectId, BRANCH);
+    const run = await w.stores.runs.get(
+      { projectId: w.f.scope.projectId, programId },
+      runId as never,
+    );
+    if (run === undefined) throw new Error("no such run");
+    await w.stores.runs.put({ ...run, status: "succeeded" });
+  };
+
+  const world = async () => {
+    const w = await setup();
+    await seedLine(w, { queue: [entry(w)] });
+    const programId = lineProgramId(w.f.scope.projectId, BRANCH);
+    await w.stores.programContracts.put(
+      makeProgramContract(w.f, {
+        programId,
+        kind: "line",
+        repository: {
+          url: "https://example.invalid/repo.git",
+          baseBranch: "main",
+          programBranch: BRANCH,
+        },
+      }),
+    );
+    return w;
+  };
+
+  const writes = (w: World, batchId: string) =>
+    [
+      ["POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }],
+      ["POST", lineUrl(w, BRANCH, "/settle"), settleBody(w, batchId)],
+      ["POST", lineUrl(w, BRANCH, "/push"), pushBody],
+      ["POST", lineUrl(w, BRANCH, "/bundle-upload-url"), { generation: 1, id: "b1" }],
+    ] as const;
+
+  it("is served its own line, and refused once its run has ended", async () => {
+    const w = await world();
+    const runId = await startRun(w);
+    const me = engineOf(w, runId);
+    expect((await call(w, "GET", lineUrl(w), undefined, me)).status).toBe(200);
+    const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
+    expect(taken.status, JSON.stringify(taken.body)).toBe(200);
+    const batch = (
+      taken.body as {
+        batch: { batchId: string; runId?: string; generation: number };
+      }
+    ).batch;
+    expect(batch).toMatchObject({ runId, generation: 1 });
+    expect((await call(w, "POST", lineUrl(w, BRANCH, "/push"), pushBody, me)).status).toBe(200);
+    const url = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/bundle-upload-url"),
+      { generation: 1, id: "b1" },
+      me,
+    );
+    expect(url.status, JSON.stringify(url.body)).toBe(200);
+    await endRun(w, runId);
+    for (const [method, path, body] of writes(w, batch.batchId)) {
+      expect((await call(w, method, path, body, me)).status, path).toBe(403);
+    }
+    expect((await call(w, "GET", lineUrl(w), undefined, me)).status).toBe(200);
+  });
+
+  it("refuses a body generation that is not its dispatch's", async () => {
+    const w = await world();
+    const me = engineOf(w, await startRun(w));
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 2 }, me);
+    expect(response.status).toBe(409);
+    expect(code(response)).toBe("stale_generation");
+  });
+
+  it("is refused another branch of its project", async () => {
+    const w = await world();
+    const me = engineOf(w, await startRun(w));
+    const response = await call(
+      w,
+      "POST",
+      lineUrl(w, "nightshift/other", "/batch"),
+      { generation: 1 },
+      me,
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("lets run B take back the batch run A held, and fences A out", async () => {
+    const w = await world();
+    const a = await startRun(w);
+    const first = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/batch"),
+      { generation: 1 },
+      engineOf(w, a),
+    );
+    const batchId = (first.body as { batch: { batchId: string } }).batch.batchId;
+    await endRun(w, a);
+    const b = await startRun(w);
+    const meB = engineOf(w, b);
+    for (const [method, path, body] of writes(w, batchId)) {
+      expect((await call(w, method, path, body, engineOf(w, a))).status, path).toBe(403);
+    }
+    const retaken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, meB);
+    expect(retaken.status, JSON.stringify(retaken.body)).toBe(200);
+    expect(retaken.body).toMatchObject({
+      batch: { batchId, runId: b, generation: 1 },
+    });
+    const settled = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/settle"),
+      settleBody(w, batchId),
+      meB,
+    );
+    expect(settled.status, JSON.stringify(settled.body)).toBe(200);
+  });
+
+  it("is not granted to a non-line program's engine of the same project", async () => {
+    const w = await world();
+    const runId = await startRun(w, w.f.scope.programId);
+    const me = engineOf(w, runId, { programId: w.f.scope.programId });
+    for (const [method, path, body] of writes(w, "x")) {
+      expect((await call(w, method, path, body, me)).status, path).toBe(403);
+    }
+    expect((await call(w, "GET", lineUrl(w), undefined, me)).status).toBe(403);
+  });
+
+  it("is not granted to the other execution roles", async () => {
+    const w = await world();
+    const runId = await startRun(w);
+    for (const role of ["orchestrator", "worker", "examiner", "arbiter"]) {
+      const me = engineOf(w, runId, { role });
+      expect((await call(w, "GET", lineUrl(w), undefined, me)).status, role).toBe(403);
+      for (const [method, path, body] of writes(w, "x")) {
+        expect((await call(w, method, path, body, me)).status, `${role} ${path}`).toBe(403);
+      }
+    }
+  });
+});
+
+describe("users and the line", () => {
+  it("may read the line of their own org, and are refused every write", async () => {
+    const w = await setup();
+    await seedLine(w, { queue: [entry(w)] });
+    expect((await call(w, "GET", lineUrl(w))).status).toBe(200);
+    for (const [path, body] of [
+      ["/batch", { generation: 1 }],
+      ["/settle", { batchId: "x", parked: [] }],
+      ["/push", { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" }],
+      ["/bundle-upload-url", { generation: 1, id: "b1" }],
+      ["/heartbeat", beat(1)],
+    ] as const) {
+      expect((await call(w, "POST", lineUrl(w, BRANCH, path), body)).status, path).toBe(403);
+    }
+  });
+
+  it("of another org are refused the read", async () => {
+    const w = await setup();
+    await seedLine(w);
+    const stranger = nextUserId(w.f);
+    await w.stores.memberships.put(makeMembership(stranger, w.f.ids.next("org")));
+    const me: RequestPrincipal = { kind: "user", userId: stranger };
+    expect((await call(w, "GET", lineUrl(w), undefined, me)).status).toBe(403);
+    expect(
+      (await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me)).status,
+    ).toBe(403);
   });
 });

@@ -115,8 +115,12 @@ describe("a user principal", () => {
 
   it("is not affected by the node or the agent named in the target", () => {
     for (const operation of ALL_OPERATIONS) {
-      expect(authorize(user, operation, siblingTarget)).toEqual({ allowed: true });
-      expect(authorize(user, operation, otherRunTarget)).toEqual({ allowed: true });
+      expect(authorize(user, operation, siblingTarget)).toEqual({
+        allowed: true,
+      });
+      expect(authorize(user, operation, otherRunTarget)).toEqual({
+        allowed: true,
+      });
     }
   });
 });
@@ -307,10 +311,15 @@ describe("an execution principal", () => {
       expect(
         authorize({ ...execution, role }, "artifact.createDownloadUrl", ownTarget),
         role,
-      ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+      ).toMatchObject({
+        allowed: false,
+        reason: "execution_forbidden_operation",
+      });
     }
     // While a user in the owning organisation is allowed, like every other read.
-    expect(authorize(user, "artifact.createDownloadUrl", ownTarget)).toEqual({ allowed: true });
+    expect(authorize(user, "artifact.createDownloadUrl", ownTarget)).toEqual({
+      allowed: true,
+    });
   });
 
   /**
@@ -342,15 +351,24 @@ describe("an execution principal", () => {
             projectId: here.scope.projectId,
           }),
           `${role} ${operation}`,
-        ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+        ).toMatchObject({
+          allowed: false,
+          reason: "execution_forbidden_operation",
+        });
       }
     }
     for (const operation of operations) {
-      expect(authorize(user, operation, { orgId: ORG_A, projectId: here.scope.projectId })).toEqual(
-        { allowed: true },
-      );
       expect(
-        authorize(user, operation, { orgId: ORG_B, projectId: here.scope.projectId }),
+        authorize(user, operation, {
+          orgId: ORG_A,
+          projectId: here.scope.projectId,
+        }),
+      ).toEqual({ allowed: true });
+      expect(
+        authorize(user, operation, {
+          orgId: ORG_B,
+          projectId: here.scope.projectId,
+        }),
       ).toMatchObject({ allowed: false, reason: "wrong_org" });
     }
   });
@@ -365,18 +383,27 @@ describe("an execution principal", () => {
             projectId: here.scope.projectId,
           }),
           `${role} ${operation}`,
-        ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+        ).toMatchObject({
+          allowed: false,
+          reason: "execution_forbidden_operation",
+        });
       }
     }
     // A member of the owning organisation reads and writes it; anyone else is refused.
     for (const operation of ["gateHealth.get", "gateHealth.put"] as const) {
-      expect(authorize(user, operation, { orgId: ORG_A, projectId: here.scope.projectId })).toEqual(
-        {
-          allowed: true,
-        },
-      );
       expect(
-        authorize(user, operation, { orgId: ORG_B, projectId: here.scope.projectId }),
+        authorize(user, operation, {
+          orgId: ORG_A,
+          projectId: here.scope.projectId,
+        }),
+      ).toEqual({
+        allowed: true,
+      });
+      expect(
+        authorize(user, operation, {
+          orgId: ORG_B,
+          projectId: here.scope.projectId,
+        }),
       ).toMatchObject({
         allowed: false,
         reason: "wrong_org",
@@ -419,8 +446,13 @@ describe("an execution principal", () => {
 
   it("reads its own program's prerequisites from any run of it, and no other program's (P7)", () => {
     // The route is program scoped, so the target names no run, node or agent.
-    const program = { projectId: here.scope.projectId, programId: here.scope.programId };
-    expect(authorize(execution, "prerequisite.list", program)).toEqual({ allowed: true });
+    const program = {
+      projectId: here.scope.projectId,
+      programId: here.scope.programId,
+    };
+    expect(authorize(execution, "prerequisite.list", program)).toEqual({
+      allowed: true,
+    });
     expect(
       authorize(execution, "prerequisite.list", {
         projectId: elsewhere.scope.projectId,
@@ -449,7 +481,9 @@ describe("an execution principal", () => {
   });
 
   it("reads its own agent but not a sibling's", () => {
-    expect(authorize(execution, "agent.get", ownTarget)).toEqual({ allowed: true });
+    expect(authorize(execution, "agent.get", ownTarget)).toEqual({
+      allowed: true,
+    });
     expect(authorize(execution, "agent.get", { ...ownTarget, agentId: OTHER_AGENT })).toMatchObject(
       { allowed: false, reason: "execution_out_of_scope" },
     );
@@ -532,20 +566,32 @@ describe("what an execution may ask its own node to become", () => {
       reason: "execution_forbidden_operation",
     });
     expect(
-      authorize(execution, "node.put", { ...ownTarget, requestedNodeStatus: "verified " }),
-    ).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+      authorize(execution, "node.put", {
+        ...ownTarget,
+        requestedNodeStatus: "verified ",
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reason: "execution_forbidden_operation",
+    });
   });
 
   it("still refuses a sibling's node as out of scope, whatever status is asked", () => {
     expect(
-      authorize(execution, "node.put", { ...siblingTarget, requestedNodeStatus: "failed" }),
+      authorize(execution, "node.put", {
+        ...siblingTarget,
+        requestedNodeStatus: "failed",
+      }),
     ).toMatchObject({ allowed: false, reason: "execution_out_of_scope" });
   });
 
   it("does not constrain a user, who may assert any status the table allows", () => {
     for (const status of EXECUTION_NODE_STATUSES) {
       expect(
-        authorize(user, "node.put", { ...ownTarget, requestedNodeStatus: status }).allowed,
+        authorize(user, "node.put", {
+          ...ownTarget,
+          requestedNodeStatus: status,
+        }).allowed,
       ).toBe(true);
     }
   });
@@ -555,11 +601,22 @@ describe("what an execution may ask its own node to become", () => {
     // `status` field is not a node asking to change state.
     for (const operation of ["event.append", "decision.put"] as const) {
       expect(
-        authorize(execution, operation, { ...ownTarget, requestedNodeStatus: "verifying" }).allowed,
+        authorize(execution, operation, {
+          ...ownTarget,
+          requestedNodeStatus: "verifying",
+        }).allowed,
       ).toBe(true);
     }
   });
 });
+
+const ENGINE_LINE_OPERATIONS: readonly string[] = [
+  "line.get",
+  "line.takeBatch",
+  "line.settle",
+  "line.push",
+  "line.createBundleUploadUrl",
+];
 
 describe("the project line (Pipkin M1b)", () => {
   const LINE_OPERATIONS = ALL_OPERATIONS.filter((operation) => operation.startsWith("line."));
@@ -591,7 +648,9 @@ describe("the project line (Pipkin M1b)", () => {
 
   it("lets a user do each within their own organisation, and not another's", () => {
     for (const operation of LINE_OPERATIONS) {
-      expect(authorize(user, operation, ownTarget), operation).toEqual({ allowed: true });
+      expect(authorize(user, operation, ownTarget), operation).toEqual({
+        allowed: true,
+      });
       expect(authorize(user, operation, { ...ownTarget, orgId: ORG_B }), operation).toMatchObject({
         allowed: false,
         reason: "wrong_org",
@@ -603,7 +662,8 @@ describe("the project line (Pipkin M1b)", () => {
     for (const operation of LINE_OPERATIONS) {
       for (const role of ["worker", "orchestrator", "examiner", "arbiter", "engine"] as const) {
         const access = ACCESS_BY_ROLE[role][operation];
-        expect(access, `${role} ${operation}`).toBe("forbidden");
+        const lineRun = role === "engine" && ENGINE_LINE_OPERATIONS.includes(operation);
+        expect(access, `${role} ${operation}`).toBe(lineRun ? "own_project_line" : "forbidden");
       }
     }
   });

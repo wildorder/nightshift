@@ -740,6 +740,8 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
       nodes: deps.stores.executionNodes,
       dispatches: deps.stores.dispatches,
       lineDispatches: deps.stores.lineDispatches,
+      programContracts: deps.stores.programContracts,
+      runs: deps.stores.runs,
       projectOrgs:
         deps.projectOrgs ??
         createProjectOrgCache({ projects: deps.stores.projects, clock: deps.clock }),

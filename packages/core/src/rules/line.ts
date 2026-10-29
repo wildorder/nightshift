@@ -28,6 +28,7 @@ import type {
   ProgramId,
   ProjectId,
   ProjectSelfStartedUsage,
+  RunId,
 } from "@nightshift/contracts";
 import {
   type AgentId,
@@ -48,6 +49,34 @@ export const LINE_IDLE_SECONDS = 600;
 export const LINE_RESOLVER_ATTEMPTS = 3;
 /** The most queue entries one batch takes; the rest wait for the next. */
 export const MAX_LINE_BATCH_ENTRIES = 25;
+
+/**
+ * Who holds a batch. The line principal is its generation alone; a line run is
+ * its `runId` and generation together, because a replacement run may carry the
+ * same generation number as the run it replaced.
+ */
+export interface LineOwner {
+  readonly runId: RunId;
+  readonly generation: number;
+}
+
+export type LineOwnerArg = number | LineOwner;
+
+const generationOf = (owner: LineOwnerArg): number =>
+  typeof owner === "number" ? owner : owner.generation;
+
+/** Whether a run owner is the holder of `batch`. A generation-only owner is not judged here. */
+const holdsBatch = (batch: LineBatch, owner: LineOwnerArg): boolean =>
+  typeof owner === "number" ||
+  (batch.runId === owner.runId && batch.generation === owner.generation);
+
+const notHolder = (owner: LineOwnerArg, batch: LineBatch | undefined): LineRefusal | undefined =>
+  batch === undefined || holdsBatch(batch, owner)
+    ? undefined
+    : {
+        reason: "stale_generation",
+        detail: `this call is not from the owner that holds batch ${batch.batchId}`,
+      };
 
 export type LineRefusal =
   /** The batch named is not the one the line holds: the owner is stale, or the batch was settled already. */
@@ -111,13 +140,22 @@ export const appendQueueEntry = (
  */
 export const takeBatch = (
   record: LineRecord,
-  generation: number,
+  owner: LineOwnerArg,
   ids: { readonly batchId: string },
   at: string,
 ): { readonly record: LineRecord; readonly batch?: LineBatch } => {
+  const generation = generationOf(owner);
+  const ownedBy = typeof owner === "number" ? {} : { runId: owner.runId };
   if (record.batch !== undefined) {
-    if (record.batch.generation === generation) return { record, batch: record.batch };
-    const batch: LineBatch = { ...record.batch, generation };
+    if (
+      record.batch.generation === generation &&
+      (typeof owner === "number" || holdsBatch(record.batch, owner))
+    ) {
+      return { record, batch: record.batch };
+    }
+    // A newer owner takes back the batch the plane already fenced the old one out of.
+    const { runId: _previous, ...held } = record.batch;
+    const batch: LineBatch = { ...held, generation, ...ownedBy };
     return { record: { ...record, batch, updatedAt: at }, batch };
   }
   if (record.queue.length === 0) return { record };
@@ -126,6 +164,7 @@ export const takeBatch = (
     entries: record.queue.slice(0, MAX_LINE_BATCH_ENTRIES),
     takenAt: at,
     generation,
+    ...ownedBy,
   };
   return {
     record: {
@@ -239,11 +278,13 @@ export const settleBatch = (
     readonly compositionId?: string;
     readonly parkedIds: readonly string[];
   },
-  generation: number,
+  owner: LineOwnerArg,
   at: string,
 ): LineChange => {
+  const generation = generationOf(owner);
   const pending = record.push?.status === "pending" ? record.push : undefined;
   const refusal =
+    notHolder(owner, record.batch) ??
     staleBatch(record, body.batchId) ??
     (body.push !== undefined && pending !== undefined && pending.head !== body.push.head
       ? ({
@@ -322,9 +363,12 @@ export const settleBatch = (
 export const requestPush = (
   record: LineRecord,
   request: LinePushBody,
-  generation: number,
+  owner: LineOwnerArg,
   at: string,
 ): LineChange => {
+  const generation = generationOf(owner);
+  const stale = notHolder(owner, record.batch);
+  if (stale !== undefined) return refuse(stale);
   const current = record.push;
   if (current?.status === "pending") {
     if (current.head === request.head) return { ok: true, record };
@@ -452,7 +496,11 @@ const unitKey = (unit: LineDecisionBody["unit"]): string =>
 /** A line dispatch with one more announced agent, or a refusal as a value. */
 export type LineAgentChange =
   | { readonly ok: true; readonly dispatch: LineDispatch }
-  | { readonly ok: false; readonly reason: "stale_generation"; readonly detail: string };
+  | {
+      readonly ok: false;
+      readonly reason: "stale_generation";
+      readonly detail: string;
+    };
 
 /**
  * Appends an announced agent to the dispatch. Idempotent per `agentId`; refused

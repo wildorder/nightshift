@@ -201,7 +201,13 @@ const callAs = async (
     // the end of this file). Every other route ignores the field.
     ...(method === "GET"
       ? {}
-      : { body: JSON.stringify({ executionNodeId: nodeId, status: "implemented", ...extra }) }),
+      : {
+          body: JSON.stringify({
+            executionNodeId: nodeId,
+            status: "implemented",
+            ...extra,
+          }),
+        }),
   });
   const text = await response.text();
   let code: string | undefined;
@@ -237,18 +243,34 @@ describe("SC-P4-01 — a user in another organisation is refused every project-s
   });
 });
 
+/** The line's writes are its owner's: a human reads the line and stops its dispatch, nothing more. */
+const USER_REFUSED_LINE_WRITES: readonly string[] = [
+  "line.takeBatch",
+  "line.compose",
+  "line.park",
+  "line.decide",
+  "line.announce",
+  "line.settle",
+  "line.push",
+  "line.createBundleUploadUrl",
+  "line.heartbeat",
+];
+
 describe("a user in the owning organisation is refused nothing", () => {
-  it.each(eachRoute)("%s", async (_operation, route) => {
-    const path = pathFor(route.path, a.params);
-    const answer = await callAs(
-      { kind: "user", userId: a.userId },
-      route.method,
-      path,
-      a.params.nodeId,
-    );
-    // Never 403. It may be anything else: an empty body is not a valid record.
-    expect(answer.status, `${route.method} ${path} answered ${answer.code}`).not.toBe(403);
-  });
+  it.each(eachRoute.filter(([operation]) => !USER_REFUSED_LINE_WRITES.includes(operation)))(
+    "%s",
+    async (_operation, route) => {
+      const path = pathFor(route.path, a.params);
+      const answer = await callAs(
+        { kind: "user", userId: a.userId },
+        route.method,
+        path,
+        a.params.nodeId,
+      );
+      // Never 403. It may be anything else: an empty body is not a valid record.
+      expect(answer.status, `${route.method} ${path} answered ${answer.code}`).not.toBe(403);
+    },
+  );
 });
 
 describe("SC-P4-03 — listing projects returns only the caller's organisation's", () => {
@@ -258,7 +280,9 @@ describe("SC-P4-03 — listing projects returns only the caller's organisation's
         authorization: `Bearer ${encodeTestPrincipal({ kind: "user", userId: a.userId })}`,
       },
     });
-    const body = (await response.json()) as { items: { projectId: string; orgId: string }[] };
+    const body = (await response.json()) as {
+      items: { projectId: string; orgId: string }[];
+    };
     expect(response.status).toBe(200);
     expect(body.items.map((project) => project.projectId)).toEqual([a.params.projectId]);
     expect(body.items.every((project) => project.orgId === a.orgId)).toBe(true);
@@ -315,7 +339,11 @@ describe("an execution token reaches nothing on a sibling node of its own run", 
   it.each(eachRoute.filter(([operation]) => EXECUTION_ACCESS[operation] === "own_node"))(
     "%s",
     async (_operation, route) => {
-      const sibling = { ...a.params, nodeId: b.params.nodeId, agentId: b.params.agentId };
+      const sibling = {
+        ...a.params,
+        nodeId: b.params.nodeId,
+        agentId: b.params.agentId,
+      };
       const answer = await callAs(
         a.execution,
         route.method,

@@ -28,12 +28,16 @@ import {
   type Clock,
   type DispatchStore,
   type ExecutionNodeStore,
+  isLineProgram,
+  isRunTerminal,
   type LineDispatchStore,
   type MembershipStore,
   type NodeRelation,
   type Operation,
+  type ProgramContractStore,
   type ProjectStore,
   READ_OPERATIONS,
+  type RunStore,
 } from "@nightshift/core";
 import { HttpError } from "../http.js";
 import type { PathParams } from "../params.js";
@@ -85,7 +89,10 @@ export const createProjectOrgCache = (options: ProjectOrgCacheOptions): ProjectO
         entries.delete(projectId);
         return undefined;
       }
-      entries.set(projectId, { orgId: project.orgId, expiresAt: options.clock.now() + ttlMs });
+      entries.set(projectId, {
+        orgId: project.orgId,
+        expiresAt: options.clock.now() + ttlMs,
+      });
       return project.orgId;
     },
   };
@@ -169,6 +176,10 @@ export interface EnforceOptions {
   readonly dispatches: Pick<DispatchStore, "get">;
   /** The project line's dispatch, read to hold a line owner's write to its current generation. */
   readonly lineDispatches: Pick<LineDispatchStore, "get">;
+  /** The caller's program contract, read to place an engine's line request on its line branch. */
+  readonly programContracts: Pick<ProgramContractStore, "get">;
+  /** The caller's run, read to learn whether it is still live (the line's current owner). */
+  readonly runs: Pick<RunStore, "get">;
 }
 
 /** How far up a parent chain is followed before the answer is "outside". */
@@ -287,6 +298,25 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
       placed =
         dispatch === undefined ? target : { ...target, currentGeneration: dispatch.generation };
     }
+    // An engine's line request: the two stored facts `own_project_line` needs.
+    // A missing contract or run leaves the fact absent, which refuses.
+    if (principal.role === "engine" && operation.startsWith("line.")) {
+      const contract = await options.programContracts.get(principal.projectId, principal.programId);
+      const run = await options.runs.get(
+        {
+          projectId: principal.projectId,
+          programId: principal.programId,
+        },
+        principal.runId,
+      );
+      placed = {
+        ...placed,
+        ...(contract !== undefined && isLineProgram(contract)
+          ? { lineBranchOfProgram: contract.repository.programBranch }
+          : {}),
+        ...(run === undefined ? {} : { callerRunLive: !isRunTerminal(run.status) }),
+      };
+    }
     const decision = authorize(principal, operation, placed);
     if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
     return principal;
@@ -294,7 +324,11 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
 
   const acting = await resolveActingOrg(principal, options.memberships);
   if (!acting.ok) throw new HttpError(403, acting.reason, describeRefusal(acting.reason));
-  const user: Principal = { kind: "user", userId: acting.userId, orgId: acting.orgId };
+  const user: Principal = {
+    kind: "user",
+    userId: acting.userId,
+    orgId: acting.orgId,
+  };
 
   // The project's owner, before anything reads the project itself. A path that
   // names no project (`GET /projects`, `PUT /projects/{id}` for a project that
