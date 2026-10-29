@@ -27,6 +27,7 @@ import {
   type FirstTokenStore,
   firstTokenParameterName,
   type InstanceDescription,
+  isLineProgram,
   type NightshiftStores,
   nowIso,
   type RunScope,
@@ -39,6 +40,7 @@ export const machineTags = (
   dispatch: Dispatch,
   stage: string,
   apiEndpoint: string,
+  lineBranch?: string,
 ): Record<string, string> => ({
   "nightshift:managed": "true",
   "nightshift-project": dispatch.projectId,
@@ -47,6 +49,8 @@ export const machineTags = (
   "nightshift-generation": String(dispatch.generation),
   "nightshift-stage": stage,
   "nightshift-api": apiEndpoint,
+  // A line run's machine is told by its program's kind; the value is the line's branch.
+  ...(lineBranch === undefined ? {} : { "nightshift:line": lineBranch }),
   Name: `nightshift-${stage}-${dispatch.runId}`,
 });
 
@@ -360,7 +364,12 @@ export const provisionDispatch = async (
     architecture,
     instanceType: dispatch.instanceType,
     tier: dispatch.tier,
-    tags: machineTags(dispatch, deps.stage, deps.apiEndpoint),
+    tags: machineTags(
+      dispatch,
+      deps.stage,
+      deps.apiEndpoint,
+      isLineProgram(program) ? dispatch.input.branch : undefined,
+    ),
     workspace: dispatch.workspace,
     replacing:
       replacing && dispatch.volumeId !== undefined
