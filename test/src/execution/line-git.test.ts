@@ -1,7 +1,7 @@
 /** The line checkout adapter against a real repository. */
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { LineVerificationSchema } from "@nightshift/contracts";
 import { git, nodeGitRunner } from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
@@ -32,6 +32,17 @@ describe("createLineCheckout", () => {
     await checkout.close(wt);
     expect(existsSync(wt.path)).toBe(false);
     expect(await git(nodeGitRunner, ["worktree", "list"], { cwd: lr.repo })).not.toContain(wt.path);
+  });
+
+  it("makes the worktree's root enterable by the engine's group, for the project user to be given it (2026-10-29)", async () => {
+    if (process.platform === "win32") return;
+    const { lr, checkout } = await setup();
+    const wt = await checkout.open(lr.initial);
+    const mode = (await stat(dirname(wt.path))).mode;
+    // group rwx, and setgid so what the project user makes inside stays the group's
+    expect(mode & 0o070).toBe(0o070);
+    expect(mode & 0o2000).toBe(0o2000);
+    await checkout.close(wt);
   });
 
   it("merges a non-conflicting commit with a two-parent merge commit", async () => {

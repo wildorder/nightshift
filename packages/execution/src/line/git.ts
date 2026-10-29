@@ -3,7 +3,7 @@
  * detached checkout in its own temporary directory, and every commit is made by
  * Nightshift's own identity (the runner carries it).
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CommitSha } from "@nightshift/contracts";
@@ -62,6 +62,12 @@ export const createLineCheckout = (options: LineCheckoutOptions): LineCheckoutPo
   return {
     async open(base) {
       const root = await mkdtemp(join(options.scratchDir ?? tmpdir(), "nightshift-line-"));
+      // mkdtemp makes the root 0700. On a machine the root is handed to the
+      // project user for the checks and the repairs (D-P10-30), and the engine,
+      // which only shares its group, must still enter it to spawn them: the
+      // line's first trial failed every landing check with `spawn sudo EACCES`
+      // (2026-10-29). Group rwx with setgid, as the workspace's directories are.
+      if (process.platform !== "win32") await chmod(root, 0o2770);
       const path = join(root, "wt");
       try {
         await addDetachedWorktree(runner, { repo, path, base });
