@@ -8,12 +8,45 @@
  */
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { RunScope } from "@nightshift/core";
+import { createEventOutbox, recordArtifact } from "@nightshift/execution";
+import type { Runtime } from "../compose.js";
 
 export const RUNNER_LOG_INTERVAL_MS = 10 * 60_000;
 export const RUNNER_LOG_FINAL_TIMEOUT_MS = 20_000;
 
 /** Records the log's bytes as a `runner-log` artifact. */
 export type RunnerLogRecorder = (bytes: Uint8Array) => Promise<void>;
+
+/**
+ * Records the log's bytes as a `runner-log` artifact under the run's root node,
+ * through the runtime the run uses. The run's record must exist.
+ */
+export const runnerLogRecorder =
+  (getRuntime: () => Promise<Runtime>, scope: RunScope): RunnerLogRecorder =>
+  async (bytes) => {
+    const runtime = await getRuntime();
+    const run = await runtime.stores.runs.get(scope, scope.runId);
+    if (run === undefined) throw new Error("the run has no record yet");
+    const outbox = createEventOutbox({
+      events: runtime.stores.events,
+      scope,
+      clock: runtime.clock,
+      ids: runtime.ids,
+      writerId: `${scope.runId}-runner-log`,
+    });
+    await recordArtifact(
+      { ...runtime, outbox },
+      {
+        scope,
+        nodeId: run.rootNodeId,
+        kind: "runner-log",
+        contentType: "text/plain",
+        bytes,
+      },
+    );
+    await outbox.flush(5_000).catch(() => undefined);
+  };
 
 /** Appends a line to the file, creating its directory; a failed write is dropped. */
 export const appendRunnerLog = async (file: string, line: string): Promise<void> => {

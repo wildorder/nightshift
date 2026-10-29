@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   type CommitSha,
+  defaultOrgConfig,
   type HeartbeatBody,
   type HeartbeatResponse,
   type LineRecord,
@@ -19,13 +20,18 @@ import {
   makeDispatch,
   makeLineRecord,
   makeProgramContract,
+  makeRootNode,
+  makeRun,
+  requireEffectivePolicy,
   resolvePush,
   settleBatch,
   systemClock,
   takeBatch,
 } from "@nightshift/core";
 import { nodeGitRunner } from "@nightshift/execution";
+import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Runtime } from "../compose.js";
 import { BootstrapError, IMDS, LINE_TAG, RUNNER_TAGS, readIdentity } from "./bootstrap.js";
 import { runLineOwner } from "./line-owner.js";
 import type { CommandResult, Machine } from "./machine.js";
@@ -317,7 +323,8 @@ const makePlane = (
         release,
       );
       plane.record = taken.record;
-      return taken.batch;
+      // As the plane's route answers: the record's batch, the one just taken or already held.
+      return plane.record.batch;
     },
     settle: async (body) => {
       plane.events.push(`settle:${body.batchId}`);
@@ -397,6 +404,80 @@ afterEach(() => {
   rmSync(world.root, { recursive: true, force: true });
 });
 
+/**
+ * The line run's runtime over the memory stores, seeded with the line program,
+ * its run and root node (the plane makes them before a machine exists). The
+ * harness cannot launch anything: a repair job fails with that, in its words.
+ */
+const lineRuntime = async (): Promise<{ stores: InMemoryStores; runtime: Runtime }> => {
+  const stores = createInMemoryStores();
+  const program = makeProgramContract(f, {
+    kind: "line",
+    repository: { ...makeProgramContract(f).repository, programBranch: LINE },
+    verification: CONFIG.verification,
+    examinationPolicy: {
+      low: {
+        required: false,
+        mustDifferModel: false,
+        mustDifferProvider: false,
+        blockOnMaterialFindings: false,
+      },
+      medium: {
+        required: false,
+        mustDifferModel: false,
+        mustDifferProvider: false,
+        blockOnMaterialFindings: false,
+      },
+      high: {
+        required: false,
+        mustDifferModel: false,
+        mustDifferProvider: false,
+        blockOnMaterialFindings: false,
+      },
+    },
+  });
+  await stores.programContracts.put(program);
+  const policy = requireEffectivePolicy(defaultOrgConfig(f.ids.next("org"), AT), program);
+  await stores.runs.put(makeRun(f, { status: "pending", location: "remote", policy }));
+  await stores.executionNodes.put(makeRootNode(f, { status: "validated" }));
+  const runtime = {
+    stores,
+    ids: createCountingIdGenerator(20_000),
+    clock: systemClock,
+    paths: localPaths(),
+    git: nodeGitRunner,
+    bodies: { put: async () => undefined, get: async () => undefined },
+    tokens: { mint: async () => "token" },
+    harness: {
+      id: "none",
+      capabilities: { usage: false },
+      start: async () => {
+        throw new Error("no agent can be launched in this test");
+      },
+    },
+    workerLaunch: () => ({ name: "worker", command: "worker", args: [], env: {} }),
+    workerEnvironment: () => {
+      throw new Error("no worker environment in this test");
+    },
+  } as unknown as Runtime;
+  return { stores, runtime };
+};
+
+const AT = "2026-10-01T12:00:00.000Z";
+
+const localPaths = () => ({
+  worktree: (runId: string, nodeId: string) =>
+    join(world.root, "wt", runId.slice(-8), nodeId.slice(-8)),
+  runDir: (runId: string) => join(world.root, "runs", runId),
+  spool: (runId: string) => join(world.root, "runs", runId, "spool.ndjson"),
+  transcript: (runId: string, agentId: string) =>
+    join(world.root, "runs", runId, "agents", agentId, "transcript.jsonl"),
+  measurementsDir: (runId: string) => join(world.root, "runs", runId, "measurements"),
+  measurementJournal: (runId: string, agentId: string, launchId: string) =>
+    join(world.root, "runs", runId, "measurements", `${agentId}__${launchId}.ndjson`),
+  scratch: (checkout: string) => join(dirname(checkout), "scratch"),
+});
+
 const own = (
   machine: FakeMachine,
   plane: FakePlane,
@@ -405,6 +486,9 @@ const own = (
     readonly log?: string[];
     /** Runs everything as a project user and records the grants and reclaims in `plane.events`. */
     readonly asProject?: boolean;
+    /** The line run's runtime, when the test looks at what it recorded. */
+    readonly runtime?: Runtime;
+    readonly runnerLog?: Parameters<typeof runLineOwner>[1]["runnerLog"];
   } = {},
 ) =>
   runRunner({
@@ -438,6 +522,9 @@ const own = (
         },
         idleSeconds: options.idleSeconds ?? 3,
         pollMs: 500,
+        repairPollMs: 5,
+        makeRuntime: async () => options.runtime ?? (await lineRuntime()).runtime,
+        ...(options.runnerLog === undefined ? {} : { runnerLog: options.runnerLog }),
         ...(options.asProject !== true
           ? {}
           : {
@@ -651,36 +738,65 @@ describe("composing and publishing", () => {
 });
 
 describe("a range that conflicts", () => {
-  it("is parked with its reason, and no agent is launched", async () => {
+  it("becomes engine repair jobs with recorded decisions, and is parked with the cause and the agent's words once the budget is spent", async () => {
     const machine = lineMachine();
     const plane = makePlane(world, machine);
     plane.enqueue(world.programs.c, world.head(world.branches.c));
     plane.enqueue(world.programs.d, world.head(world.branches.d));
+    const { stores, runtime } = await lineRuntime();
 
-    expect(await own(machine, plane)).toBe(0);
+    expect(await own(machine, plane, { runtime })).toBe(0);
 
-    expect(plane.events.filter((event) => /^(launch|announce):/.test(event))).toEqual([]);
     const settle = plane.settles[0]?.body;
     expect(settle?.composition?.ranges.map((range) => range.program)).toEqual([world.programs.c]);
-    // The conflicting range is held behind a repair; the stub repair fails, so it is parked after its budget.
+    // The conflicting range is not parked at once: it is held behind its own repairs.
     expect(settle?.held?.map((entry) => entry.program)).toEqual([world.programs.d]);
     const parked = plane.settles.flatMap((entry) => entry.body.parked);
     expect(parked).toHaveLength(1);
     expect(parked[0]?.ranges.map((range) => range.program)).toEqual([world.programs.d]);
     expect(parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
+    expect(parked[0]?.reason).toContain("no worker environment in this test");
+
     expect(plane.record.parked).toHaveLength(1);
     expect(git(world.origin, "show", `${world.head(LINE)}:shared.txt`)).toBe("from c");
+
+    // Each repair is a job of the line's run with its decision, authored by the composer.
+    const jobs = (await stores.jobContracts.listByRun(f.scope)).items;
+    expect(jobs.map((job) => job.repair?.cause)).toEqual([
+      "line_conflict",
+      "line_conflict",
+      "line_conflict",
+    ]);
+    const decisions = (await stores.decisions.listByRun(f.scope)).items;
+    expect(decisions.map((decision) => decision.decisionId).sort()).toEqual(
+      jobs.map((job) => job.repair?.decisionId).sort(),
+    );
+    const agents = await stores.agents.listByNode(f.scope, f.rootNodeId);
+    expect(agents.filter((agent) => agent.role === "orchestrator")).toHaveLength(1);
+    expect(decisions.every((decision) => decision.agentId === agents[0]?.agentId)).toBe(true);
+    expect((await stores.checkpoints.listByRun(f.scope)).items).toHaveLength(1);
   });
 });
 
 describe("idling and stopping", () => {
-  it("keeps beating while the queue is empty, then ends stopped with no failure", async () => {
+  it("keeps beating while the queue is empty, then completes the run and ends stopped with no failure", async () => {
     const machine = lineMachine();
     const plane = makePlane(world, machine);
-    expect(await own(machine, plane, { idleSeconds: 4 })).toBe(0);
+    const { stores, runtime } = await lineRuntime();
+    const attached: ((bytes: Uint8Array) => Promise<void>)[] = [];
+    expect(
+      await own(machine, plane, {
+        idleSeconds: 4,
+        runtime,
+        runnerLog: { attach: (record) => attached.push(record) },
+      }),
+    ).toBe(0);
+    // The runner's log has a recorder over the line run's own runtime.
+    expect(attached).toHaveLength(1);
     const beat = lastBeat(plane);
     expect(beat?.body.report).toBe("stopped");
     expect(beat?.body.failure).toBeUndefined();
+    expect((await stores.runs.get(f.scope, f.scope.runId))?.status).toBe("succeeded");
     const running = plane.heartbeats.find((entry) => entry.body.report === "running");
     expect((beat?.at ?? 0) - (running?.at ?? 0)).toBeGreaterThanOrEqual(4000);
     expect(plane.heartbeats.length).toBeGreaterThan(2);

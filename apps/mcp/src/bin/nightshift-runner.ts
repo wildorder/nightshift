@@ -7,7 +7,6 @@
  */
 import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
-import type { RunScope } from "@nightshift/core";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import { createEventOutbox, nodeGitRunner, recordArtifact } from "@nightshift/execution";
 import {
@@ -19,7 +18,6 @@ import {
 import { describeHeadlessEnding, describeRoutesLimited, runHeadless } from "../headless.js";
 import { createProjectUser, createReclaim } from "../run-as.js";
 import { runLineOwner } from "../runner/line-owner.js";
-import { lineEnvironment } from "../runner/line-session.js";
 import { nodeMachine } from "../runner/machine.js";
 import { runRunner } from "../runner/main.js";
 import {
@@ -31,7 +29,7 @@ import {
   startCodexWatch,
   tokenFile,
 } from "../runner/root.js";
-import { appendRunnerLog, createRunnerLog, type RunnerLogRecorder } from "../runner/runner-log.js";
+import { appendRunnerLog, createRunnerLog, runnerLogRecorder } from "../runner/runner-log.js";
 import { layoutOf } from "../runner/workspace.js";
 
 const workspaceRoot = process.env.NIGHTSHIFT_WORKSPACE ?? "/workspace";
@@ -69,36 +67,6 @@ const runnerLog = createRunnerLog({
     return readFile(file);
   },
 });
-
-/** Records the log's bytes under the run's root node, with the runtime the run uses. */
-const recorderFor =
-  (
-    getRuntime: () => Promise<Awaited<ReturnType<typeof createRuntime>>>,
-    scope: RunScope,
-  ): RunnerLogRecorder =>
-  async (bytes) => {
-    const runtime = await getRuntime();
-    const run = await runtime.stores.runs.get(scope, scope.runId);
-    if (run === undefined) throw new Error("the run has no record yet");
-    const outbox = createEventOutbox({
-      events: runtime.stores.events,
-      scope,
-      clock: runtime.clock,
-      ids: runtime.ids,
-      writerId: `${scope.runId}-runner-log`,
-    });
-    await recordArtifact(
-      { ...runtime, outbox },
-      {
-        scope,
-        nodeId: run.rootNodeId,
-        kind: "runner-log",
-        contentType: "text/plain",
-        bytes,
-      },
-    );
-    await outbox.flush(5_000).catch(() => undefined);
-  };
 
 runRunner({
   machine: nodeMachine,
@@ -139,26 +107,34 @@ runRunner({
     const projectUser = process.env.NIGHTSHIFT_PROJECT_USER;
     const user = projectUser === undefined || projectUser === "" ? undefined : projectUser;
     const agentId = context.identity.scope.runId;
-    // The line's run has a scope: its log goes under that run's root node.
-    let lineRuntime: ReturnType<typeof createRuntime> | undefined;
-    runnerLog.attach(
-      recorderFor(() => {
-        lineRuntime ??= createRuntime(
-          lineEnvironment(context, {
-            parentEnv: process.env,
-            ...(user === undefined ? {} : { projectUser: user }),
-          }),
-          "orchestrator",
-        );
-        return lineRuntime;
-      }, context.scope),
-    );
+    // The Codex login the line's repair agents refresh goes back to the org, as a root's does.
+    let codexWatch: { readonly stop: () => Promise<void> } | undefined;
     return runLineOwner(context, {
       git: nodeGitRunner,
       ids: createUlidIdGenerator(),
       clock: systemClock,
       paths: createLineScratchPaths(process.env),
       parentEnv: process.env,
+      // The line's run records the runner's log under its root node once it exists.
+      runnerLog,
+      placeCredentials: async (credentials) => {
+        const providerKeys = await placeProviderCredentials(context.scope.runId, credentials, {
+          ...(user === undefined ? {} : { user }),
+          grant: async (granted, path) => {
+            const owned = await context.machine.exec("sudo", [
+              "chown",
+              "-R",
+              `${granted}:${granted}`,
+              path,
+            ]);
+            if (owned.exitCode !== 0)
+              throw new Error(`chown ${path} to ${granted}: ${owned.stderr}`);
+          },
+          reclaim: createReclaim(userInfo().username),
+        });
+        codexWatch = startCodexWatch({ context, credentials, projectUser: user, log: say });
+        return providerKeys;
+      },
       upload: async ({ url, contentType, file }) => {
         const bytes = await readFile(file);
         const response = await fetch(url, {
@@ -181,7 +157,7 @@ runRunner({
               })({ agentId, role: "line" }),
             reclaim: createReclaim(userInfo().username),
           }),
-    });
+    }).finally(() => codexWatch?.stop());
   },
   work: async (context) => {
     // `running` first: the plane hands the org's provider keys to a running
@@ -224,7 +200,7 @@ runRunner({
     const secretNames = Object.keys(context.heartbeat.last?.secrets ?? {});
     if (secretNames.length > 0) say(`project secrets received: ${secretNames.join(", ")}`);
     const runtime = await createRuntime(env, "orchestrator");
-    runnerLog.attach(recorderFor(async () => runtime, context.scope));
+    runnerLog.attach(runnerLogRecorder(async () => runtime, context.scope));
     // Start intelligence before project setup; the root can inspect, repair and retry it.
     say(`root starting in ${context.layout.checkout}`);
     const result = await runHeadless(runtime, env, {

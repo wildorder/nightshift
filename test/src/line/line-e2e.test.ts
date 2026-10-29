@@ -1,5 +1,5 @@
 /**
- * The project line, end to end and offline (Pipkin M1b, S-04 J5).
+ * The project line, end to end and offline (Pipkin M1b, S-04; S-02).
  *
  * Real pieces, all on localhost: the control plane's handler over the memory
  * stores, the publisher (`publishAll` queues a landed range on the line and
@@ -7,30 +7,46 @@
  * real smart-HTTP git server that stands in for GitHub, and the line owner
  * (`runLineOwner`, booted by `runRunner` as a line run's machine is) over a fake
  * machine. The owner is the engine of its run: it reaches the line routes with
- * the run's engine token and heartbeats the run's dispatch. It launches no
- * agent: a range that conflicts is parked with its reason.
+ * the run's engine token, heartbeats the run's dispatch, and sits in the run's
+ * root seat as the composer's orchestrator Agent. A range that conflicts is an
+ * ordinary engine repair job on the line's run, worked by a fake harness (the
+ * one thing that is not real): the engine examines it, integrates it, and the
+ * composer composes and pushes it, while the line goes on composing other
+ * ranges and holds only the ones that touch the repair's paths.
  *
  * One stand-in is worth naming. The machine's `exec` swaps GitHub's clone URL
  * for the local server's, as the machine would reach GitHub.
  */
 import { execFile, execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type ApiDeps, handleRequest } from "@nightshift/api";
 import {
+  encodeTestPrincipal,
   type GitHttpServer,
+  type LocalControlPlane,
   type PublisherDeps,
   publishAll,
   publishLine,
   smartHttpRemote,
   startGitHttpServer,
+  startLocalControlPlane,
 } from "@nightshift/api/testing";
 import {
   DEFAULT_COMPUTE_CEILINGS,
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
   type Dispatch,
+  ExaminationSchema,
   type HeartbeatBody,
   HeartbeatResponseSchema,
   type LineRecord,
@@ -44,6 +60,7 @@ import {
   type Clock,
   createCountingIdGenerator,
   createFixtures,
+  createUlidIdGenerator,
   type Fixtures,
   type GitHubAppClient,
   leaseLost,
@@ -54,21 +71,41 @@ import {
   makeProject,
   makeRun,
   nextUserId,
+  nowIso,
   recordIntent,
   systemClock,
   transitionDispatch,
 } from "@nightshift/core";
-import { nodeGitRunner } from "@nightshift/execution";
 import {
+  completeJob,
+  createEventOutbox,
+  EXAMINATION_CONTEXT_ENV,
+  type ExaminationContext,
+  failJob,
+  nodeGitRunner,
+} from "@nightshift/execution";
+import type { HarnessExit, HarnessStartInput } from "@nightshift/harness";
+import {
+  createRunnerLog,
   LINE_TAG,
   type LineRunnerPlane,
   type Machine,
+  type Runtime,
   runLineOwner,
   runRunner,
 } from "@nightshift/mcp";
-import { routes } from "@nightshift/persistence/http";
+import {
+  createFetchTransport,
+  createHttpArtifactBodyStore,
+  createHttpExecutionTokenMinter,
+  createHttpStores,
+  routes,
+  staticTokenProvider,
+} from "@nightshift/persistence/http";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createFakeHarness, type ScriptContext } from "../execution/fake-harness.js";
+import { localPathsIn } from "../execution/world.js";
 
 const START = Date.parse("2026-10-27T12:00:00.000Z");
 const LINE = "nightshift/develop";
@@ -102,7 +139,7 @@ interface Origin {
   readonly server: GitHttpServer;
   readonly bare: string;
   /** Commits on the work repository: the base, and each program's landings. */
-  readonly commits: Record<"base" | "a1" | "b1" | "a2", string>;
+  readonly commits: Record<"base" | "a1" | "b1" | "a2" | "b2" | "b3", string>;
   /** The line pushes the git server took. */
   readonly linePushes: string[];
   refOf(ref: string): string | undefined;
@@ -128,16 +165,30 @@ const makeOrigin = async (config: object): Promise<Origin> => {
     git(work, "commit", "-q", "-m", message);
     return git(work, "rev-parse", "HEAD");
   };
+  // shared.txt is long enough that edits at its two ends never conflict with each other.
+  const shared = (first: string, last: string): string =>
+    [first, "l2", "l3", "l4", "l5", "l6", "l7", "l8", last].join("\n").concat("\n");
   const base = commit(
-    { [NIGHTSHIFT_CONFIG_FILE]: JSON.stringify(config), "shared.txt": "base\n" },
+    {
+      [NIGHTSHIFT_CONFIG_FILE]: JSON.stringify(config),
+      "shared.txt": shared("l1", "l9"),
+    },
     "base",
   );
   git(work, "checkout", "-q", "-b", "program/a");
   const a1 = commit({ "a.txt": "a\n" }, "program a: a.txt");
   git(work, "checkout", "-q", "-b", "program/b", "main");
-  const b1 = commit({ "b.txt": "b\n", "shared.txt": "from b\n" }, "program b: b.txt and shared");
+  const b1 = commit(
+    { "b.txt": "b\n", "shared.txt": shared("from b", "l9") },
+    "program b: b.txt and the top of shared",
+  );
+  const b2 = commit({ "c.txt": "c\n" }, "program b: c.txt");
+  const b3 = commit({ "shared.txt": shared("from b", "b3 line") }, "program b: the end of shared");
   git(work, "checkout", "-q", "program/a");
-  const a2 = commit({ "shared.txt": "from a\n" }, "program a: shared");
+  const a2 = commit(
+    { "shared.txt": shared("from a", "l9"), "a2.txt": "a2\n" },
+    "program a: the top of shared and a2.txt",
+  );
   for (const ref of ["main", LINE, "program/a", "program/b"]) {
     git(work, "push", "-q", bare, `${base}:refs/heads/${ref}`);
   }
@@ -154,7 +205,7 @@ const makeOrigin = async (config: object): Promise<Origin> => {
     work,
     bare,
     server: await startGitHttpServer(root),
-    commits: { base, a1, b1, a2 },
+    commits: { base, a1, b1, a2, b2, b3 },
     linePushes,
     refOf,
     show: (ref, file) => git(bare, "show", `${ref}:${file}`),
@@ -252,6 +303,14 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
       makeProgramContract(f, {
         repository: { url: REPOSITORY, baseBranch: "main", programBranch: branches[name] },
         line: { branch: LINE },
+        // The line program inherits these: a repair runs the gate below and is examined.
+        scope: { includes: ["**"], excludes: [], forbiddenActions: [] },
+        verification: [{ id: "ok", command: 'node -e "process.exit(0)"' }],
+        modelPolicy: {
+          allowedProviders: ["anthropic", "openai"],
+          allowedModels: [],
+          forbiddenModels: [],
+        },
       }),
     );
     // A dispatch is stored while its run is pending; the run then starts.
@@ -579,19 +638,217 @@ afterEach(async () => {
   rmSync(origin.root, { recursive: true, force: true });
 });
 
+// --- the fake repair worker ---------------------------------------------------------------
+
+/** What the fake harness's worker does for a repair: it is told the objective, and answers `done` or its own words. */
+type RepairWorker = (context: {
+  readonly worktree: string;
+  readonly objective: string;
+}) => Promise<"done" | string>;
+
+const MARKERS = /^(<<<<<<<|=======|>>>>>>>)/m;
+
+/** Writes the whole of shared.txt, resolving the conflict at its top. */
+const resolveShared = (worktree: string): void => {
+  const file = join(worktree, "shared.txt");
+  const text = readFileSync(file, "utf8");
+  if (!MARKERS.test(text)) throw new Error("shared.txt carries no conflict markers");
+  writeFileSync(
+    file,
+    ["from a and b", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"].join("\n").concat("\n"),
+  );
+};
+
+const mcpLaunch = (identity: {
+  readonly role: string;
+  readonly executionToken: string;
+  readonly extraEnv?: Readonly<Record<string, string>>;
+}) => ({
+  name: "nightshift",
+  command: process.execPath,
+  args: ["--version"],
+  env: {
+    ...identity.extraEnv,
+    NIGHTSHIFT_ROLE: identity.role,
+    NIGHTSHIFT_EXECUTION_TOKEN: identity.executionToken,
+  },
+});
+
+/** The examiner finds nothing, recording its examination under its own token. */
+const examine = async (cp: LocalControlPlane, input: HarnessStartInput): Promise<HarnessExit> => {
+  const context = JSON.parse(input.mcp?.env[EXAMINATION_CONTEXT_ENV] ?? "{}") as ExaminationContext;
+  const stores = createHttpStores({
+    transport: createFetchTransport({
+      endpoint: cp.url,
+      tokens: staticTokenProvider(input.mcp?.env.NIGHTSHIFT_EXECUTION_TOKEN ?? ""),
+    }),
+  });
+  await stores.examinations.put(
+    ExaminationSchema.parse({
+      schemaVersion: 1,
+      projectId: input.node.projectId,
+      programId: input.node.programId,
+      runId: input.node.runId,
+      examinationId: context.examinationId,
+      executionNodeId: input.node.executionNodeId,
+      verificationId: context.verificationId,
+      commitSha: context.commitSha,
+      patchId: context.patchId,
+      implementerAgentId: context.implementerAgentId,
+      examinerAgentId: input.agent.agentId,
+      examinerRoute: context.examinerRoute,
+      requiredByRisk: context.requiredByRisk,
+      blocking: context.blocking,
+      fixAttempt: context.fixAttempt,
+      questions: context.questions,
+      outcome: "passed",
+      findings: [],
+      createdAt: nowIso(systemClock),
+    }),
+  );
+  return { kind: "completed" };
+};
+
+/**
+ * The line run's runtime, as `createRuntime` makes one for a machine's engine but
+ * over the loopback plane on the memory stores, with the fake harness for the
+ * one thing that is not real: a worker's model.
+ */
+const engineRuntime = (
+  cp: LocalControlPlane,
+  token: string,
+  stateDir: string,
+  worker: RepairWorker,
+  seen: { readonly objectives: string[] },
+): Runtime => {
+  const transport = createFetchTransport({ endpoint: cp.url, tokens: staticTokenProvider(token) });
+  const ids = createUlidIdGenerator();
+  const harness = createFakeHarness({
+    script: async (context: ScriptContext) => {
+      if (context.input.agent.role === "examiner") return examine(cp, context.input);
+      seen.objectives.push(context.input.job.objective);
+      const stores = createHttpStores({
+        transport: createFetchTransport({
+          endpoint: cp.url,
+          tokens: staticTokenProvider(context.input.mcp?.env.NIGHTSHIFT_EXECUTION_TOKEN ?? ""),
+        }),
+      });
+      const outbox = createEventOutbox({
+        events: stores.events,
+        scope: context.identity.scope,
+        clock: systemClock,
+        ids,
+        writerId: context.identity.agentId,
+        initialDelayMs: 1,
+      });
+      const environment = { stores, clock: systemClock, git: nodeGitRunner, outbox };
+      const said = await worker({
+        worktree: context.worktree,
+        objective: context.input.job.objective,
+      });
+      if (said === "done") await completeJob(environment, context.identity, "resolved it");
+      else await failJob(environment, context.identity, said);
+      await outbox.flush();
+      return said === "done" ? { kind: "completed" } : { kind: "failed", exitCode: 1 };
+    },
+  });
+  return {
+    stores: createHttpStores({ transport }),
+    bodies: createHttpArtifactBodyStore({
+      transport,
+      read: async (scope, artifactId) =>
+        cp.bodies.get(`${scope.projectId}/${scope.programId}/${scope.runId}/${artifactId}`)?.body,
+    }),
+    tokens: createHttpExecutionTokenMinter({ transport }),
+    harness,
+    paths: localPathsIn(stateDir),
+    git: nodeGitRunner,
+    transport,
+    ids,
+    clock: systemClock,
+    endpoint: cp.url,
+    workerLaunch: mcpLaunch,
+    workerEnvironment: (launch) => {
+      const stores = createHttpStores({
+        transport: createFetchTransport({
+          endpoint: cp.url,
+          tokens: staticTokenProvider(launch.executionToken),
+        }),
+      });
+      return {
+        stores,
+        clock: systemClock,
+        git: nodeGitRunner,
+        outbox: createEventOutbox({
+          events: stores.events,
+          scope: {
+            projectId: launch.projectId,
+            programId: launch.programId,
+            runId: launch.runId,
+          } as never,
+          clock: systemClock,
+          ids,
+          writerId: launch.agentId,
+          initialDelayMs: 1,
+          maxDelayMs: 4,
+        }),
+      };
+    },
+  } as Runtime;
+};
+
+// --- running an owner ---------------------------------------------------------------------
+
+interface OwnerOptions {
+  readonly hooks?: Parameters<typeof planeFor>[3];
+  /** What the repair worker does; by default it resolves the conflict in shared.txt. */
+  readonly worker?: RepairWorker;
+  /** The empty-queue time after which the owner ends, in plane seconds. */
+  readonly idleSeconds?: number;
+}
+
 /** Runs one owner generation as its machine's runner does, until the runner exits. */
 const ownerFor = async (
   run: { readonly runId: string; readonly dispatch: Dispatch },
-  hooks: Parameters<typeof planeFor>[3] = {},
+  options: OwnerOptions = {},
 ) => {
   const { generation } = run.dispatch;
-  const linePlane = planeFor(plane, run, generation, hooks);
+  const linePlane = planeFor(plane, run, generation, options.hooks);
   const machine = lineMachine(plane, origin, run.runId, generation);
   const uploads = join(origin.root, "uploads");
   mkdirSync(uploads, { recursive: true });
+
+  const programId = lineProgramId(plane.projectId, LINE);
+  const scope = { projectId: plane.projectId, programId, runId: run.runId as never };
+  const stored = await plane.stores.runs.get(scope, scope.runId);
+  const cp = await startLocalControlPlane({
+    stores: plane.stores,
+    principal: { kind: "user", userId: nextUserId(plane.programs.a), activeOrg: plane.orgId },
+    clock: plane.clock,
+  });
+  const token = encodeTestPrincipal({
+    kind: "execution",
+    ...scope,
+    nodeId: stored?.rootNodeId,
+    agentId: run.dispatch.engineAgentId,
+    role: "engine",
+    generation,
+  } as never);
+  const repairs = { objectives: [] as string[] };
+  const runtime = engineRuntime(
+    cp,
+    token,
+    join(origin.root, `state-${generation}`),
+    options.worker ?? (async ({ worktree }) => (resolveShared(worktree), "done")),
+    repairs,
+  );
+
+  // The runner's own log, as the runner binary keeps it: every said line is appended to a file.
+  const logFile = join(origin.root, `runner-${generation}.log`);
+  const runnerLog = createRunnerLog({ file: logFile, log: () => undefined });
   const code = await runRunner({
     machine,
-    log: () => undefined,
+    log: (line) => appendFileSync(logFile, `${line}\n`),
     workspace,
     device: "/dev/xvdf",
     engineUser: "engine",
@@ -621,86 +878,250 @@ const ownerFor = async (
           copyFileSync(file, stored);
           plane.bundles.set(key, new Uint8Array(readFileSync(stored)));
         },
-        idleSeconds: IDLE_SECONDS,
+        idleSeconds: options.idleSeconds ?? IDLE_SECONDS,
         pollMs: 500,
+        repairPollMs: 10,
+        makeRuntime: async () => runtime,
+        runnerLog,
       }),
+  }).finally(async () => {
+    await runnerLog.finish();
   });
-  return { code, linePlane, machine };
+  await cp.close();
+  return { code, linePlane, machine, repairs };
+};
+
+/** Polls, in real time, until `check` holds. */
+const until = async (what: string, check: () => boolean | Promise<boolean>): Promise<void> => {
+  const deadline = Date.now() + 60_000;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+};
+
+/** A promise and the means to settle it, for a worker the test holds back. */
+const gate = () => {
+  let open: () => void = () => undefined;
+  const opened = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { opened, open };
+};
+
+/** The Agent record of the line run's orchestrator seat: the composer. */
+const composerOf = async (runId: string) => {
+  const scope = {
+    projectId: plane.projectId,
+    programId: lineProgramId(plane.projectId, LINE),
+    runId: runId as never,
+  };
+  const run = await plane.stores.runs.get(scope, scope.runId);
+  const agents = (await plane.stores.agents.listByNode(scope, run?.rootNodeId as never)).filter(
+    (agent) => agent.role === "orchestrator",
+  );
+  return { scope, agents };
 };
 
 describe("the project line, end to end", () => {
-  it("composes two programs onto the line, parks a later conflict with its reason, publishes it and idles out", async () => {
+  it("repairs a conflict as an engine job while the line goes on, holds only the reserved paths, and pushes the repaired range", async () => {
     const { commits } = origin;
-    // Both programs land and publish their program branch: each range is queued
-    // and one run of the line program is started.
     await plane.land("a", commits.a1, commits.base);
     await plane.land("b", commits.b1, commits.base);
-    expect(origin.refOf("refs/heads/program/a")).toBe(commits.a1);
-    expect(origin.refOf("refs/heads/program/b")).toBe(commits.b1);
-    const queued = await plane.lineRecord();
-    expect(queued.queue.map((entry) => entry.upTo).sort()).toEqual([commits.a1, commits.b1].sort());
     const started = await plane.lineRun();
     expect(started.dispatch.status).toBe("provisioning");
-    expect(started.dispatch.input.branch).toBe(LINE);
     expect(plane.provisioned).toEqual([{ runId: started.runId, generation: 1 }]);
-    expect(origin.refOf(LINE_REF)).toBe(commits.base);
 
-    // The owner boots for that run. When its first push is published, a later
-    // landing of program a arrives: it conflicts with program b's work.
-    let later: Promise<void> | undefined;
-    const { code, linePlane } = await ownerFor(started, {
-      afterSettle: async ({ pushed }) => {
-        if (pushed && later === undefined) {
-          expect(origin.refOf(LINE_REF)).not.toBe(commits.base);
-          later = plane.land("a", commits.a2, commits.a1);
-          await later;
-        }
+    // The repair worker is held back until the line has gone on without it.
+    const reached = gate();
+    const release = gate();
+    const owner = ownerFor(started, {
+      idleSeconds: 150,
+      worker: async ({ worktree }) => {
+        reached.open();
+        await release.opened;
+        resolveShared(worktree);
+        return "done";
+      },
+    });
+
+    // a1 and b1 are composed and pushed.
+    await until(
+      "the first push",
+      async () => (await plane.lineRecord()).push?.status === "published",
+    );
+    const firstHead = origin.refOf(LINE_REF) as string;
+    expect(origin.show(firstHead, "a.txt")).toBe("a");
+    expect(origin.show(firstHead, "b.txt")).toBe("b");
+
+    // a2 conflicts with b1 in shared.txt: a repair job starts, and its worker waits.
+    await plane.land("a", commits.a2, commits.a1);
+    await reached.opened;
+
+    // While it runs, a range touching other files is composed and pushed ...
+    await plane.land("b", commits.b2, commits.b1);
+    await until("b2 to be pushed", async () => {
+      const head = origin.refOf(LINE_REF);
+      return head !== undefined && origin.isAncestor(commits.b2, head);
+    });
+    const midHead = origin.refOf(LINE_REF) as string;
+    expect(origin.show(midHead, "c.txt")).toBe("c");
+    expect(origin.isAncestor(commits.a2, midHead)).toBe(false);
+
+    // ... and one touching the reserved path is held, not composed and not parked.
+    await plane.land("b", commits.b3, commits.b2);
+    await until("b3 to be held", async () => {
+      const record = await plane.lineRecord();
+      return record.held.some((entry) => entry.upTo === commits.b3);
+    });
+    expect((await plane.lineRecord()).parked).toEqual([]);
+    expect(origin.refOf(LINE_REF)).toBe(midHead);
+
+    release.open();
+    const { code, repairs } = await owner;
+    expect(code).toBe(0);
+
+    // The pushed head holds the repaired range's whole content and the resolution ...
+    const head = origin.refOf(LINE_REF) as string;
+    expect(origin.show(head, "shared.txt")).toBe(
+      ["from a and b", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "b3 line"].join("\n"),
+    );
+    expect(origin.show(head, "a2.txt")).toBe("a2");
+    expect(origin.isAncestor(commits.a2, head)).toBe(true);
+    // ... the earlier-landed content is still on the line after the repair's push ...
+    for (const kept of [commits.base, commits.a1, commits.b1, commits.b2, commits.b3]) {
+      expect(origin.isAncestor(kept, head)).toBe(true);
+    }
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(origin.show(head, "b.txt")).toBe("b");
+    expect(origin.show(head, "c.txt")).toBe("c");
+    expect(origin.isAncestor(midHead, head)).toBe(true);
+    expect(origin.refOf("refs/heads/main")).toBe(commits.base);
+
+    // ... and the held range was composed after the repaired one.
+    const record = await plane.lineRecord();
+    expect(record.queue).toEqual([]);
+    expect(record.held).toEqual([]);
+    expect(record.parked).toEqual([]);
+    expect(record.batch).toBeUndefined();
+    expect(record.push).toMatchObject({ head, status: "published" });
+    const order = (upTo: string) =>
+      record.compositions.findIndex((composition) =>
+        composition.ranges.some((range) => range.upTo === upTo),
+      );
+    expect(order(commits.b2)).toBeGreaterThanOrEqual(0);
+    expect(order(commits.a2)).toBeGreaterThan(order(commits.b2));
+    // The held range is released with the repaired one and merged after it.
+    expect(order(commits.b3)).toBeGreaterThanOrEqual(order(commits.a2));
+    const final = record.compositions[order(commits.b3)];
+    const upTos = final?.ranges.map((range) => range.upTo) ?? [];
+    expect(upTos.indexOf(commits.b3)).toBeGreaterThan(upTos.indexOf(commits.a2));
+    const repaired = record.compositions[order(commits.a2)];
+    expect(repaired?.repair).toBeDefined();
+    expect(origin.linePushes.at(-1)).toBe(head);
+    expect(origin.linePushes).toHaveLength(record.compositions.length);
+
+    // The repair was an ordinary job of the line's run, with a recorded decision.
+    const { dispatch, runId } = await plane.lineRun();
+    const { scope, agents } = await composerOf(runId);
+    const jobs = (await plane.stores.jobContracts.listByRun(scope)).items;
+    expect(jobs).toHaveLength(1);
+    const job = jobs[0];
+    expect(job?.repair).toMatchObject({ cause: "line_conflict", gates: ["shared.txt"] });
+    expect(job?.risk).toBe("high");
+    expect(repaired?.repair?.jobContractId).toBe(job?.jobContractId);
+    expect(repairs.objectives).toHaveLength(1);
+    expect(repairs.objectives[0]).toContain("conflict markers");
+    expect(repairs.objectives[0]).toContain("shared.txt");
+    const nodes = (await plane.stores.executionNodes.listByRun(scope)).items;
+    const repairNode = nodes.find((node) => node.jobContractId === job?.jobContractId);
+    expect(repairNode?.status).toBe("integrated");
+    const examinations = await plane.stores.examinations.listByNode(
+      scope,
+      repairNode?.executionNodeId as never,
+    );
+    expect(examinations.length).toBeGreaterThan(0);
+
+    // (d) The run's events and its decision are the composer's: one orchestrator Agent record.
+    expect(agents).toHaveLength(1);
+    const composer = agents[0];
+    expect(composer).toMatchObject({ provider: "nightshift", model: "line-composer" });
+    const decisions = (await plane.stores.decisions.listByRun(scope)).items;
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]?.agentId).toBe(composer?.agentId);
+    expect(decisions[0]?.decisionId).toBe(job?.repair?.decisionId);
+    plane.stores.materializeSequences?.();
+    const events = (await plane.stores.events.listByRun(scope, {})).items;
+    for (const type of ["run.started", "decision.recorded"]) {
+      const authored = events.filter((event) => event.type === type);
+      expect(authored.length).toBeGreaterThan(0);
+      expect(authored.every((event) => event.agentId === composer?.agentId)).toBe(true);
+    }
+    expect(events.some((event) => event.type === "run.completed")).toBe(true);
+    // ... and its runner log is an artifact of the run.
+    const artifacts = (await plane.stores.artifacts.listByRun(scope)).items;
+    const logs = artifacts.filter((artifact) => artifact.kind === "runner-log");
+    expect(logs.length).toBeGreaterThan(0);
+    expect(logs[0]?.executionNodeId).toBe(
+      (await plane.stores.runs.get(scope, runId as never))?.rootNodeId,
+    );
+
+    // The owner idled out: the dispatch ended stopped with no failure, and its run with it.
+    expect(dispatch.status).toBe("stopped");
+    expect(dispatch.failure).toBeUndefined();
+    expect(await plane.lineRuns()).toEqual([{ runId, status: "succeeded" }]);
+  });
+
+  it("parks a range whose repair worker fails three times, with the cause and the agent's own words", async () => {
+    const { commits } = origin;
+    await plane.land("a", commits.a1, commits.base);
+    await plane.land("b", commits.b1, commits.base);
+    const started = await plane.lineRun();
+    let landed = false;
+    const WORDS = "I could not reconcile the two versions of shared.txt";
+
+    const { code, repairs } = await ownerFor(started, {
+      worker: async () => WORDS,
+      hooks: {
+        afterSettle: async ({ pushed }) => {
+          if (pushed && !landed) {
+            landed = true;
+            await plane.land("a", commits.a2, commits.a1);
+          }
+        },
       },
     });
     expect(code).toBe(0);
-    expect(later).toBeDefined();
 
-    // The line on the git server holds both programs and main; the conflicting
-    // range was parked, not repaired.
-    const head = origin.refOf(LINE_REF);
-    expect(head).toBeDefined();
-    if (head === undefined) return;
-    expect(origin.show(head, "a.txt")).toBe("a");
-    expect(origin.show(head, "b.txt")).toBe("b");
-    expect(origin.show(head, "shared.txt")).toBe("from b");
-    for (const included of [commits.base, commits.a1, commits.b1]) {
-      expect(origin.isAncestor(included, head)).toBe(true);
-    }
-    expect(origin.isAncestor(commits.a2, head)).toBe(false);
-    expect(origin.refOf("refs/heads/main")).toBe(commits.base);
-    // The line moved once: the first composition.
-    expect(origin.linePushes).toEqual([head]);
+    // Three repairs, each a job of the line's run with its own decision; then the range is parked.
+    expect(repairs.objectives).toHaveLength(3);
+    const { runId } = await plane.lineRun();
+    const { scope } = await composerOf(runId);
+    const jobs = (await plane.stores.jobContracts.listByRun(scope)).items;
+    expect(jobs.map((job) => job.repair?.cause)).toEqual([
+      "line_conflict",
+      "line_conflict",
+      "line_conflict",
+    ]);
+    expect((await plane.stores.decisions.listByRun(scope)).items).toHaveLength(3);
 
-    // The line record: one composition pushed, the conflicting range parked with
-    // its reason, no agent's or decision's record, nothing left to do.
     const record = await plane.lineRecord();
-    expect(record.queue).toEqual([]);
-    expect(record.batch).toBeUndefined();
-    expect(record.head).toBe(head);
-    expect(record.push).toMatchObject({ head, status: "published" });
-    expect(record.compositions).toHaveLength(1);
-    expect(record.compositions[0]?.commit).toBe(head);
-    expect(record.compositions[0]?.pushed).toBeDefined();
-    expect(record.compositions[0]?.resolver).toBeUndefined();
     expect(record.parked).toHaveLength(1);
     expect(record.parked[0]?.ranges).toEqual([
       { program: plane.programs.a.scope.programId, upTo: commits.a2, from: commits.a1, repairs: 3 },
     ]);
-    expect(record.parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
+    const reason = record.parked[0]?.reason ?? "";
+    expect(reason).toMatch(/the merge conflicted in shared\.txt/);
+    expect(reason).toContain(WORDS);
+    expect(record.held).toEqual([]);
+    expect(record.queue).toEqual([]);
 
-    // The owner idled out: the dispatch ended stopped with no failure, and its run with it.
-    const { dispatch, runId } = await plane.lineRun();
-    expect(dispatch.status).toBe("stopped");
-    expect(dispatch.failure).toBeUndefined();
-    expect(dispatch.generation).toBe(1);
-    expect(plane.provisioned).toEqual([{ runId, generation: 1 }]);
+    // Nothing of the parked range reached the line; what was composed before it did.
+    const head = origin.refOf(LINE_REF) as string;
+    expect(origin.isAncestor(commits.a2, head)).toBe(false);
+    expect(origin.show(head, "shared.txt")).toMatch(/^from b\n/);
+    expect(origin.linePushes).toEqual([head]);
     expect(await plane.lineRuns()).toEqual([{ runId, status: "succeeded" }]);
-    expect(linePlane.settles.length).toBeGreaterThanOrEqual(2);
   });
 
   it("creates the line branch on the git server when the first composition finds it absent", async () => {
@@ -742,9 +1163,11 @@ describe("the project line, end to end", () => {
     // Generation 1 takes the batch and its machine is lost before it settles.
     let lost = false;
     const gen1 = await ownerFor(first, {
-      bundleUploadUrl: () => {
-        lost = true;
-        throw new Error("the machine was lost");
+      hooks: {
+        bundleUploadUrl: () => {
+          lost = true;
+          throw new Error("the machine was lost");
+        },
       },
     });
     expect(lost).toBe(true);
@@ -792,7 +1215,7 @@ describe("the project line, end to end", () => {
     if (head === undefined) return;
     expect(origin.show(head, "a.txt")).toBe("a");
     expect(origin.show(head, "b.txt")).toBe("b");
-    expect(origin.show(head, "shared.txt")).toBe("from b");
+    expect(origin.show(head, "shared.txt")).toMatch(/^from b\n/);
     expect(origin.isAncestor(commits.base, head)).toBe(true);
     expect(record.push).toMatchObject({ head, status: "published", generation: 2 });
     expect((await plane.lineRun()).dispatch.status).toBe("stopped");

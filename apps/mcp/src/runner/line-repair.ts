@@ -19,6 +19,7 @@ import {
 } from "@nightshift/contracts";
 import { conservativeDefaults, isDoneForNow, nowIso } from "@nightshift/core";
 import {
+  checkpointRef,
   continuedByNightshift,
   type GitRunner,
   git,
@@ -26,6 +27,7 @@ import {
   type LineRepairRequest,
   type RepairOutcome,
   revParse,
+  updateRef,
 } from "@nightshift/execution";
 import { type DecisionInput, recordDecision, repairObjective } from "../repair-job.js";
 import { routeJob } from "../routing.js";
@@ -139,6 +141,35 @@ export const createLineRepair = (
   const pollMs = options.pollMs ?? DEFAULT_REPAIR_POLL_MS;
   const run = (args: readonly string[]) => git(options.git, args, { cwd: checkout });
 
+  /**
+   * A decision points at the state it was made from, and a line's run is made
+   * by the plane with no checkpoint: the first repair makes one at the line's
+   * head it was asked about.
+   */
+  const ensureCheckpoint = async (at: CommitSha): Promise<void> => {
+    const scope = session.scope;
+    if ((await stores.checkpoints.listByRun(scope)).items.length > 0) return;
+    const checkpointId = ids.next("ckpt");
+    const ref = checkpointRef(checkpointId);
+    await updateRef(options.git, checkout, ref, at);
+    await stores.checkpoints.put({
+      schemaVersion: 1,
+      ...scope,
+      checkpointId,
+      executionNodeId: session.rootNodeId,
+      commitSha: at,
+      ref,
+      label: "line",
+      createdAt: nowIso(clock),
+    });
+    outbox.emit({
+      type: "checkpoint.created",
+      source: "control-plane",
+      payload: { checkpointId, ref, commitSha: at },
+      executionNodeId: session.rootNodeId,
+    });
+  };
+
   const placeBranch = async (base: CommitSha): Promise<void> => {
     const dirty = (await run(["status", "--porcelain"])).trim();
     if (dirty !== "") {
@@ -209,6 +240,7 @@ export const createLineRepair = (
     });
     const ref = { runId: session.scope.runId, jobContractId: job.jobContractId };
 
+    await ensureCheckpoint(request.lineHead);
     await recordDecision({ runtime }, { session, outbox }, decision, decisionId);
     await placeBranch(request.base);
     const submitted = await engine.submit({

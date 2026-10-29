@@ -1,22 +1,34 @@
 /**
- * The line owner on its machine (Pipkin M1b, S-04): what runs between `ready`
- * and the stop on a machine tagged as a line's.
+ * The composer's host on a line's machine (Pipkin M1b, S-04; S-02): what runs
+ * between `ready` and the stop on a machine tagged as a line's.
  *
- * It reports `running`, waits for the GitHub read token the heartbeat brings, keeps a mirror and a checkout of the line's
+ * It reports `running`, waits for the GitHub read token and the org's provider
+ * keys the heartbeat brings, keeps a mirror and a checkout of the line's
  * repository on the workspace, and prepares the project's environment as a run
- * does. Then it builds S-03's ports over the plane and the checkout and loops:
- * wait out a push left pending (an earlier generation's), take the whole queue
- * as one batch, fetch every head it names, compose and publish it
- * (`drainLine`), and compose again when a push was rejected. A range that
- * conflicts or is red is held behind a repair, which the owner does not yet run, so it is parked with its reason. When the queue has
- * been empty with no push pending for `LINE_IDLE_SECONDS` it ends, and the
- * runner's last heartbeat is `stopped` with no failure; the plane's own stop and
- * cleanup take the machine away.
+ * does. Then it opens the line's run as a run (`createLineSession`: the stores
+ * and outbox under the engine's token, an engine, and a `RunSession` whose
+ * orchestrator Agent is the composer's), builds S-03's ports over the plane and
+ * the checkout, and loops: wait out a push left pending (an earlier
+ * generation's), take the whole queue as one batch (and any held range a repair
+ * has released), fetch every head it names, compose and publish it, and compose
+ * again when a push was rejected.
+ *
+ * A range that conflicts or is red is not parked: the composer asks its repair
+ * port, `createLineRepair`, which records a decision and delegates an ordinary
+ * engine repair job on the line's run. The line never waits on it; only ranges
+ * touching the repair's reserved paths are held. When the queue has been empty
+ * for `LINE_IDLE_SECONDS`, with no push pending, no repair in flight and
+ * nothing held, the run is completed and the owner ends; the runner's last
+ * heartbeat is `stopped` with no failure, and the plane's own stop and cleanup
+ * take the machine away.
  *
  * Only the publisher writes to GitHub: the owner holds the read token, packs
- * the commits it composed, and uploads the pack through a presigned PUT.
+ * the commits it composed, and uploads the pack through a presigned PUT. The
+ * runtime's environment carries no publication base, so the engine pushes
+ * nothing for a repair either.
  */
 import { writeFile } from "node:fs/promises";
+import type { Provider } from "@nightshift/contracts";
 import {
   type CommitSha,
   type LineRecord,
@@ -38,13 +50,17 @@ import {
   type LinePublisherPort,
   type LineQueuePort,
   packCommits,
-  parkLineFailure,
   type ScratchPaths,
   tryGit,
 } from "@nightshift/execution";
 import { commandAs, type RunAs } from "@nightshift/harness";
 import type { StepInvocation } from "@nightshift/verification";
+import type { Runtime } from "../compose.js";
+import { createLineRepair } from "./line-repair.js";
+import { createLineSession } from "./line-session.js";
 import { awaitGithubToken, type LineRunnerContext, type RunnerWorkEnd } from "./main.js";
+import { awaitProviderCredentials } from "./root.js";
+import { type RunnerLog, runnerLogRecorder } from "./runner-log.js";
 import { gitWithToken, prepareProject } from "./workspace.js";
 
 /** How often the owner reads the line while it waits for work or for a push to resolve. */
@@ -81,6 +97,19 @@ export interface LineOwnerOptions {
   readonly limits?: { readonly seconds?: number };
   /** Takes a granted path back for the engine, when worktrees are handed to the project user. */
   readonly reclaim?: (dir: string) => Promise<void>;
+  /**
+   * Places the org's provider credentials where their harnesses read them and
+   * answers the environment the repairs' agents are given. Absent, none is placed.
+   */
+  readonly placeCredentials?: (
+    credentials: Partial<Record<Provider, string>>,
+  ) => Promise<Readonly<Record<string, string>>>;
+  /** Makes the line run's runtime; `createRuntime` over the engine's token unless a test supplies one. */
+  readonly makeRuntime?: (env: Record<string, string>) => Promise<Runtime>;
+  /** The runner's log, which is recorded under the line run's root node once the run exists. */
+  readonly runnerLog?: Pick<RunnerLog, "attach">;
+  /** How often a repair's node is read while waiting; the repair's own default unless a test shortens it. */
+  readonly repairPollMs?: number;
 }
 
 /** The owner was told to stop while it waited. */
@@ -308,6 +337,24 @@ const ownLine = async (
 
   const runAs = options.runAs?.(prepared.environment);
 
+  // --- The line's run: the composer's seat ----------------------------------------------
+
+  // The org's provider keys come on the beat after `running`, for the repairs' agents.
+  const credentials = await awaitProviderCredentials(heartbeat, machine, credentialTimeoutMs);
+  const providerKeys = (await options.placeCredentials?.(credentials)) ?? {};
+  const line = await createLineSession(
+    { ...context, projectEnv: prepared.environment, projectEnvFile: prepared.environmentFile },
+    {
+      parentEnv: options.parentEnv ?? {},
+      providerKeys,
+      secrets: secretsOf(config0),
+      ...(context.projectUser === undefined ? {} : { projectUser: context.projectUser }),
+      ...(options.makeRuntime === undefined ? {} : { makeRuntime: options.makeRuntime }),
+    },
+  );
+  options.runnerLog?.attach(runnerLogRecorder(async () => line.runtime, context.scope));
+  log(`the composer sits in run ${context.scope.runId} as agent ${line.composerAgentId}`);
+
   // --- S-03's ports -------------------------------------------------------------------
 
   const heads = async (): Promise<{ lineHead: string; mainHead: string }> => {
@@ -402,9 +449,17 @@ const ownLine = async (
         }),
   });
 
-  // The line owner launches no agent yet: a repair answers `failed` with the
-  // cause, so the lineage spends its budget and the range is parked with it.
-  const repair: LineComposerPorts["repair"] = async (request) => parkLineFailure(request);
+  // A conflict or a red check is an ordinary engine repair job on the line's run.
+  const repair: LineComposerPorts["repair"] = createLineRepair({
+    session: line.session,
+    runtime: line.runtime,
+    engine: line.engine,
+    outbox: line.outbox,
+    checkout: layout.checkout,
+    branch: line.session.program.repository.programBranch,
+    git: options.git,
+    ...(options.repairPollMs === undefined ? {} : { pollMs: options.repairPollMs }),
+  });
 
   const ports: LineComposerPorts = {
     queue,
@@ -426,6 +481,7 @@ const ownLine = async (
     record.batch !== undefined ||
     record.held.length > 0 ||
     !composer.idle() ||
+    !line.engine.idle() ||
     pendingPush(record) !== undefined;
 
   let idleSince: number | undefined;
@@ -464,6 +520,7 @@ const ownLine = async (
     idleSince ??= machine.now();
     if (machine.now() - idleSince >= idleMs) {
       log(`the line has been idle for ${Math.round(idleMs / 1000)}s; the owner ends`);
+      await line.complete();
       return undefined;
     }
     say("waiting for work");

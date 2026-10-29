@@ -1,4 +1,4 @@
-import type { LineCommandLog, LineRepairCause, LineRepairRequest, RepairOutcome } from "./ports.js";
+import type { LineCommandLog, LineRepairCause } from "./ports.js";
 
 /** At most `max` characters of `text`, the end kept: a log's last lines say why. */
 const clip = (text: string, max: number): string =>
@@ -18,12 +18,3 @@ export const lineCauseText = (cause: {
     ? "the landing checks failed"
     : `the landing checks failed: \`${first.command}\` exit ${first.exitCode ?? "none"}: ${clip(first.tail.trim(), 800)}`;
 };
-
-/**
- * The answer of a repair port that launches nothing: the cause, and that no
- * agent was launched, so the lineage parks with the reason on the record.
- */
-export const parkLineFailure = (request: LineRepairRequest): RepairOutcome => ({
-  kind: "failed",
-  words: `${lineCauseText(request)}; no repair agent is launched on the line, so the range is parked`,
-});
