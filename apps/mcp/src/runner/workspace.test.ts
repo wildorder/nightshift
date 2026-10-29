@@ -333,6 +333,36 @@ describe("prepareWorkspace in the project environment (P16 S-01)", () => {
     });
   };
 
+  it("moves a warm checkout's local branches to the mirror's, except the program branch and the engine's own (2026-10-29)", async () => {
+    const machine = fakeMachine({
+      exec: (_file, args) => {
+        const line = args.join(" ");
+        if (line.includes("for-each-ref") && line.endsWith("refs/heads/")) {
+          return ok("main\nprogram/fixture\nrelease/1\nnightshift/run_old/node_old\n");
+        }
+        if (line.includes("for-each-ref") && line.endsWith("refs/remotes/origin/")) {
+          return ok("origin/HEAD\norigin/main\norigin/program/fixture\norigin/release/1\n");
+        }
+        return undefined;
+      },
+    });
+    await prepare(machine);
+    const moved = machine.commands.filter((command) => command.includes(" branch -f "));
+    expect(moved).toEqual([
+      `git -C ${layout.checkout} branch -f main origin/main`,
+      `git -C ${layout.checkout} branch -f release/1 origin/release/1`,
+    ]);
+    // The branches follow the fetch, and come after the program branch is reset.
+    const fetchAt = machine.commands.findIndex((command) => command.endsWith("fetch origin"));
+    const resetAt = machine.commands.findIndex((command) =>
+      command.includes("checkout -q -B program/fixture"),
+    );
+    const movedAt = machine.commands.findIndex((command) => command.includes("branch -f main"));
+    expect(fetchAt).toBeGreaterThanOrEqual(0);
+    expect(movedAt).toBeGreaterThan(resetAt);
+    expect(resetAt).toBeGreaterThan(fetchAt);
+  });
+
   it("says where it has got to (P16 S-03): the mirror, the checkout, the exact runtimes, each setup step", async () => {
     const machine = fakeMachine();
     const progress: RunnerProgress[] = [];
