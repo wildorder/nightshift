@@ -457,8 +457,15 @@ export class NightshiftRunnerStack extends Stack {
 
     const reconcilerLogs = this.logGroup("ReconcilerFunctionLogs");
     const reconcilerRole = this.executionRole("ReconcilerFunctionRole", reconcilerLogs, [
+      // DeleteItem: a line run whose dispatch is refused ends, which releases
+      // the program's live-run marker inside the run's transaction (A-66).
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:ConditionCheckItem",
+        ],
         resources: [tableArn],
       }),
       // The reconciler's one cross-project read, every dispatch by status, is a
@@ -561,12 +568,24 @@ export class NightshiftRunnerStack extends Stack {
         actions: ["kms:Sign"],
         resources: [imported("ExecutionTokenKeyArn")],
       }),
+      // Starting a line run verifies the line's base through the GitHub App,
+      // which is read here and not written (the publisher alone pushes).
+      new iam.PolicyStatement({
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:${Aws.PARTITION}:secretsmanager:${Aws.REGION}:${Aws.ACCOUNT_ID}:secret:${GITHUB_APP_SECRET_NAME}-*`,
+        ],
+      }),
     ]);
     const reconcilerFunction = this.nodeFunction("ReconcilerFunction", {
       entry: RECONCILER_ENTRY,
       role: reconcilerRole,
       logGroup: reconcilerLogs,
-      environment: { ...environment, ...machineEnvironment },
+      environment: {
+        ...environment,
+        ...machineEnvironment,
+        NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME,
+      },
       timeout: Duration.seconds(50),
       memorySize: 512,
     });
@@ -577,9 +596,22 @@ export class NightshiftRunnerStack extends Stack {
 
     const publisherLogs = this.logGroup("PublisherFunctionLogs");
     const publisherRole = this.executionRole("PublisherFunctionRole", publisherLogs, [
+      // DeleteItem: a line run whose dispatch is refused ends, which releases
+      // the program's live-run marker inside the run's transaction (A-66).
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:ConditionCheckItem"],
+        actions: [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:ConditionCheckItem",
+        ],
         resources: [tableArn],
+      }),
+      // Starting a line run reads the line's programs and the org's live
+      // dispatches by status (the node index), as the API does.
+      new iam.PolicyStatement({
+        actions: ["dynamodb:Query"],
+        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       // The bundles the engine uploaded, read back to push (D-P10-22).
       new iam.PolicyStatement({
@@ -598,7 +630,12 @@ export class NightshiftRunnerStack extends Stack {
       entry: PUBLISHER_ENTRY,
       role: publisherRole,
       logGroup: publisherLogs,
-      environment: { ...environment, NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME },
+      environment: {
+        ...environment,
+        NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME,
+        // Recorded on the dispatch of a line run the publisher starts.
+        NIGHTSHIFT_RUNNER_AMI_VERSION: imageVersion,
+      },
       timeout: Duration.minutes(5),
       memorySize: 1024,
       // One push at a time per run (D-P10-22) is a lock row in the table, not
