@@ -179,6 +179,13 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
         body,
       });
     },
+    attempt: async (body) => {
+      await send(transport, {
+        method: "POST",
+        path: routes.lineAttempt(projectId, branch),
+        body: { generation, ...body },
+      });
+    },
     heartbeat: async (body) =>
       HeartbeatResponseSchema.parse(
         await send(transport, {

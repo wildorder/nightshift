@@ -24,6 +24,7 @@ import {
   occupiesComputeSlot,
   parkBatch,
   previousMonthOf,
+  recordAttempt,
   requestPush,
   resolvePush,
   settleBatch,
@@ -856,5 +857,38 @@ describe("held entries", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.record.compositions[0]?.repair).toEqual(repair);
     expect(result.record.parked[0]?.repair).toEqual(repair);
+  });
+});
+
+describe("recordAttempt", () => {
+  const held = (): LineRecord => ({
+    ...empty(),
+    held: [{ program: P1, upTo: A, enqueuedAt: AT, repairs: 1 }],
+    heldBy: 1,
+  });
+
+  it("raises the held entry's repairs and keeps the words, never lowering the count", () => {
+    const first = recordAttempt(
+      held(),
+      { program: P1, upTo: A, repairs: 2, lastWords: "no" },
+      1,
+      LATER,
+    );
+    if (!first.ok) throw new Error("expected ok");
+    expect(first.record.held[0]).toMatchObject({ repairs: 2, lastWords: "no" });
+    const late = recordAttempt(first.record, { program: P1, upTo: A, repairs: 1 }, 1, LATER);
+    if (!late.ok) throw new Error("expected ok");
+    expect(late.record.held[0]?.repairs).toBe(2);
+  });
+
+  it("refuses a generation that does not hold the entries, and a range not held", () => {
+    expect(recordAttempt(held(), { program: P1, upTo: A, repairs: 2 }, 2, LATER)).toMatchObject({
+      ok: false,
+      reason: "stale_generation",
+    });
+    expect(recordAttempt(held(), { program: P2, upTo: B, repairs: 2 }, 1, LATER)).toMatchObject({
+      ok: false,
+      reason: "not_held",
+    });
   });
 });

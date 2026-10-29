@@ -247,6 +247,7 @@ describe("SC-P4-01 — a user in another organisation is refused every project-s
 const USER_REFUSED_LINE_WRITES: readonly string[] = [
   "line.takeBatch",
   "line.settle",
+  "line.attempt",
   "line.push",
   "line.createBundleUploadUrl",
 ];

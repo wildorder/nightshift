@@ -22,6 +22,7 @@ import {
   makeProgramContract,
   makeRootNode,
   makeRun,
+  recordAttempt,
   requireEffectivePolicy,
   resolvePush,
   settleBatch,
@@ -325,6 +326,10 @@ const makePlane = (
       plane.record = taken.record;
       // As the plane's route answers: the record's batch, the one just taken or already held.
       return plane.record.batch;
+    },
+    attempt: async (body) => {
+      plane.events.push(`attempt:${body.repairs}`);
+      apply(recordAttempt(plane.record, body, GENERATION, iso()));
     },
     settle: async (body) => {
       plane.events.push(`settle:${body.batchId}`);

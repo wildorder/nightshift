@@ -13,6 +13,7 @@ import type {
   CommitSha,
   Dispatch,
   DispatchStatus,
+  LineAttemptBody,
   LineBatch,
   LineCompositionBody,
   LineParkBody,
@@ -81,6 +82,8 @@ export type LineRefusal =
   | { readonly reason: "no_such_push"; readonly detail: string }
   /** A held entry was not an entry of the settled batch. */
   | { readonly reason: "held_not_in_batch"; readonly detail: string }
+  /** The range an attempt names is not held back by the line. */
+  | { readonly reason: "not_held"; readonly detail: string }
   /** The write is from an owner generation the line has moved past. */
   | { readonly reason: "stale_generation"; readonly detail: string };
 
@@ -406,6 +409,50 @@ export const settleBatch = (
         generation,
         at,
       },
+      updatedAt: at,
+    },
+  };
+};
+
+/**
+ * Records a repair attempt the owner has consumed on a held entry, with the words
+ * of the repair that failed before it. Repairs never go down, so a repeated or
+ * late write cannot give budget back. Refused when the generation that holds the
+ * entries is not the caller's (a replacement has taken them) or the range is not held.
+ */
+export const recordAttempt = (
+  record: LineRecord,
+  body: Pick<LineAttemptBody, "program" | "upTo" | "repairs" | "lastWords">,
+  owner: LineOwnerArg,
+  at: string,
+): LineChange => {
+  const generation = generationOf(owner);
+  if (record.heldBy !== undefined && record.heldBy !== generation) {
+    return refuse({
+      reason: "stale_generation",
+      detail: `the held entries belong to generation ${record.heldBy}, not ${generation}`,
+    });
+  }
+  const index = record.held.findIndex((entry) => sameRange(entry, body));
+  const held = record.held[index];
+  if (held === undefined) {
+    return refuse({
+      reason: "not_held",
+      detail: `${body.program} up to ${body.upTo.slice(0, 12)} is not held by the line`,
+    });
+  }
+  const { lastWords: _old, ...rest } = held;
+  const next: LineQueueEntry = {
+    ...rest,
+    repairs: Math.max(held.repairs ?? 0, body.repairs),
+    ...(body.lastWords === undefined ? {} : { lastWords: body.lastWords }),
+  };
+  return {
+    ok: true,
+    record: {
+      ...record,
+      held: record.held.map((entry, at2) => (at2 === index ? next : entry)),
+      heldBy: generation,
       updatedAt: at,
     },
   };

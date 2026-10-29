@@ -212,13 +212,14 @@ const entry = (w: World, upTo = SHA) => ({
 });
 
 describe("the line routes", () => {
-  it("are exactly the five that survive", () => {
+  it("are exactly the six that survive", () => {
     expect(
       ROUTES.filter((route) => route.operation.startsWith("line.")).map((route) => route.operation),
     ).toEqual([
       "line.get",
       "line.takeBatch",
       "line.settle",
+      "line.attempt",
       "line.push",
       "line.createBundleUploadUrl",
     ]);

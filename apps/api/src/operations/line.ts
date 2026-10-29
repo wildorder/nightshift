@@ -15,6 +15,7 @@ import {
   EventSchema,
   type EventType,
   inlinePayloadBytes,
+  LineAttemptBodySchema,
   LineBundleUploadUrlBodySchema,
   type LineComposition,
   type LineParked,
@@ -44,6 +45,7 @@ import {
   nowIso,
   parkedEntryOf,
   type RunScope,
+  recordAttempt,
   requestPush,
   requireEffectivePolicy,
   settleBatch,
@@ -134,6 +136,7 @@ const refusalStatus = (refusal: LineRefusal): HttpError =>
     refusal.reason === "stale_batch" ||
       refusal.reason === "resolver_attempts" ||
       refusal.reason === "held_not_in_batch" ||
+      refusal.reason === "not_held" ||
       refusal.reason === "stale_generation"
       ? refusal.reason
       : "conflict",
@@ -459,6 +462,23 @@ const appendSettledMarker = async (
     })),
     at,
   );
+};
+
+/**
+ * `POST …/line/attempt?branch=`: a consumed repair attempt, and the words of the
+ * one that failed, written to the range's held entry before the repair launches.
+ */
+export const postLineAttempt: Handler = async (context) => {
+  const { deps, request, params } = context;
+  const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
+  const body = parseBody(LineAttemptBodySchema, request.body);
+  const owner = await ownerOf(context, body.generation);
+  const at = nowIso(deps.clock);
+  const record = await applyLineChange(deps, target, (latest) =>
+    recordAttempt(latest, body, owner, at),
+  );
+  return { status: 200, body: { held: record.held } };
 };
 
 /**

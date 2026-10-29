@@ -513,6 +513,9 @@ const planeFor = (
       settles.push({ batchId: body.batchId, generation });
       await hooks.afterSettle?.({ batchId: body.batchId, pushed: body.push !== undefined });
     },
+    attempt: async (body) => {
+      await line("POST", "/attempt", { generation, ...body });
+    },
     heartbeat: async (body: HeartbeatBody) =>
       HeartbeatResponseSchema.parse(await call("POST", routes.dispatchHeartbeat(scope), {}, body)),
     bundleUploadUrl: async (id) => {

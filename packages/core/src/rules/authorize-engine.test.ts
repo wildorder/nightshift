@@ -315,6 +315,7 @@ const LINE_OPERATIONS: readonly Operation[] = [
   "line.get",
   "line.takeBatch",
   "line.settle",
+  "line.attempt",
   "line.push",
   "line.createBundleUploadUrl",
 ];

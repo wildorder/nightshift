@@ -33,6 +33,7 @@ import {
   type CommitSha,
   type LineRecord,
   type LineView,
+  MAX_LINE_WORDS_CHARS,
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
   NightshiftConfigSchema,
@@ -378,6 +379,14 @@ const ownLine = async (
         }
       }
       return newest?.upTo;
+    },
+    recordAttempt: async ({ program, upTo, repairs, words }) => {
+      await plane.attempt({
+        program,
+        upTo,
+        repairs,
+        ...(words === undefined ? {} : { lastWords: words.slice(0, MAX_LINE_WORDS_CHARS) }),
+      });
     },
     settle: async (settlement) => {
       await plane.settle({

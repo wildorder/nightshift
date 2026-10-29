@@ -192,6 +192,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.get": "forbidden",
   "line.takeBatch": "forbidden",
   "line.settle": "forbidden",
+  "line.attempt": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
   "publication.request": "forbidden",
@@ -602,18 +603,20 @@ const ENGINE_LINE_OPERATIONS: readonly string[] = [
   "line.get",
   "line.takeBatch",
   "line.settle",
+  "line.attempt",
   "line.push",
   "line.createBundleUploadUrl",
 ];
 
 describe("the project line (Pipkin M1b)", () => {
   const LINE_OPERATIONS = ALL_OPERATIONS.filter((operation) => operation.startsWith("line."));
-  it("names the five line operations", () => {
+  it("names the line operations", () => {
     expect([...LINE_OPERATIONS].sort()).toEqual(
       [
         "line.get",
         "line.takeBatch",
         "line.settle",
+        "line.attempt",
         "line.push",
         "line.createBundleUploadUrl",
       ].sort(),

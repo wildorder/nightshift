@@ -139,6 +139,18 @@ export interface LineQueuePort {
   /** The `upTo` of that program's newest composed range. */
   lastComposed(program: ProgramId): Promise<CommitSha | undefined>;
   settle(settlement: LineSettlement): Promise<void>;
+  /**
+   * Writes a consumed repair attempt to the range's held entry: `repairs` spent so
+   * far, and the `words` of the repair that failed. The composer calls it, and waits
+   * for it, before a repair after the first launches, so a replacement owner finds the
+   * budget as spent. A throw means nothing was recorded and nothing launches.
+   */
+  recordAttempt?(attempt: {
+    program: ProgramId;
+    upTo: CommitSha;
+    repairs: number;
+    words?: string;
+  }): Promise<void>;
 }
 
 export interface LinePublisherPort {

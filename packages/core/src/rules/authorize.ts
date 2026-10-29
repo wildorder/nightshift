@@ -150,6 +150,7 @@ export type Operation =
   | "line.get"
   | "line.takeBatch"
   | "line.settle"
+  | "line.attempt"
   | "line.push"
   | "line.createBundleUploadUrl"
   // Publication of the program branch (D-P10-22).
@@ -355,6 +356,7 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.get": "forbidden",
   "line.takeBatch": "forbidden",
   "line.settle": "forbidden",
+  "line.attempt": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
   "publication.request": "forbidden",
@@ -507,6 +509,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "line.get": "forbidden",
   "line.takeBatch": "forbidden",
   "line.settle": "forbidden",
+  "line.attempt": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
   "publication.request": "forbidden",
@@ -690,6 +693,7 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.get": "own_project_line",
   "line.takeBatch": "own_project_line",
   "line.settle": "own_project_line",
+  "line.attempt": "own_project_line",
   "line.push": "own_project_line",
   "line.createBundleUploadUrl": "own_project_line",
   "publication.request": "own_run",

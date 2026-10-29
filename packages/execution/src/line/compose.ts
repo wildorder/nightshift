@@ -40,6 +40,8 @@ const RECENT_REPAIRS = 5;
 interface Grouped {
   range: LineRange;
   entries: LineQueueEntry[];
+  /** The words of the last failed repair, from the durable entries. */
+  lastWords?: string;
 }
 
 interface Unit {
@@ -147,7 +149,9 @@ const groupRanges = async (
     const repaired =
       unit.released?.range.repaired ??
       unit.entries.find((entry) => entry.repairs === unit.repairs && entry.repaired)?.repaired;
+    const lastWords = unit.entries.find((entry) => entry.lastWords !== undefined)?.lastWords;
     grouped.push({
+      ...(lastWords === undefined ? {} : { lastWords }),
       range: withRepairs(
         {
           program: unit.program,
@@ -319,10 +323,41 @@ export const createLineComposer = (
     launch(next);
   };
 
+  /** Writes the lineage's consumed `repairs` and the last failure's words to each of its held entries. */
+  const persistAttempt = async (
+    lineage: Lineage,
+    repairs: number,
+    words: string | undefined,
+  ): Promise<void> => {
+    if (queue.recordAttempt === undefined) return;
+    for (const item of held) {
+      if (item.owner !== lineage) continue;
+      for (const entry of item.entries) {
+        await queue.recordAttempt({
+          program: entry.program,
+          upTo: entry.upTo,
+          repairs,
+          ...(words === undefined ? {} : { words }),
+        });
+      }
+    }
+  };
+
   /** Folds in the repairs that answered; returns the entries to release to the queue. */
   const processDone = async (): Promise<{ program: ProgramId; upTo: CommitSha }[]> => {
     const release: HeldItem[] = [];
-    for (const { lineage, outcome } of done.splice(0)) {
+    while (done.length > 0) {
+      const { lineage, outcome } = done[0] as (typeof done)[number];
+      // The attempt about to be consumed, and these words, are durable before anything
+      // changes or launches; a throw leaves the answer in `done` to be folded in again.
+      if (outcome.kind === "failed") {
+        await persistAttempt(
+          lineage,
+          Math.min(lineage.repairs + 1, MAX_LINE_REPAIRS),
+          outcome.words,
+        );
+      }
+      done.shift();
       if (running === lineage) {
         running = undefined;
         inflight = undefined;
@@ -394,9 +429,18 @@ export const createLineComposer = (
       return own.repaired === undefined ? spent : { ...spent, repaired: own.repaired.commit };
     };
     const entriesByRange = new Map<LineRange, LineQueueEntry[]>();
-    const entriesOf = (range: LineRange, repairs: number): LineQueueEntry[] =>
-      (entriesByRange.get(range) ?? []).map(({ repairs: _old, repaired: _stale, ...entry }) =>
-        repairs > 0 ? { ...entry, repairs } : entry,
+    /** The durable words of each range's last failed repair, to say when the budget is spent. */
+    const wordsByRange = new Map<LineRange, string>();
+    const entriesOf = (range: LineRange, repairs: number, words?: string): LineQueueEntry[] =>
+      (entriesByRange.get(range) ?? []).map(
+        ({ repairs: _old, repaired: _stale, lastWords: kept, ...entry }) => {
+          const said = words ?? kept;
+          return {
+            ...entry,
+            ...(repairs > 0 ? { repairs } : {}),
+            ...(said === undefined ? {} : { lastWords: said }),
+          };
+        },
       );
 
     const finish = async (settlement: Omit<LineSettlement, "batchId" | "parked" | "held">) => {
@@ -419,7 +463,10 @@ export const createLineComposer = (
 
     const grouped = await groupRanges(ports, lineHead, batch, [...pendingRelease]);
     const ranges = grouped.map((item) => item.range);
-    for (const item of grouped) entriesByRange.set(item.range, item.entries);
+    for (const item of grouped) {
+      entriesByRange.set(item.range, item.entries);
+      if (item.lastWords !== undefined) wordsByRange.set(item.range, item.lastWords);
+    }
     if (ranges.length === 0) {
       await finish({});
       return outcome;
@@ -706,7 +753,8 @@ export const createLineComposer = (
         const rangePaths = await pathsOf(range, head);
         const causePaths = failure.cause === "line_conflict" ? failure.paths : rangePaths;
         if (prior >= MAX_LINE_REPAIRS) {
-          const reason = `${lineCauseText({ cause: failure.cause, paths: causePaths, checks: failure.checks })}; the lineage has spent its ${MAX_LINE_REPAIRS} repairs${own?.lastWords === undefined ? "" : `; the last repair failed: ${own.lastWords}`}`;
+          const lastWords = own?.lastWords ?? wordsByRange.get(range);
+          const reason = `${lineCauseText({ cause: failure.cause, paths: causePaths, checks: failure.checks })}; the lineage has spent its ${MAX_LINE_REPAIRS} repairs${lastWords === undefined ? "" : `; the last repair failed: ${lastWords}`}`;
           park(withRepairs(range, prior), reason, {
             ...(own?.lastRepair === undefined ? {} : { repair: own.lastRepair }),
           });
@@ -750,7 +798,7 @@ export const createLineComposer = (
         for (const path of [...rangePaths, ...causePaths]) lineage.paths.add(path);
         newHeld.push({
           range: withRepairs(range, lineage.repairs),
-          entries: entriesOf(range, lineage.repairs),
+          entries: entriesOf(range, lineage.repairs, lineage.lastWords),
           owner: lineage,
         });
         await reopen(head);

@@ -51,6 +51,7 @@ import { getJobContract, listJobContracts, putJobContract } from "./operations/j
 import {
   createLineBundleUploadUrl,
   getLine,
+  postLineAttempt,
   postLinePush,
   postLineSettle,
   takeLineBatch,
@@ -149,6 +150,13 @@ export const ROUTES: readonly Route[] = [
     operation: "line.settle",
     query: LINE_QUERY,
     handler: postLineSettle,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/attempt`,
+    operation: "line.attempt",
+    query: LINE_QUERY,
+    handler: postLineAttempt,
   },
   {
     method: "POST",

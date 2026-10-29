@@ -54,6 +54,7 @@ export const routes = {
     `/projects/${projectId}/line${action}?branch=${encodeURIComponent(branch)}`,
   lineBatch: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/batch"),
   lineSettle: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/settle"),
+  lineAttempt: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/attempt"),
   linePush: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/push"),
   lineBundleUploadUrl: (projectId: ProjectId, branch: string) =>
     routes.line(projectId, branch, "/bundle-upload-url"),

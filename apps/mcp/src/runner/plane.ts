@@ -9,6 +9,7 @@ import type {
   HeartbeatBody,
   HeartbeatResponse,
   JobContract,
+  LineAttemptBody,
   LineBatch,
   LineSettleBody,
   LineView,
@@ -62,6 +63,8 @@ export interface LineRunnerPlane {
   takeBatch(release?: TakeLineBatchBody["release"]): Promise<LineBatch | undefined>;
   /** Settles the held batch, with its composition and push when there is one. */
   settle(body: LineSettleBody): Promise<void>;
+  /** Writes a consumed repair attempt (and the last failure's words) to the range's held entry. */
+  attempt(body: Omit<LineAttemptBody, "generation">): Promise<void>;
   /** The run's dispatch heartbeat. */
   heartbeat(body: HeartbeatBody): Promise<HeartbeatResponse>;
   /** A presigned PUT for one bundle; `key` is what the push names. */

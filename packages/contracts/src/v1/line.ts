@@ -36,6 +36,8 @@ export const MAX_LINE_COMPOSITIONS = 50;
 export const MAX_LINE_PARKED = 50;
 /** The most repairs one lineage of ranges may spend. */
 export const MAX_LINE_REPAIRS = 3;
+/** The most characters of a failed repair's words a held entry keeps. */
+export const MAX_LINE_WORDS_CHARS = 2000;
 /** The repairs a lineage has spent; absent means none. */
 export const LineRepairsSchema = z.int().min(0).max(MAX_LINE_REPAIRS);
 
@@ -58,6 +60,8 @@ export const LineQueueEntrySchema = z.strictObject({
   repairs: LineRepairsSchema.optional(),
   /** The successful repair commit for this range, composed first when the range returns. */
   repaired: CommitShaSchema.optional(),
+  /** The words of the last repair of this range that failed, kept so a replacement owner can say them when the budget is spent. */
+  lastWords: z.string().max(MAX_LINE_WORDS_CHARS).optional(),
 });
 export type LineQueueEntry = z.infer<typeof LineQueueEntrySchema>;
 
@@ -337,6 +341,20 @@ export const LineParkBodySchema = z.strictObject({
   repair: LineRepairRefSchema.optional(),
 });
 export type LineParkBody = z.infer<typeof LineParkBodySchema>;
+
+/**
+ * `POST …/line/attempt?branch=`: a repair attempt the owner has consumed (and the
+ * words of the one that failed before it), written to the held entry of the range
+ * before the paid repair is launched, so a replacement owner cannot spend it again.
+ */
+export const LineAttemptBodySchema = z.strictObject({
+  generation: z.int().min(1),
+  program: ProgramIdSchema,
+  upTo: CommitShaSchema,
+  repairs: z.int().min(1).max(MAX_LINE_REPAIRS),
+  lastWords: z.string().max(MAX_LINE_WORDS_CHARS).optional(),
+});
+export type LineAttemptBody = z.infer<typeof LineAttemptBodySchema>;
 
 /**
  * `POST …/line/settle?branch=`: one batch settled with what the composition
