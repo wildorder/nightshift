@@ -22,6 +22,8 @@ export const ArtifactKindSchema = z.enum([
   "report",
   /** P20: a chunk or index of measurement observations (body: MeasurementLedgerChunk / MeasurementLedgerIndex). */
   "measurement-ledger",
+  /** A machine's runner log, kept by the runner under the run's root node (S-02). */
+  "runner-log",
   "other",
 ]);
 export type ArtifactKind = z.infer<typeof ArtifactKindSchema>;

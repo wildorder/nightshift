@@ -18,7 +18,8 @@ import { createDynamoPublishLock } from "../aws/publish-lock.js";
 import { createS3BundleStore } from "../aws/s3-bundles.js";
 import { loadConfig } from "../config.js";
 import { createGitHubAppClient, type GitHubAppSecret } from "../github/app.js";
-import { type LineScope, publishAll, publishLine } from "../runner/publisher.js";
+import type { ApiDeps } from "../http.js";
+import { publishAll, publishLine } from "../runner/publisher.js";
 
 const config = loadConfig(process.env);
 const table = createAwsClients().table;
@@ -62,20 +63,33 @@ const isLineEvent = (
 ): event is Extract<PublishEvent, { readonly kind: "line" }> =>
   "kind" in event && event.kind === "line";
 
-/** Starts the line owner: the dispatch function, asynchronously, with the line's identity. */
-const startLineMachine = async (target: Pick<LineScope, "projectId" | "branch">): Promise<void> => {
-  const functionArn = config.dispatchFunctionArn;
-  if (functionArn === undefined)
-    throw new Error("the publisher needs NIGHTSHIFT_DISPATCH_FUNCTION_ARN");
-  await new LambdaClient({}).send(
-    new InvokeCommand({
-      FunctionName: functionArn,
-      InvocationType: "Event",
-      Payload: Buffer.from(
-        JSON.stringify({ kind: "line", projectId: target.projectId, branch: target.branch }),
-      ),
-    }),
-  );
+/**
+ * The control plane's wiring a line run is started through (`startLineRun`):
+ * the same admission as a dispatch, then the dispatch function invoked
+ * asynchronously to provision it.
+ */
+const plane: ApiDeps = {
+  stores,
+  clock: systemClock,
+  github,
+  ...(config.runnerAmiVersion === undefined
+    ? {}
+    : { runner: { amiVersion: config.runnerAmiVersion } }),
+  ...(config.dispatchFunctionArn === undefined
+    ? {}
+    : {
+        dispatcher: {
+          provision: async (scope) => {
+            await new LambdaClient({}).send(
+              new InvokeCommand({
+                FunctionName: config.dispatchFunctionArn,
+                InvocationType: "Event",
+                Payload: Buffer.from(JSON.stringify(scope)),
+              }),
+            );
+          },
+        },
+      }),
 };
 
 export const handler = async (event: PublishEvent): Promise<Record<string, number>> => {
@@ -85,7 +99,7 @@ export const handler = async (event: PublishEvent): Promise<Record<string, numbe
     github,
     bundles,
     lock,
-    startLineMachine,
+    plane,
     log: (line: string) => console.warn(`publisher: ${line}`),
   };
   if (isLineEvent(event)) {

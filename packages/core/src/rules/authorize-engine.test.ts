@@ -36,6 +36,9 @@ const target = (overrides: Partial<AuthorizationTarget> = {}): AuthorizationTarg
   agentId: here.ids.next("agent"),
   requestedNodeStatus: "verified",
   currentGeneration: 2,
+  branch: "nightshift/develop",
+  lineBranchOfProgram: "nightshift/develop",
+  callerRunLive: true,
   ...overrides,
 });
 
@@ -55,17 +58,6 @@ const FORBIDDEN: readonly Operation[] = [
   "dispatch.create",
   "dispatch.cancel",
   "dispatch.resume",
-  "line.get",
-  "line.takeBatch",
-  "line.compose",
-  "line.park",
-  "line.decide",
-  "line.announce",
-  "line.settle",
-  "line.push",
-  "line.createBundleUploadUrl",
-  "line.heartbeat",
-  "line.cancel",
   "publication.retry",
   "computeRecommendation.get",
   "warmCache.get",
@@ -117,14 +109,20 @@ describe("the engine's table (D-P10-20)", () => {
   it("reaches every record of its own run, and never narrows to a node or an agent", () => {
     for (const operation of ALL_OPERATIONS) {
       const access = ENGINE_ACCESS[operation];
-      expect(["forbidden", "own_project", "own_program", "own_run"], operation).toContain(access);
+      expect(
+        ["forbidden", "own_project", "own_project_line", "own_program", "own_run"],
+        operation,
+      ).toContain(access);
     }
   });
 
   it.each(ALL_OPERATIONS)("decides %s within its own run as the table says", (operation) => {
     const result = authorize(engine(), operation, target());
     if (ENGINE_ACCESS[operation] === "forbidden") {
-      expect(result).toMatchObject({ allowed: false, reason: "execution_forbidden_operation" });
+      expect(result).toMatchObject({
+        allowed: false,
+        reason: "execution_forbidden_operation",
+      });
     } else {
       expect(result).toEqual({ allowed: true });
     }
@@ -153,7 +151,9 @@ describe("the engine's table (D-P10-20)", () => {
       (operation) => READ_OPERATIONS.has(operation) && ENGINE_ACCESS[operation] !== "forbidden",
     ),
   )("reads %s in another run of its own program (D-P10-29)", (operation) => {
-    expect(authorize(engine(), operation, target({ ...siblingRun }))).toEqual({ allowed: true });
+    expect(authorize(engine(), operation, target({ ...siblingRun }))).toEqual({
+      allowed: true,
+    });
   });
 
   it.each(writes)("refuses %s in another run of its own program (D-P10-29)", (operation) => {
@@ -177,7 +177,9 @@ describe("the engine's table (D-P10-20)", () => {
       });
     }
     const { requestedNodeStatus: _status, ...noStatus } = target();
-    expect(authorize(engine(), "node.put", noStatus)).toMatchObject({ allowed: false });
+    expect(authorize(engine(), "node.put", noStatus)).toMatchObject({
+      allowed: false,
+    });
   });
 
   it("lists its own project's programs, for the report it publishes at finish, and no other's (2026-10-26)", () => {
@@ -198,7 +200,10 @@ describe("the engine's table (D-P10-20)", () => {
   it("reads and writes its own project's gate health, from any run of it (D-P15-07)", () => {
     for (const operation of ["gateHealth.get", "gateHealth.put"] as const) {
       expect(
-        authorize(engine(), operation, { projectId: here.scope.projectId, currentGeneration: 2 }),
+        authorize(engine(), operation, {
+          projectId: here.scope.projectId,
+          currentGeneration: 2,
+        }),
       ).toEqual({
         allowed: true,
       });
@@ -212,7 +217,9 @@ describe("the engine's table (D-P10-20)", () => {
   });
 
   it("mints its workers' tokens within its run, which no other execution may", () => {
-    expect(authorize(engine(), "agent.mintToken", target())).toEqual({ allowed: true });
+    expect(authorize(engine(), "agent.mintToken", target())).toEqual({
+      allowed: true,
+    });
   });
 });
 
@@ -291,6 +298,70 @@ describe("the engine and measurement summaries (P20)", () => {
     expect(ENGINE_ACCESS["measurement.get"]).toBe("own_program");
     expect(ENGINE_ACCESS["measurement.listByNode"]).toBe("own_program");
     expect(ENGINE_ACCESS["measurement.listByRun"]).toBe(ENGINE_ACCESS["artifact.list"]);
-    expect(authorize(engine(), "measurement.put", target())).toEqual({ allowed: true });
+    expect(authorize(engine(), "measurement.put", target())).toEqual({
+      allowed: true,
+    });
+  });
+});
+
+/** A target with the named stored facts left unresolved. */
+const without = (...omitted: (keyof AuthorizationTarget)[]): AuthorizationTarget => {
+  const bare: Record<string, unknown> = { ...target() };
+  for (const key of omitted) delete bare[key];
+  return bare as AuthorizationTarget;
+};
+
+const LINE_OPERATIONS: readonly Operation[] = [
+  "line.get",
+  "line.takeBatch",
+  "line.settle",
+  "line.attempt",
+  "line.push",
+  "line.createBundleUploadUrl",
+];
+
+describe("the line run's engine (own_project_line)", () => {
+  it.each(LINE_OPERATIONS)("%s is own_project_line for the engine only", (operation) => {
+    expect(ENGINE_ACCESS[operation]).toBe("own_project_line");
+  });
+
+  it.each(LINE_OPERATIONS)("allows %s on its own project and line branch", (operation) => {
+    expect(authorize(engine(), operation, target())).toEqual({
+      allowed: true,
+    });
+  });
+
+  it.each(LINE_OPERATIONS)(
+    "refuses %s on another branch, project, or without the facts",
+    (operation) => {
+      const refused = (overrides: Partial<AuthorizationTarget>) =>
+        authorize(engine(), operation, target(overrides)).allowed;
+      const refusedWithout = (key: keyof AuthorizationTarget) =>
+        authorize(engine(), operation, without(key)).allowed;
+      expect(refused({ branch: "other" })).toBe(false);
+      expect(refused({ projectId: elsewhere.scope.projectId })).toBe(false);
+      expect(refusedWithout("lineBranchOfProgram")).toBe(false);
+      expect(refusedWithout("branch")).toBe(false);
+      expect(refused({ lineBranchOfProgram: "other" })).toBe(false);
+    },
+  );
+
+  it.each(LINE_OPERATIONS.filter((operation) => !READ_OPERATIONS.has(operation)))(
+    "refuses the write %s for a stale generation, an ended run, or an unknown fact",
+    (operation) => {
+      expect(authorize(engine(1), operation, target())).toMatchObject({
+        allowed: false,
+        reason: "stale_generation",
+      });
+      expect(authorize(engine(), operation, without("currentGeneration")).allowed).toBe(false);
+      expect(authorize(engine(), operation, target({ callerRunLive: false })).allowed).toBe(false);
+      expect(authorize(engine(), operation, without("callerRunLive")).allowed).toBe(false);
+    },
+  );
+
+  it("lets line.get read regardless of generation or run liveness", () => {
+    expect(
+      authorize(engine(1), "line.get", target({ callerRunLive: false, currentGeneration: 5 })),
+    ).toEqual({ allowed: true });
   });
 });

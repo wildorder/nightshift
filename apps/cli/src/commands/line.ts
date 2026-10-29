@@ -5,11 +5,14 @@
  * which branch; without a `line` there is nothing to ask.
  */
 import {
+  type Dispatch,
   type LineComposition,
   type LineParked,
   type LineRange,
+  type LineRepairRef,
   type LineView,
   LineViewSchema,
+  type Run,
 } from "@nightshift/contracts";
 import { routes, send } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
@@ -34,6 +37,24 @@ const describeRange = (range: LineRange, names: ReadonlyMap<string, string>): st
 const describeRanges = (ranges: readonly LineRange[], names: ReadonlyMap<string, string>): string =>
   ranges.map((range) => describeRange(range, names)).join(", ");
 
+const describeRepair = (repair: LineRepairRef): string =>
+  `    repair ${repair.runId} ${repair.jobContractId}`;
+
+/** A run of the line program with its dispatch, when it has one. */
+export interface LineRunEntry {
+  readonly run: Run;
+  readonly dispatch?: Dispatch | undefined;
+}
+
+const describeRun = ({ run, dispatch }: LineRunEntry): string => {
+  const times = `started ${run.startedAt}${run.endedAt === undefined ? "" : `, ended ${run.endedAt}`}`;
+  const machine =
+    dispatch === undefined
+      ? "no machine"
+      : `${dispatch.instanceType}${dispatch.instanceId === undefined ? "" : ` ${dispatch.instanceId}`}, metered ${usd(dispatch.spend.meteredUsd)}`;
+  return `  ${run.runId}  ${run.status}${run.status === "running" ? " (live)" : ""}  ${times}  ${machine}`;
+};
+
 const describeComposition = (
   composition: LineComposition,
   names: ReadonlyMap<string, string>,
@@ -48,6 +69,7 @@ const describeComposition = (
       `    resolver ${resolver.decision}, ${resolver.attempts} attempt${resolver.attempts === 1 ? "" : "s"}${resolver.detail === undefined ? "" : `: ${resolver.detail}`}`,
     );
   }
+  if (composition.repair !== undefined) lines.push(describeRepair(composition.repair));
   lines.push(
     composition.pushed === undefined ? "    not pushed" : `    pushed ${composition.pushed.at}`,
   );
@@ -61,12 +83,13 @@ const describeParked = (parked: LineParked, names: ReadonlyMap<string, string>):
       `    resolver ${parked.resolver.decision}, ${parked.resolver.attempts} attempt${parked.resolver.attempts === 1 ? "" : "s"}`,
     );
   }
+  if (parked.repair !== undefined) lines.push(describeRepair(parked.repair));
   return lines;
 };
 
 /** The whole of `line status` for one view, a line per entry. */
-export const describeLine = (view: LineView): string[] => {
-  const { record, dispatch, usage } = view;
+export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = []): string[] => {
+  const { record, usage } = view;
   const names = new Map<string, string>(view.programs.map((p) => [p.program, p.branch]));
   const lines: string[] = [];
 
@@ -82,12 +105,11 @@ export const describeLine = (view: LineView): string[] => {
     );
   }
 
-  if (dispatch === undefined) {
-    lines.push("line owner: none started");
+  if (runs.length === 0) {
+    lines.push("runs: none");
   } else {
-    lines.push(
-      `line owner: ${dispatch.status}, generation ${dispatch.generation}, metered ${usd(dispatch.spend.meteredUsd)}`,
-    );
+    lines.push(`runs: ${runs.length}`);
+    for (const entry of runs) lines.push(describeRun(entry));
   }
 
   if (usage === undefined) {
@@ -122,14 +144,6 @@ export const describeLine = (view: LineView): string[] => {
     for (const parked of record.parked) lines.push(...describeParked(parked, names));
   }
 
-  const newest = record.decisions?.at(-1);
-  if (record.decisions !== undefined && newest !== undefined) {
-    const unit =
-      newest.unit.kind === "main"
-        ? `main ${short(newest.unit.commit)}`
-        : describeRange(newest.unit.range, names);
-    lines.push(`decisions: ${record.decisions.length}`, `  newest: ${unit}: ${newest.choice}`);
-  }
   return lines;
 };
 
@@ -154,6 +168,25 @@ export const lineStatus = async (
       path: routes.line(config.projectId, config.line.branch),
     }),
   );
-  for (const text of describeLine(view)) environment.out(text);
+  const program = { projectId: config.projectId, programId: view.programId };
+  const runs: Run[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await session.stores.runs.listByProgram(
+      program,
+      cursor === undefined ? {} : { cursor },
+    );
+    runs.push(...page.items);
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  const entries: LineRunEntry[] = [];
+  for (const run of runs) {
+    entries.push({
+      run,
+      dispatch: await session.stores.dispatches.get({ ...program, runId: run.runId }),
+    });
+  }
+  for (const text of describeLine(view, entries)) environment.out(text);
   return 0;
 };

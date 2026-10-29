@@ -487,8 +487,10 @@ export class NightshiftApiStack extends Stack {
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
-          // Any writer of the table may meet the shared adapter's condition checks.
+          // Any writer of the table may meet the shared adapter's condition
+          // checks and deletes (the live-run marker an ending run releases).
           "dynamodb:ConditionCheckItem",
+          "dynamodb:DeleteItem",
         ],
         resources: [tableArn],
       }),

@@ -1,608 +1,476 @@
-/** The line composer against real git repositories. */
+/** The line composer against real git repositories, with fake queue, publisher and repair. */
 import {
   type CommitSha,
   type LineBatch,
   LineCompositionBodySchema,
   LineParkBodySchema,
-  type LineRecord,
+  type LineQueueEntry,
+  type LineRepairRef,
   type ProgramId,
   ProgramIdSchema,
 } from "@nightshift/contracts";
 import {
-  appendQueueEntry,
-  createFixtures,
-  makeLineRecord,
-  resolvePush,
-  settleBatch,
-  takeBatch,
-} from "@nightshift/core";
-import {
-  composeLineBatch,
-  drainLine,
-  type LineBatchOutcome,
-  type LineCheckoutPort,
+  createLineComposer,
+  git,
   type LineComposerPorts,
-  type LineFailure,
-  type LineResolution,
+  type LineRepairRequest,
   type LineSettlement,
-  type LineVerifierPort,
+  nodeGitRunner,
+  type RepairOutcome,
 } from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
 import { createLineRepo, type LineRepo, makeFakeVerifier } from "./line-repo.js";
 
 const P1 = ProgramIdSchema.parse("prog_01J0000000000000000000000A");
 const P2 = ProgramIdSchema.parse("prog_01J0000000000000000000000B");
+const P3 = ProgramIdSchema.parse("prog_01J0000000000000000000000C");
 const START = Date.parse("2026-10-01T00:00:00.000Z");
+const REF: LineRepairRef = {
+  runId: "run_01J0000000000000000000000A" as LineRepairRef["runId"],
+  jobContractId: "job_01J0000000000000000000000A" as LineRepairRef["jobContractId"],
+};
 
 const repos: LineRepo[] = [];
 afterEach(async () => {
   await Promise.all(repos.splice(0).map((r) => r.close()));
 });
 
-const entry = (program: ProgramId, upTo: CommitSha, minute: number) => ({
+const entry = (
+  program: ProgramId,
+  upTo: CommitSha,
+  minute: number,
+  repairs?: number,
+  repaired?: CommitSha,
+): LineQueueEntry => ({
   program,
   upTo,
   enqueuedAt: new Date(START + minute * 60_000).toISOString(),
+  ...(repairs === undefined ? {} : { repairs }),
+  ...(repaired === undefined ? {} : { repaired }),
 });
-const batchOf = (entries: LineBatch["entries"], batchId = "b1"): LineBatch => ({
-  batchId,
-  entries,
-  takenAt: new Date(START).toISOString(),
-  generation: 1,
-});
+
+interface Deferred {
+  request: LineRepairRequest;
+  resolve: (outcome: RepairOutcome) => void;
+}
 
 interface Harness {
   lr: LineRepo;
-  ports: LineComposerPorts;
+  composer: ReturnType<typeof createLineComposer>;
+  queue: LineQueueEntry[];
+  held: LineQueueEntry[];
   settled: LineSettlement[];
-  published: { head: CommitSha; expectedPredecessor: CommitSha }[];
-  staged: { head: CommitSha; expectedPredecessor: CommitSha }[];
-  resolves: LineFailure[];
-  verifies: { commit: CommitSha; deadline?: string }[];
-  open: Set<string>;
-  now: { ms: number };
-  queue: LineBatch[];
-  lastComposed: Record<string, CommitSha | undefined>;
+  repairs: Deferred[];
+  released: { program: ProgramId; upTo: CommitSha }[][];
+  /** Pushes still to be rejected; a rejection requeues the composition's ranges as the plane does. */
+  reject: number;
 }
 
 const setup = async (
-  opts: {
-    passes?: (read: (path: string) => Promise<string | undefined>) => boolean | Promise<boolean>;
-    resolve?: (failure: LineFailure, h: Harness) => Promise<LineResolution> | LineResolution;
-    reject?: boolean;
-    stageThrows?: boolean;
-    advanceOnVerify?: number;
-    timedOut?: boolean;
-  } = {},
+  opts: { repair?: (request: LineRepairRequest) => RepairOutcome } = {},
 ): Promise<Harness> => {
-  const lr = await createLineRepo({ programs: ["p1", "p2"] });
+  const lr = await createLineRepo({ programs: ["p1", "p2", "p3"] });
   repos.push(lr);
   const inner = lr.checkout();
-  const open = new Set<string>();
-  const checkout: LineCheckoutPort = {
-    ...inner,
-    open: async (base) => {
-      const wt = await inner.open(base);
-      open.add(wt.path);
-      return wt;
-    },
-    close: async (wt) => {
-      open.delete(wt.path);
-      await inner.close(wt);
-    },
-  };
-  const fake = makeFakeVerifier(lr, (_c, read) => (opts.passes ? opts.passes(read) : true));
-  const now = { ms: START };
-  const h = {
+  // Red when any file holds RED; conflict markers also fail it.
+  const verifier = makeFakeVerifier(lr, async (commit) => {
+    const files = await git(nodeGitRunner, ["grep", "-l", "-e", "RED", commit], {
+      cwd: lr.repo,
+    }).catch(() => "");
+    return files.trim() === "";
+  });
+  const h: Harness = {
     lr,
-    settled: [],
-    published: [],
-    staged: [],
-    resolves: [],
-    verifies: [],
-    open,
-    now,
     queue: [],
-    lastComposed: {},
+    held: [],
+    settled: [],
+    repairs: [],
+    released: [],
+    reject: 0,
   } as unknown as Harness;
-  const verifier: LineVerifierPort = {
-    async verify(input) {
-      h.verifies.push({
-        commit: input.commit,
-        ...(input.deadline ? { deadline: input.deadline } : {}),
-      });
-      const result = await fake.verify(input);
-      now.ms += opts.advanceOnVerify ?? 0;
-      return opts.timedOut ? { ...result, timedOut: true } : result;
-    },
-  };
-  h.ports = {
+  const composed: Record<string, CommitSha> = {};
+  let batchNo = 0;
+  const ports: LineComposerPorts = {
     queue: {
-      takeBatch: async () => h.queue.shift(),
-      lastComposed: async (program) => h.lastComposed[program],
+      takeBatch: async (release) => {
+        if (release) {
+          h.released.push(release);
+          const back = h.held.filter((e) =>
+            release.some((r) => r.program === e.program && r.upTo === e.upTo),
+          );
+          h.held = h.held.filter((e) => !back.includes(e));
+          h.queue.unshift(...back);
+        }
+        if (h.queue.length === 0) return undefined;
+        const entries = h.queue.splice(0);
+        batchNo++;
+        return {
+          batchId: `b${batchNo}`,
+          entries,
+          takenAt: new Date(START).toISOString(),
+          generation: 1,
+        } satisfies LineBatch;
+      },
+      heldEntries: async () => [...h.held],
+      lastComposed: async (program) => composed[program],
       settle: async (s) => {
         h.settled.push(s);
+        h.held.push(...(s.held ?? []));
       },
     },
-    checkout,
+    checkout: inner,
     verifier,
     publisher: {
-      stage: async (input) => {
-        if (opts.stageThrows) throw new Error("upload failed");
-        h.staged.push(input);
-        return { bundleKey: `bundles/${input.head}` };
-      },
-      outcome: async (input) => {
-        h.published.push({
-          head: input.head,
-          expectedPredecessor: h.staged.at(-1)?.expectedPredecessor as CommitSha,
-        });
-        return opts.reject ? { status: "rejected", detail: "moved" } : { status: "published" };
+      stage: async (input) => ({ bundleKey: `bundles/${input.head}` }),
+      outcome: async ({ head }) => {
+        if (h.reject > 0) {
+          h.reject--;
+          const rejected = h.settled.at(-1)?.composition;
+          h.queue.unshift(
+            ...(rejected?.ranges ?? []).map((range) => ({
+              program: range.program,
+              upTo: range.upTo,
+              enqueuedAt: new Date(START).toISOString(),
+              ...(range.repairs === undefined ? {} : { repairs: range.repairs }),
+              ...(range.repaired === undefined ? {} : { repaired: range.repaired }),
+            })),
+          );
+          return { status: "rejected", detail: "the line moved" };
+        }
+        await git(nodeGitRunner, ["update-ref", "refs/heads/line", head], { cwd: lr.repo });
+        // Only a published composition counts as composed, as the plane's record has it.
+        for (const range of h.settled.at(-1)?.composition?.ranges ?? []) {
+          composed[range.program] = range.upTo;
+        }
+        return { status: "published" };
       },
     },
-    resolve: async (failure) => {
-      h.resolves.push(failure);
-      if (!opts.resolve) throw new Error("unexpected resolve");
-      return opts.resolve(failure, h);
-    },
-    clock: { now: () => now.ms },
+    repair: (request) =>
+      opts.repair
+        ? Promise.resolve(opts.repair(request))
+        : new Promise((resolve) => h.repairs.push({ request, resolve })),
+    clock: { now: () => START },
   };
+  h.composer = createLineComposer(ports, async () => ({
+    lineHead: await lr.tip("line"),
+    mainHead: await lr.tip("main"),
+  }));
   return h;
 };
 
 const assertSchemas = (h: Harness) => {
   for (const s of h.settled) {
-    if (s.composition)
+    if (s.composition) {
       expect(
-        LineCompositionBodySchema.safeParse({
-          batchId: s.batchId,
-          ...s.composition,
-        }).success,
+        LineCompositionBodySchema.safeParse({ batchId: s.batchId, ...s.composition }).success,
       ).toBe(true);
+    }
     for (const p of s.parked)
       expect(LineParkBodySchema.safeParse({ batchId: s.batchId, ...p }).success).toBe(true);
   }
 };
 
-const isAnc = async (lr: LineRepo, a: CommitSha, d: CommitSha) => lr.checkout().isAncestor(a, d);
+const parentsOf = async (lr: LineRepo, commit: string) =>
+  (await git(nodeGitRunner, ["rev-list", "--parents", "-n", "1", commit], { cwd: lr.repo }))
+    .trim()
+    .split(" ")
+    .slice(1);
 
-describe("composeLineBatch", () => {
-  it("composes two programs and main into one verified composition", async () => {
+describe("the line composer", () => {
+  it("composes a batch that is clean and green and goes idle", async () => {
     const h = await setup();
-    const { lr } = h;
-    const line = await lr.commit("line", { "l.txt": "l\n" });
-    const main = await lr.commit("main", { "m.txt": "m\n" });
-    const a = await lr.commit("p1", { "a.txt": "a\n" });
-    const b = await lr.commit("p2", { "b.txt": "b\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: line,
-      mainHead: main,
-      batch: batchOf([entry(P1, a, 1), entry(P2, b, 2)]),
-    });
-    expect(h.settled).toHaveLength(1);
-    const c = h.settled[0]?.composition;
-    expect(c?.parent).toBe(line);
-    expect(c?.verification.outcome).toBe("passed");
-    expect(c?.ranges).toEqual([
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    const b = await h.lr.commit("p2", { "b.txt": "b\n" });
+    h.queue.push(entry(P1, a, 1), entry(P2, b, 2));
+    const out = await h.composer.drain();
+    expect(out).toHaveLength(1);
+    expect(out[0]?.composed).toEqual([
       { program: P1, upTo: a },
       { program: P2, upTo: b },
     ]);
-    for (const x of [main, a, b]) expect(await isAnc(lr, x, c?.commit as CommitSha)).toBe(true);
-    expect(h.settled[0]?.parked).toEqual([]);
-    expect(h.published).toEqual([{ head: c?.commit, expectedPredecessor: line }]);
-    expect(h.settled[0]?.push).toEqual({
-      head: c?.commit,
-      expectedPredecessor: line,
-      bundleKey: `bundles/${c?.commit}`,
-    });
-    expect(out.head).toBe(c?.commit);
-    expect(h.open.size).toBe(0);
+    expect(h.composer.idle()).toBe(true);
     assertSchemas(h);
   });
 
-  it("makes one range per program from the last entry and lastComposed", async () => {
+  it("keeps composing other files while a conflicting range is repaired, then composes the repair first", async () => {
     const h = await setup();
-    const a1 = await h.lr.commit("p1", { "a.txt": "1\n" });
-    h.lastComposed[P1] = a1;
-    const a = a1;
-    const a_ = await h.lr.commit("p1", { "a2.txt": "2\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: h.lr.initial,
-      mainHead: h.lr.initial,
-      batch: batchOf([entry(P1, a, 1), entry(P1, a_, 2)]),
-    });
-    expect(out.composed).toEqual([{ program: P1, from: a1, upTo: a_ }]);
+    const { lr } = h;
+    const line0 = await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n", "new.txt": "n\n" });
+    const p2 = await lr.commit("p2", { "other.txt": "o\n" });
+    const p3 = await lr.commit("p3", { "new.txt": "n\n" });
+    // p1..p3 branch from the initial commit: p1 conflicts with the line on shared.txt.
+    h.queue.push(entry(P1, p1, 1), entry(P2, p2, 2), entry(P3, p3, 3));
+
+    const first = await h.composer.step();
+    expect(first.idle).toBe(false);
+
+    // One repair in flight, started from the candidate.
+    expect(h.repairs).toHaveLength(1);
+    const request = h.repairs[0]?.request as LineRepairRequest;
+    expect(request.cause).toBe("line_conflict");
+    expect(request.attempt).toBe(1);
+    expect(request.lineHead).toBe(line0);
+    expect(request.paths).toEqual(["shared.txt"]);
+    expect(await parentsOf(lr, request.base)).toEqual([line0, p1]);
+    expect(await lr.readFileAtCommit(request.base, "shared.txt")).toContain("<<<<<<<");
+    expect(await lr.readFileAtCommit(request.base, "new.txt")).toBe("n\n");
+
+    // p2 (other files) was composed and pushed; p1 and p3 (reserved paths) are held.
+    const settled = h.settled[0] as LineSettlement;
+    expect(settled.composition?.ranges).toEqual([{ program: P2, upTo: p2 }]);
+    expect(settled.held?.map((e) => [e.program, e.repairs])).toEqual([
+      [P1, 1],
+      [P3, undefined],
+    ]);
+    const line1 = await lr.tip("line");
+    expect(line1).toBe(settled.composition?.commit);
+    expect(await lr.readFileAtCommit(line1, "other.txt")).toBe("o\n");
+    expect(await lr.readFileAtCommit(line1, "new.txt")).toBeUndefined();
+
+    // The repair resolves the candidate.
+    await git(nodeGitRunner, ["branch", "repair", request.base], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "resolved\n" });
+    h.repairs[0]?.resolve({ kind: "repaired", commit: fixed, repair: REF });
+    await h.composer.repairSettled();
+
+    const second = await h.composer.step();
+    expect(second.outcome?.composed.map((r) => r.program)).toEqual([P1, P3]);
+    const composition = h.settled[1]?.composition;
+    expect(composition?.ranges[0]).toEqual({ program: P1, upTo: p1, repairs: 1, repaired: fixed });
+    expect(composition?.repair).toEqual(REF);
+    const line2 = await lr.tip("line");
+    expect(await lr.readFileAtCommit(line2, "other.txt")).toBe("o\n");
+    expect(await lr.readFileAtCommit(line2, "new.txt")).toBe("n\n");
+    expect(await lr.readFileAtCommit(line2, "shared.txt")).toBe("resolved\n");
+    expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
   });
 
-  it("composes one at a time on a conflict and resolves only the failing range", async () => {
-    const h = await setup({
-      resolve: async (f) => ({
-        kind: "resolved",
-        commit: f.base,
-        verification: (await h2(f)).verification,
-        resolver: { decision: "resolved", attempts: 1 },
-        decision: undefined as never,
-      }),
-    });
-    async function h2(f: LineFailure) {
-      return h.ports.verifier.verify({
-        worktree: { path: "" },
-        commit: f.base,
-        base: f.base,
-      });
+  it("repairs a red range from its red merge", async () => {
+    const h = await setup();
+    const { lr } = h;
+    await lr.commit("line", { "l.txt": "l\n" });
+    const p1 = await lr.commit("p1", { "bad.txt": "RED\n" });
+    h.queue.push(entry(P1, p1, 1));
+    await h.composer.step();
+    const request = h.repairs[0]?.request as LineRepairRequest;
+    expect(request.cause).toBe("line_red");
+    expect(request.paths).toEqual(["bad.txt"]);
+    expect(request.checks.length).toBeGreaterThan(0);
+    expect(await parentsOf(lr, request.base)).toEqual([await lr.tip("line"), p1]);
+  });
+
+  it("recomposes a rejected range from the last published upTo, not its own", async () => {
+    const h = await setup();
+    const { lr } = h;
+    await lr.commit("line", { "base.txt": "line\n" });
+    const a1 = await lr.commit("p1", { "a.txt": "a1\n" });
+    h.queue.push(entry(P1, a1, 1));
+    const first = await h.composer.step();
+    expect(first.outcome?.published?.status).toBe("published");
+    const a2 = await lr.commit("p1", { "a.txt": "a2\n" });
+    h.queue.push(entry(P1, a2, 2));
+    h.reject = 1;
+    const rejected = await h.composer.step();
+    expect(rejected.outcome?.published?.status).toBe("rejected");
+    const again = await h.composer.step();
+    expect(again.outcome?.published?.status).toBe("published");
+    const range = h.settled.at(-1)?.composition?.ranges[0];
+    expect(range?.from).toBe(a1);
+    expect(range?.upTo).toBe(a2);
+    expect(await lr.readFileAtCommit(await lr.tip("line"), "a.txt")).toBe("a2\n");
+    assertSchemas(h);
+  });
+
+  it("parks a lineage after three failed repairs with the cause and the agent's words", async () => {
+    const h = await setup({ repair: () => ({ kind: "failed", words: "I could not decide" }) });
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.queue.push(entry(P1, p1, 1));
+    const attempts: number[] = [];
+    for (let i = 0; i < 8 && !(i > 0 && h.composer.idle()); i++) {
+      await h.composer.step();
+      await h.composer.repairSettled();
     }
-    const { lr } = h;
-    const a = await lr.commit("p1", { "a.txt": "a\n" });
-    const x = await lr.commit("p2", { "x.txt": "p2\n" });
-    const y = await lr.commit("line", { "x.txt": "line\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: y,
-      mainHead: y,
-      batch: batchOf([entry(P1, a, 1), entry(P2, x, 2)]),
-    });
-    expect(h.resolves).toHaveLength(1);
-    const f = h.resolves[0] as LineFailure;
-    expect(f.unit).toEqual({ kind: "range", range: { program: P2, upTo: x } });
-    expect(f.cause.kind).toBe("conflict");
-    expect(f.base).not.toBe(y);
-    expect(await isAnc(lr, a, f.base)).toBe(true);
-    expect(out.composed).toHaveLength(2);
-    const c = h.settled[0]?.composition;
-    expect(c?.resolver?.decision).toBe("resolved");
-    expect(c?.resolver?.detail).toContain(x);
-    expect(c?.commit).toBe(f.base);
-    expect(h.open.size).toBe(0);
+    await h.composer.step();
+    attempts.push(...h.settled.flatMap((s) => s.held ?? []).map((e) => e.repairs ?? 0));
+    expect(attempts).toEqual([1]);
+    const parked = h.settled.flatMap((s) => s.parked);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]?.reason).toContain("conflicted in shared.txt");
+    expect(parked[0]?.reason).toContain("I could not decide");
+    expect(parked[0]?.ranges[0]?.repairs).toBe(3);
+    expect(h.composer.idle()).toBe(true);
     assertSchemas(h);
   });
 
-  it("falls back on a red batch, parks the failing range and still composes the rest", async () => {
+  it("parks an entry that arrives with its repairs spent, without a fourth repair", async () => {
+    const seen: number[] = [];
     const h = await setup({
-      passes: async (read) => (await read("bad.txt")) === undefined,
-      resolve: () => ({
-        kind: "parked",
-        reason: "could not fix",
-        resolver: { decision: "gave_up", attempts: 2, detail: "tried" },
-      }),
-    });
-    const { lr } = h;
-    const a = await lr.commit("p1", { "a.txt": "a\n" });
-    const b = await lr.commit("p2", { "bad.txt": "x\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: lr.initial,
-      mainHead: lr.initial,
-      batch: batchOf([entry(P1, a, 1), entry(P2, b, 2)]),
-    });
-    expect(h.resolves).toHaveLength(1);
-    const f = h.resolves[0] as LineFailure;
-    expect(f.unit).toEqual({ kind: "range", range: { program: P2, upTo: b } });
-    expect(f.cause.kind === "red" && f.cause.logs[0]?.tail).toBe("red");
-    const s = h.settled[0];
-    expect(s?.parked).toHaveLength(1);
-    expect(s?.parked[0]?.reason).toBe("could not fix");
-    expect(s?.parked[0]?.resolver?.decision).toBe("gave_up");
-    expect(s?.composition?.ranges).toEqual([{ program: P1, upTo: a }]);
-    expect(out.head).toBe(s?.composition?.commit);
-    expect(h.published).toHaveLength(1);
-    expect(h.open.size).toBe(0);
-    assertSchemas(h);
-  });
-
-  it("settles nothing for ranges already on the line", async () => {
-    const h = await setup();
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    const line = await h.lr.commit("line", { "a.txt": "a\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: line,
-      mainHead: line,
-      batch: batchOf([entry(P1, h.lr.initial, 1)]),
-    });
-    void a;
-    expect(h.settled).toEqual([{ batchId: "b1", parked: [] }]);
-    expect(h.published).toEqual([]);
-    expect(out.head).toBe(line);
-  });
-
-  it("publishes nothing when main merges but every range parks", async () => {
-    const h = await setup({
-      passes: async (read) => (await read("bad.txt")) === undefined,
-      resolve: () => ({
-        kind: "parked",
-        reason: "no",
-        resolver: { decision: "gave_up", attempts: 1 },
-      }),
-    });
-    const { lr } = h;
-    const main = await lr.commit("main", { "m.txt": "m\n" });
-    const b = await lr.commit("p2", { "bad.txt": "x\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: lr.initial,
-      mainHead: main,
-      batch: batchOf([entry(P2, b, 1)]),
-    });
-    expect(h.settled[0]?.composition).toBeUndefined();
-    expect(h.settled[0]?.parked).toHaveLength(1);
-    expect(h.published).toEqual([]);
-    expect(out.head).toBe(lr.initial);
-    expect(h.open.size).toBe(0);
-    assertSchemas(h);
-  });
-
-  it("uses one deadline and parks the rest once it passes", async () => {
-    const h = await setup({
-      passes: async (read) =>
-        (await read("bad1.txt")) === undefined && (await read("bad2.txt")) === undefined,
-      advanceOnVerify: 1000,
-      resolve: (_f, hh) => {
-        hh.now.ms += 3_600_000;
-        return {
-          kind: "parked",
-          reason: "no",
-          resolver: { decision: "gave_up", attempts: 1 },
-        };
+      repair: (request) => {
+        seen.push(request.attempt);
+        return { kind: "failed", words: "no" };
       },
     });
     const { lr } = h;
-    const b1 = await lr.commit("p1", { "bad1.txt": "x\n" });
-    const b2 = await lr.commit("p2", { "bad2.txt": "x\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: lr.initial,
-      mainHead: lr.initial,
-      batch: batchOf([entry(P1, b1, 1), entry(P2, b2, 2)]),
-    });
-    const deadline = new Date(START + 3600_000).toISOString();
-    expect(h.resolves.map((f) => f.deadline)).toEqual([deadline]);
-    expect(h.verifies.every((v) => v.deadline === deadline)).toBe(true);
-    const verifiesBefore = h.verifies.length;
-    expect(out.parked).toHaveLength(2);
-    expect(out.parked[1]?.reason).toContain("time limit");
-    expect(h.verifies.length).toBe(verifiesBefore);
-    expect(h.published).toEqual([]);
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.queue.push(entry(P1, p1, 1, 3));
+    const out = await h.composer.drain();
+    expect(seen).toEqual([]);
+    expect(out[0]?.parked).toHaveLength(1);
+    expect(out[0]?.parked[0]?.reason).toContain("3 repairs");
+    expect(h.composer.idle()).toBe(true);
   });
 
-  it("passes the same deadline to every resolve", async () => {
-    const h = await setup({
-      passes: async (read) =>
-        (await read("bad1.txt")) === undefined && (await read("bad2.txt")) === undefined,
-      resolve: () => ({
-        kind: "parked",
-        reason: "no",
-        resolver: { decision: "gave_up", attempts: 1 },
-      }),
-    });
+  it("composes a repaired range alone, then a later range of the same program on top of it", async () => {
+    const h = await setup();
     const { lr } = h;
-    const a = await lr.commit("p1", { "a.txt": "a\n" });
-    const b1 = await lr.commit("p1", { "bad1.txt": "x\n" });
-    const b2 = await lr.commit("p2", { "bad2.txt": "x\n" });
-    void a;
-    await composeLineBatch(h.ports, {
-      lineHead: lr.initial,
-      mainHead: lr.initial,
-      batch: batchOf([entry(P1, b1, 1), entry(P2, b2, 2)]),
-    });
-    expect(h.resolves).toHaveLength(2);
-    expect(h.resolves[0]?.deadline).toBe(h.resolves[1]?.deadline);
+    const line0 = await lr.commit("line", { "shared.txt": "line\n" });
+    const a = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.queue.push(entry(P1, a, 1));
+    await h.composer.step();
+    const request = h.repairs[0]?.request as LineRepairRequest;
+    expect(request.lineHead).toBe(line0);
+
+    // B descends from A and adds a file the repair does not touch.
+    const b = await lr.commit("p1", { "extra.txt": "extra\n" });
+    h.queue.push(entry(P1, b, 2));
+    await h.composer.step();
+    expect(h.settled[1]?.composition).toBeUndefined();
+    expect(h.settled[1]?.held?.map((e) => e.upTo)).toEqual([b]);
+
+    await git(nodeGitRunner, ["branch", "repair", request.base], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "resolved\n" });
+    h.repairs[0]?.resolve({ kind: "repaired", commit: fixed, repair: REF });
+    await h.composer.repairSettled();
+
+    const out = await h.composer.step();
+    expect(out.outcome?.composed).toEqual([
+      { program: P1, upTo: a, repairs: 1, repaired: fixed },
+      { program: P1, from: a, upTo: b },
+    ]);
+    const head = await lr.tip("line");
+    expect(await lr.readFileAtCommit(head, "shared.txt")).toBe("resolved\n");
+    expect(await lr.readFileAtCommit(head, "extra.txt")).toBe("extra\n");
+    expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
   });
 
-  it("parks a green batch that finished after the deadline or timed out", async () => {
-    for (const opts of [{ advanceOnVerify: 3_700_000 }, { timedOut: true }]) {
-      const h = await setup(opts);
-      const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-      const out = await composeLineBatch(h.ports, {
-        lineHead: h.lr.initial,
-        mainHead: h.lr.initial,
-        batch: batchOf([entry(P1, a, 1)]),
-      });
-      expect(h.published).toEqual([]);
-      expect(h.resolves).toEqual([]);
-      expect(h.verifies).toHaveLength(1);
-      expect(out.parked[0]?.reason).toContain("time limit");
-      expect(h.settled[0]?.composition).toBeUndefined();
-      expect(h.open.size).toBe(0);
-      assertSchemas(h);
+  /** Two failed repairs and a third that succeeds, composed, with the push rejected. */
+  const thirdRepairRejected = async (h: Harness) => {
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.queue.push(entry(P1, p1, 1));
+    await h.composer.step();
+    for (const attempt of [0, 1]) {
+      h.repairs[attempt]?.resolve({ kind: "failed", words: "no" });
+      await h.composer.repairSettled();
+      await h.composer.step();
     }
-  });
-});
+    expect(h.repairs).toHaveLength(3);
+    const request = h.repairs[2]?.request as LineRepairRequest;
+    expect(request.attempt).toBe(3);
+    await git(nodeGitRunner, ["branch", "repair", request.base], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "resolved\n" });
+    h.repairs[2]?.resolve({ kind: "repaired", commit: fixed, repair: REF });
+    await h.composer.repairSettled();
+    h.reject = 1;
+    const rejected = await h.composer.step();
+    expect(rejected.outcome?.published?.status).toBe("rejected");
+    return { p1, fixed };
+  };
 
-describe("drainLine", () => {
-  it("drains batches until the queue is empty", async () => {
+  it("recomposes the repair commit after a rejected push without spending a repair", async () => {
     const h = await setup();
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    let head = h.lr.initial;
-    h.queue.push(batchOf([entry(P1, a, 1)], "b1"));
-    const b = await h.lr.commit("p2", { "b.txt": "b\n" });
-    h.queue.push(batchOf([entry(P2, b, 2)], "b2"));
-    const outs: LineBatchOutcome[] = await drainLine(h.ports, async () => {
-      const r = { lineHead: head, mainHead: h.lr.initial };
-      return r;
-    }).then((o) => {
-      return o;
-    });
-    void head;
-    head = h.lr.initial;
-    expect(outs.map((o) => o.batchId)).toEqual(["b1", "b2"]);
-    expect(h.published).toHaveLength(2);
+    const { p1, fixed } = await thirdRepairRejected(h);
+    expect(h.settled.at(-1)?.composition?.ranges).toEqual([
+      { program: P1, upTo: p1, repairs: 3, repaired: fixed },
+    ]);
+    expect(h.composer.idle()).toBe(false);
+
+    const again = await h.composer.step();
+    expect(again.outcome?.published?.status).toBe("published");
+    expect(again.outcome?.parked).toEqual([]);
+    expect(h.repairs).toHaveLength(3);
+    const composition = h.settled.at(-1)?.composition;
+    // Nothing of the program was ever published, so there is no `from`: the rejected one does not count.
+    expect(composition?.ranges).toEqual([{ program: P1, upTo: p1, repairs: 3, repaired: fixed }]);
+    expect(composition?.repair).toEqual(REF);
+    expect(await h.lr.readFileAtCommit(await h.lr.tip("line"), "shared.txt")).toBe("resolved\n");
+    expect(h.settled.flatMap((s) => s.parked)).toEqual([]);
+    expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
   });
 
-  it("stops after a rejected publication", async () => {
-    const h = await setup({ reject: true });
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    h.queue.push(batchOf([entry(P1, a, 1)], "b1"), batchOf([entry(P1, a, 1)], "b2"));
-    const outs = await drainLine(h.ports, async () => ({
-      lineHead: h.lr.initial,
-      mainHead: h.lr.initial,
-    }));
-    expect(outs).toHaveLength(1);
-    expect(h.queue).toHaveLength(1);
-  });
-
-  it("settles nothing when staging throws, and the batch can be composed again", async () => {
-    const opts = { stageThrows: true };
-    const h = await setup(opts);
-    const line = await h.lr.commit("line", { "l.txt": "l\n" });
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    const batch = batchOf([entry(P1, a, 1)]);
-    await expect(
-      composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch }),
-    ).rejects.toThrow("upload failed");
-    expect(h.settled).toEqual([]);
-    expect(h.open.size).toBe(0);
-    opts.stageThrows = false;
-    const out = await composeLineBatch(h.ports, {
-      lineHead: line,
-      mainHead: line,
-      batch,
-    });
-    expect(out.composed).toHaveLength(1);
-  });
-
-  it("gives two conflicting ranges one shared budget of three resolver attempts", async () => {
-    const h = await setup({
-      resolve: async (f) => ({
-        kind: "parked",
-        reason: "no luck",
-        resolver: { decision: "gave_up", attempts: f.attemptsLeft },
-      }),
-    });
-    const line = await h.lr.commit("line", { "x.txt": "base\n" });
-    const a = await h.lr.commit("p1", { "x.txt": "a\n" });
-    const b = await h.lr.commit("p2", { "x.txt": "b\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: line,
-      mainHead: line,
-      batch: batchOf([entry(P1, a, 1), entry(P2, b, 2)]),
-    });
-    expect(h.resolves.map((f) => f.attemptsLeft)).toEqual([3]);
-    expect(out.parked.map((p) => p.ranges.length)).toEqual([1, 1]);
-    expect(out.parked.some((p) => p.reason.includes("resolver attempts are spent"))).toBe(true);
-  });
-
-  it("leaves a pending push to the composition and no batch when the owner dies after settling", async () => {
+  it("keeps the reservation of a repaired lineage until its composition is published", async () => {
     const h = await setup();
-    const fixtures = createFixtures();
-    const at = new Date(START).toISOString();
-    const line = await h.lr.commit("line", { "l.txt": "l\n" });
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    let record: LineRecord = appendQueueEntry(
-      makeLineRecord(fixtures),
-      { program: P1, upTo: a },
-      at,
-    );
-    // The real rules over an in-memory record.
-    let outcomeCalls = 0;
-    h.ports.queue.takeBatch = async () => {
-      const taken = takeBatch(record, 1, { batchId: "b1" }, at);
-      record = taken.record;
-      return taken.batch ?? record.batch;
-    };
-    h.ports.queue.settle = async (s) => {
-      const change = settleBatch(record, s, { compositionId: "comp-1", parkedIds: [] }, 1, at);
-      if (!change.ok) throw new Error("settle refused");
-      record = change.record;
-    };
-    h.ports.publisher.outcome = async () => {
-      outcomeCalls += 1;
-      throw new Error("owner died");
-    };
-    const batch = (await h.ports.queue.takeBatch()) as LineBatch;
-    await expect(
-      composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch }),
-    ).rejects.toThrow("owner died");
-    expect(outcomeCalls).toBe(1);
-    const commit = record.compositions[0]?.commit;
-    expect(record.batch).toBeUndefined();
-    expect(record.compositions).toHaveLength(1);
-    expect(record.push).toMatchObject({
-      status: "pending",
-      head: commit,
-      expectedPredecessor: line,
-    });
+    const { fixed } = await thirdRepairRejected(h);
+    // Rejected: the lineage is still held by the composer (not idle), the repair commit kept.
+    expect(h.composer.idle()).toBe(false);
+    h.reject = 1;
+    const again = await h.composer.step();
+    expect(again.outcome?.published?.status).toBe("rejected");
+    expect(again.outcome?.composed[0]?.repaired).toBe(fixed);
+    expect(h.composer.idle()).toBe(false);
+    const last = await h.composer.step();
+    expect(last.outcome?.published?.status).toBe("published");
+    expect(h.composer.idle()).toBe(true);
   });
 
-  it("composes the descendant head of a program whatever the enqueue order", async () => {
+  it("a fresh composer composes the repair commit an entry carries, spending no repair", async () => {
     const h = await setup();
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    const b = await h.lr.commit("p1", { "b.txt": "b\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: h.lr.initial,
-      mainHead: h.lr.initial,
-      batch: batchOf([entry(P1, b, 1), entry(P1, a, 2)]),
-    });
-    expect(out.composed).toEqual([{ program: P1, upTo: b }]);
-    const commit = h.settled[0]?.composition?.commit as CommitSha;
-    expect(await isAnc(h.lr, b, commit)).toBe(true);
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    // A repair made on the line head, as a previous owner's would have been.
+    await git(nodeGitRunner, ["branch", "repair", await lr.tip("line")], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "resolved\n" });
+    h.queue.push(entry(P1, p1, 1, 3, fixed));
+    const out = await h.composer.drain();
+    expect(out[0]?.published?.status).toBe("published");
+    expect(out[0]?.parked).toEqual([]);
+    expect(h.repairs).toHaveLength(0);
+    expect(await lr.readFileAtCommit(await lr.tip("line"), "shared.txt")).toBe("resolved\n");
+    expect(h.composer.idle()).toBe(true);
   });
 
-  it("falls back to the newest entry when a program's history has diverged", async () => {
+  it("composes the original range when the repair commit is not present locally", async () => {
     const h = await setup();
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    const x = await h.lr.commit("p1-other", { "x.txt": "x\n" });
-    const out = await composeLineBatch(h.ports, {
-      lineHead: h.lr.initial,
-      mainHead: h.lr.initial,
-      batch: batchOf([entry(P1, a, 1), entry(P1, x, 2)]),
-    });
-    expect(out.composed).toEqual([{ program: P1, upTo: x }]);
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    const gone = "f".repeat(40) as CommitSha;
+    h.queue.push(entry(P1, p1, 1, 3, gone));
+    const out = await h.composer.drain();
+    expect(out[0]?.notes?.[0]).toContain("not present locally");
+    expect(out[0]?.parked).toHaveLength(1);
+    expect(out[0]?.parked[0]?.reason).toContain("not present locally");
+    expect(h.repairs).toHaveLength(0);
   });
 
-  it("keeps a newer queued head after the failed push of its ancestor's composition", async () => {
+  it("is not idle on a fresh composer until it has released the held entries it finds", async () => {
     const h = await setup();
-    const fixtures = createFixtures();
-    const t = (m: number) => new Date(START + m * 60_000).toISOString();
-    const line = await h.lr.commit("line", { "l.txt": "l\n" });
-    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
-    const b = await h.lr.commit("p1", { "b.txt": "b\n" });
-    let record: LineRecord = appendQueueEntry(
-      makeLineRecord(fixtures),
-      { program: P1, upTo: a },
-      t(0),
-    );
-    let batchNo = 0;
-    let at = t(1);
-    h.ports.queue.takeBatch = async () => {
-      const taken = takeBatch(record, 1, { batchId: `b${++batchNo}` }, at);
-      record = taken.record;
-      return taken.batch ?? record.batch;
-    };
-    h.ports.queue.settle = async (s) => {
-      const change = settleBatch(
-        record,
-        s,
-        { compositionId: `comp-${batchNo}`, parkedIds: [] },
-        1,
-        at,
-      );
-      if (!change.ok) throw new Error("settle refused");
-      record = change.record;
-    };
-    h.ports.publisher.outcome = async () => {
-      throw new Error("owner died");
-    };
-    const first = (await h.ports.queue.takeBatch()) as LineBatch;
-    await expect(
-      composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch: first }),
-    ).rejects.toThrow("owner died");
-    const composedA = record.compositions[0];
-    expect(composedA?.ranges).toEqual([{ program: P1, upTo: a }]);
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const clean = await lr.commit("p2", { "other.txt": "o\n" });
+    const clashing = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.held.push(entry(P2, clean, 1, 1), entry(P1, clashing, 2, 1));
+    expect(h.composer.needsRecovery()).toBe(true);
+    expect(h.composer.idle()).toBe(false);
 
-    at = t(2);
-    record = appendQueueEntry(record, { program: P1, upTo: b }, at);
-    at = t(3);
-    const failed = resolvePush(record, composedA?.commit as CommitSha, "conflict", "moved", at);
-    if (!failed.ok) throw new Error("resolve refused");
-    record = failed.record;
-    expect(record.queue.map((q) => q.upTo)).toEqual([a, b]);
-
-    at = t(4);
-    const next = (await h.ports.queue.takeBatch()) as LineBatch;
-    expect(next.entries.map((q) => q.upTo)).toEqual([a, b]);
-    h.ports.publisher.outcome = async () => ({ status: "published" });
-    const out = await composeLineBatch(h.ports, { lineHead: line, mainHead: line, batch: next });
-    expect(out.composed).toEqual([{ program: P1, upTo: b }]);
-    const composed = record.compositions.at(-1);
-    expect(await isAnc(h.lr, b, composed?.commit as CommitSha)).toBe(true);
-    expect(composed?.ranges).toEqual([{ program: P1, upTo: b }]);
-    expect(record.queue).toEqual([]);
-    expect(record.batch).toBeUndefined();
-    expect(record.push).toMatchObject({ head: composed?.commit });
+    const out = await h.composer.step();
+    expect(h.released).toHaveLength(1);
+    expect(h.released[0]?.map((r) => r.program).sort()).toEqual([P1, P2].sort());
+    expect(out.outcome?.composed).toEqual([{ program: P2, upTo: clean, repairs: 1 }]);
+    expect(h.composer.needsRecovery()).toBe(false);
+    // The clashing one went into a repair, with its count kept and spent one more.
+    expect(h.repairs).toHaveLength(1);
+    expect(h.repairs[0]?.request.attempt).toBe(2);
+    expect(h.composer.idle()).toBe(false);
+    assertSchemas(h);
   });
 });

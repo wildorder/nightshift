@@ -1,39 +1,48 @@
 /**
- * The line owner on its machine (Pipkin M1b, S-04): what runs between `ready`
- * and the stop on a machine tagged as a line's.
+ * The composer's host on a line's machine (Pipkin M1b, S-04; S-02): what runs
+ * between `ready` and the stop on a machine tagged as a line's.
  *
- * It reports `running`, waits for the GitHub read token and the provider
- * credentials the heartbeat brings, keeps a mirror and a checkout of the line's
+ * It reports `running`, waits for the GitHub read token and the org's provider
+ * keys the heartbeat brings, keeps a mirror and a checkout of the line's
  * repository on the workspace, and prepares the project's environment as a run
- * does. Then it builds S-03's ports over the plane and the checkout and loops:
- * wait out a push left pending (an earlier generation's), take the whole queue
- * as one batch, fetch every head it names, compose and publish it
- * (`drainLine`), and compose again when a push was rejected. When the queue has
- * been empty with no push pending for `LINE_IDLE_SECONDS` it ends, and the
- * runner's last heartbeat is `stopped` with no failure; the plane's own stop and
- * cleanup take the machine away.
+ * does. Then it opens the line's run as a run (`createLineSession`: the stores
+ * and outbox under the engine's token, an engine, and a `RunSession` whose
+ * orchestrator Agent is the composer's), builds S-03's ports over the plane and
+ * the checkout, and loops: wait out a push left pending (an earlier
+ * generation's), take the whole queue as one batch (and any held range a repair
+ * has released), fetch every head it names, compose and publish it, and compose
+ * again when a push was rejected.
+ *
+ * A range that conflicts or is red is not parked: the composer asks its repair
+ * port, `createLineRepair`, which records a decision and delegates an ordinary
+ * engine repair job on the line's run. The line never waits on it; only ranges
+ * touching the repair's reserved paths are held. When the queue has been empty
+ * for `LINE_IDLE_SECONDS`, with no push pending, no repair in flight and
+ * nothing held, the run is completed and the owner ends; the runner's last
+ * heartbeat is `stopped` with no failure, and the plane's own stop and cleanup
+ * take the machine away.
  *
  * Only the publisher writes to GitHub: the owner holds the read token, packs
- * the commits it composed, and uploads the pack through a presigned PUT.
+ * the commits it composed, and uploads the pack through a presigned PUT. The
+ * runtime's environment carries no publication base, so the engine pushes
+ * nothing for a repair either.
  */
 import { writeFile } from "node:fs/promises";
+import type { Provider } from "@nightshift/contracts";
 import {
   type CommitSha,
-  DEFAULT_EXAMINATION_POLICY,
-  DEFAULT_ROUTING_POLICY,
-  type EffectivePolicy,
   type LineRecord,
   type LineView,
+  MAX_LINE_WORDS_CHARS,
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
   NightshiftConfigSchema,
-  type Provider,
 } from "@nightshift/contracts";
 import { type Clock, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
 import {
   createLineCheckout,
+  createLineComposer,
   createLineVerifier,
-  drainLine,
   type GateDefinitions,
   type GitRunner,
   git,
@@ -41,16 +50,15 @@ import {
   type LineComposerPorts,
   type LinePublisherPort,
   type LineQueuePort,
-  type LineResolverAgentPort,
-  lineWorktreeRoot,
   packCommits,
-  resolveLineFailure,
   type ScratchPaths,
   tryGit,
 } from "@nightshift/execution";
-import { commandAs, type Harness, type RunAs } from "@nightshift/harness";
+import { commandAs, type RunAs } from "@nightshift/harness";
 import type { StepInvocation } from "@nightshift/verification";
-import { createLineAgents } from "./line-agents.js";
+import type { Runtime } from "../compose.js";
+import { createLineRepair } from "./line-repair.js";
+import { createLineSession } from "./line-session.js";
 import { awaitGithubToken, type LineRunnerContext, type RunnerWorkEnd } from "./main.js";
 import { awaitProviderCredentials } from "./root.js";
 import { gitWithToken, prepareProject } from "./workspace.js";
@@ -74,17 +82,6 @@ export interface LineOwnerOptions {
     readonly contentType: string;
     readonly file: string;
   }) => Promise<void>;
-  /** The harnesses by `RouteTarget.harness`, given the environment the agents run in. */
-  readonly createHarnesses: (env: Readonly<Record<string, string>>) => {
-    get(harness: string): Harness | undefined;
-  };
-  /**
-   * Places the provider credentials where their harnesses read them and
-   * answers the variables naming them (`placeProviderCredentials`).
-   */
-  readonly placeCredentials?: (
-    credentials: Partial<Record<Provider, string>>,
-  ) => Promise<Readonly<Record<string, string>>>;
   /**
    * The project user's execution context, as the run root's workers get it,
    * given the project environment it runs in (known once the checkout is prepared).
@@ -97,21 +94,26 @@ export interface LineOwnerOptions {
   /** How often the line is read while waiting; `LINE_POLL_MS` by default. */
   readonly pollMs?: number;
   /** The composition's own limits, which a test may shorten. */
-  readonly limits?: { readonly seconds?: number; readonly attempts?: number };
+  readonly limits?: { readonly seconds?: number };
   /** Takes a granted path back for the engine, when worktrees are handed to the project user. */
   readonly reclaim?: (dir: string) => Promise<void>;
+  /**
+   * Places the org's provider credentials where their harnesses read them and
+   * answers the environment the repairs' agents are given. Absent, none is placed.
+   */
+  readonly placeCredentials?: (
+    credentials: Partial<Record<Provider, string>>,
+  ) => Promise<Readonly<Record<string, string>>>;
+  /** Makes the line run's runtime; `createRuntime` over the engine's token unless a test supplies one. */
+  readonly makeRuntime?: (env: Record<string, string>) => Promise<Runtime>;
+  /** How often a repair's node is read while waiting; the repair's own default unless a test shortens it. */
+  readonly repairPollMs?: number;
 }
 
 /** The owner was told to stop while it waited. */
 class LineStopped extends Error {
   override readonly name = "LineStopped";
 }
-
-const DEFAULT_POLICY: EffectivePolicy = {
-  routingPolicy: DEFAULT_ROUTING_POLICY,
-  examinationPolicy: DEFAULT_EXAMINATION_POLICY,
-  orgConfigVersion: 0,
-};
 
 /** `https://github.com/o/r` is cloned as `…/r.git`; anything else (a path in a test) as it is. */
 const cloneUrlOf = (repositoryUrl: string): string =>
@@ -161,16 +163,12 @@ const ownLine = async (
   // The plane hands the org's provider keys to a running engine and to
   // nothing else, on the next beat; the read token comes on the beats before.
   heartbeat.report("running");
-  const providers = await awaitProviderCredentials(heartbeat, machine, credentialTimeoutMs);
-  ensureRunning();
   await awaitGithubToken(heartbeat, machine, credentialTimeoutMs);
   const githubToken = (): string => {
     const token = heartbeat.last?.credentials?.github;
     if (token === undefined) throw new Error("the plane sent no GitHub credential");
     return token;
   };
-  const providerEnv = await (options.placeCredentials?.(providers) ??
-    Promise.resolve<Readonly<Record<string, string>>>({}));
 
   // The repository: a mirror of GitHub and a checkout of it, on the workspace.
   const view0 = await plane.line();
@@ -335,32 +333,44 @@ const ownLine = async (
     Object.assign(stepEnv, secretsOf(config), prepared.environment);
   };
 
-  const agentEnv: Record<string, string> = {};
-  for (const name of ["PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME"]) {
-    const value = options.parentEnv?.[name];
-    if (value !== undefined && value !== "") agentEnv[name] = value;
-  }
-  Object.assign(agentEnv, prepared.environment, providerEnv);
-  const harnesses = options.createHarnesses(agentEnv);
   const runAs = options.runAs?.(prepared.environment);
+
+  // --- The line's run: the composer's seat ----------------------------------------------
+
+  // The org's provider keys come on the beat after `running`, for the repairs' agents.
+  const credentials = await awaitProviderCredentials(heartbeat, machine, credentialTimeoutMs);
+  const providerKeys = (await options.placeCredentials?.(credentials)) ?? {};
+  const line = await createLineSession(
+    { ...context, projectEnv: prepared.environment, projectEnvFile: prepared.environmentFile },
+    {
+      parentEnv: options.parentEnv ?? {},
+      providerKeys,
+      secrets: secretsOf(config0),
+      ...(context.projectUser === undefined ? {} : { projectUser: context.projectUser }),
+      ...(options.makeRuntime === undefined ? {} : { makeRuntime: options.makeRuntime }),
+    },
+  );
+  log(`the composer sits in run ${context.scope.runId} as agent ${line.composerAgentId}`);
 
   // --- S-03's ports -------------------------------------------------------------------
 
-  let lastView = view0;
   const heads = async (): Promise<{ lineHead: string; mainHead: string }> => {
     ensureRunning();
-    lastView = await plane.line();
-    const fetched = await fetchHeads(lastView);
+    const fetched = await fetchHeads(await plane.line());
     await refreshGates(fetched.lineHead);
     return fetched;
   };
 
   const queue: LineQueuePort = {
-    takeBatch: () => plane.takeBatch(),
+    takeBatch: (release) => plane.takeBatch(release),
+    heldEntries: async () => (await plane.line()).record.held,
     lastComposed: async (program) => {
       const record = (await plane.line()).record;
       let newest: { at: number; upTo: CommitSha } | undefined;
       for (const composition of record.compositions) {
+        // Only a composition that reached the line counts: a rejected or never-pushed one
+        // is requeued, and its upTo as `from` would leave the range empty.
+        if (composition.pushed === undefined) continue;
         for (const range of composition.ranges) {
           const at = Date.parse(composition.composedAt);
           if (range.program === program && (newest === undefined || at >= newest.at)) {
@@ -370,12 +380,21 @@ const ownLine = async (
       }
       return newest?.upTo;
     },
+    recordAttempt: async ({ program, upTo, repairs, words }) => {
+      await plane.attempt({
+        program,
+        upTo,
+        repairs,
+        ...(words === undefined ? {} : { lastWords: words.slice(0, MAX_LINE_WORDS_CHARS) }),
+      });
+    },
     settle: async (settlement) => {
       await plane.settle({
         batchId: settlement.batchId,
         ...(settlement.composition === undefined ? {} : { composition: settlement.composition }),
         ...(settlement.push === undefined ? {} : { push: settlement.push }),
         parked: settlement.parked,
+        ...(settlement.held === undefined ? {} : { held: settlement.held }),
       });
     },
   };
@@ -439,79 +458,49 @@ const ownLine = async (
         }),
   });
 
-  // An agent runs as the project user in a worktree the engine made: the user
-  // is given the whole path, its temporary parent included, for the launch,
-  // and the engine takes it back before it merges, verifies or closes it.
-  // Built per use: the policy is the line's as last read.
-  const rawAgents = (): LineResolverAgentPort =>
-    createLineAgents({
-      harnesses,
-      policy: lastView.policy ?? DEFAULT_POLICY,
-      ids: options.ids,
-      env: agentEnv,
-      ...(runAs === undefined ? {} : { runAs }),
-      announce: async ({ agentId, role, target }) => {
-        await plane.announce({
-          agentId,
-          role,
-          model: target,
-          announcedAt: new Date(options.clock.now()).toISOString(),
-        });
-      },
-    });
-  const handedToProject = async <T>(
-    worktree: { readonly path: string },
-    launch: () => Promise<T>,
-  ): Promise<T> => {
-    if (runAs === undefined) return launch();
-    const root = lineWorktreeRoot(worktree.path);
-    try {
-      await runAs.grant(root);
-      return await launch();
-    } finally {
-      await options.reclaim?.(root);
-    }
-  };
-  const agents: LineResolverAgentPort = {
-    resolve: (input) => handedToProject(input.worktree, () => rawAgents().resolve(input)),
-    examine: (input) => handedToProject(input.worktree, () => rawAgents().examine(input)),
-  };
-
-  const resolve: LineComposerPorts["resolve"] = (failure) =>
-    resolveLineFailure(
-      {
-        checkout,
-        verifier,
-        agents,
-        decisions: {
-          record: async (decision) => {
-            await plane.decide(decision);
-          },
-        },
-        clock: options.clock,
-        ...(options.limits?.attempts === undefined
-          ? {}
-          : { limits: { attempts: options.limits.attempts } }),
-      },
-      failure,
-    );
+  // A conflict or a red check is an ordinary engine repair job on the line's run.
+  const repair: LineComposerPorts["repair"] = createLineRepair({
+    session: line.session,
+    runtime: line.runtime,
+    engine: line.engine,
+    outbox: line.outbox,
+    checkout: layout.checkout,
+    branch: line.session.program.repository.programBranch,
+    git: options.git,
+    ...(options.repairPollMs === undefined ? {} : { pollMs: options.repairPollMs }),
+  });
 
   const ports: LineComposerPorts = {
     queue,
     checkout,
     verifier,
     publisher,
-    resolve,
+    repair,
     clock: options.clock,
     ...(options.limits === undefined ? {} : { limits: options.limits }),
   };
 
   // --- The loop -----------------------------------------------------------------------
 
+  const composer = createLineComposer(ports, heads);
   const pendingPush = (record: LineRecord) =>
     record.push?.status === "pending" ? record.push : undefined;
+  // Ranges the plane holds that this composer holds nothing for were left by an
+  // earlier owner: the composer releases them on its first step, so the owner
+  // drives it while it needs recovery. The capped retry below is only a last-resort
+  // safety: held ranges that still do not come back are then no work.
+  const MAX_STRANDED_DRAINS = 3;
+  let strandedDrains = 0;
+  const stranded = (record: LineRecord): boolean =>
+    record.held.length > 0 && composer.idle() && strandedDrains < MAX_STRANDED_DRAINS;
   const hasWork = (record: LineRecord): boolean =>
-    record.queue.length > 0 || record.batch !== undefined || pendingPush(record) !== undefined;
+    record.queue.length > 0 ||
+    record.batch !== undefined ||
+    composer.needsRecovery() ||
+    stranded(record) ||
+    !composer.idle() ||
+    !line.engine.idle() ||
+    pendingPush(record) !== undefined;
 
   let idleSince: number | undefined;
   for (;;) {
@@ -528,18 +517,32 @@ const ownLine = async (
       continue;
     }
 
-    if (record.queue.length > 0 || record.batch !== undefined) {
+    if (!composer.idle() || record.held.length === 0) strandedDrains = 0;
+    if (
+      record.queue.length > 0 ||
+      record.batch !== undefined ||
+      !composer.idle() ||
+      composer.needsRecovery() ||
+      stranded(record)
+    ) {
       idleSince = undefined;
+      if (composer.idle() && record.queue.length === 0 && record.batch === undefined) {
+        if (record.held.length > 0) strandedDrains += 1;
+        say("taking back the ranges an earlier owner left held");
+      }
       say(record.batch === undefined ? "composing the queue" : "composing the held batch");
-      const outcomes = await drainLine(ports, heads);
+      const outcomes = await composer.drain();
       for (const outcome of outcomes) {
         log(
           `batch ${outcome.batchId}: composed ${outcome.composed.length}, parked ${outcome.parked.length}` +
             (outcome.published === undefined ? "" : `, push ${outcome.published.status}`),
         );
+        for (const note of outcome.notes ?? []) log(note);
       }
       // A rejected push ends the drain: the line is read again and the ranges
-      // the plane gave back are composed onto its new head.
+      // the plane gave back are composed onto its new head. A repair still in
+      // flight, or held ranges waiting on one, are waited for.
+      if (outcomes.length === 0) await wait(pollMs);
       continue;
     }
 
@@ -547,6 +550,7 @@ const ownLine = async (
     idleSince ??= machine.now();
     if (machine.now() - idleSince >= idleMs) {
       log(`the line has been idle for ${Math.round(idleMs / 1000)}s; the owner ends`);
+      await line.complete();
       return undefined;
     }
     say("waiting for work");

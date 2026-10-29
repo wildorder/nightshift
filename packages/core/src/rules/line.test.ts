@@ -1,15 +1,12 @@
-import { type LineRecord, MAX_LINE_DECISIONS, type ProgramId } from "@nightshift/contracts";
+import type { LineRecord, ProgramId } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import {
   createFixtures,
   makeDispatch,
-  makeLineDispatch,
   makeLineRecord,
   makeLineVerification,
 } from "../testing/factories.js";
-import { beginReplacement, leaseLost, runnerStopped, transitionDispatch } from "./dispatch.js";
 import {
-  announceLineAgent,
   appendQueueEntry,
   capReached,
   chargeDispatchUsage,
@@ -24,11 +21,10 @@ import {
   lineQueueOwed,
   MAX_LINE_BATCH_ENTRIES,
   meterProjectUsage,
-  newLineDispatch,
   occupiesComputeSlot,
   parkBatch,
   previousMonthOf,
-  recordLineDecision,
+  recordAttempt,
   requestPush,
   resolvePush,
   settleBatch,
@@ -446,46 +442,6 @@ describe("charging a dispatch to the project's usage", () => {
   });
 });
 
-describe("a line dispatch", () => {
-  const machine = {
-    tier: "good",
-    instanceType: "c8id.2xlarge",
-    usdPerHour: 0.5,
-    amiVersion: "1.0.0",
-  } as const;
-  const base = {
-    projectId: f.scope.projectId,
-    branch: "nightshift/develop",
-    engineAgentId: f.ids.next("agent"),
-    machine,
-    at: AT,
-  };
-
-  it("starts at generation 1, requested, estimated for one composition hour", () => {
-    const first = newLineDispatch(base);
-    expect(first).toMatchObject({
-      generation: 1,
-      status: "requested",
-      version: 1,
-    });
-    expect(first.spend.estimatedUsd).toBeCloseTo(0.5);
-    expect(first.attempts).toEqual([{ generation: 1, reason: "dispatch", startedAt: AT }]);
-  });
-
-  it("continues the generation across dispatches, never back to 1", () => {
-    const first = newLineDispatch(base);
-    const second = newLineDispatch({ ...base, previous: first });
-    const third = newLineDispatch({ ...base, previous: second });
-    expect([first.generation, second.generation, third.generation]).toEqual([1, 2, 3]);
-    expect(
-      newLineDispatch({
-        ...base,
-        previous: makeLineDispatch(f, { generation: 7 }),
-      }).generation,
-    ).toBe(8);
-  });
-});
-
 describe("lineQueueOwed", () => {
   const dispatchWith = (publication: Record<string, unknown>) =>
     makeDispatch(f, { publication: { intents: [], ...publication } });
@@ -536,28 +492,6 @@ describe("occupiesComputeSlot", () => {
     ["failed", false],
   ] as const)("%s occupies a slot: %s", (status, occupies) => {
     expect(occupiesComputeSlot(status)).toBe(occupies);
-  });
-});
-
-describe("the dispatch machine rules over a line dispatch", () => {
-  it("drive a line dispatch as they do a run's", () => {
-    const requested = makeLineDispatch(f);
-    const provisioning = transitionDispatch(requested, "provision", AT);
-    expect(provisioning.status).toBe("provisioning");
-    const running = transitionDispatch(transitionDispatch(provisioning, "ready", AT), "start", AT);
-    expect(leaseLost({ ...running, leaseExpiresAt: AT }, Date.parse(LATER))).toBe(true);
-    const replaced = beginReplacement(
-      { ...running, instanceId: "i-1", leaseExpiresAt: AT },
-      "lease_lost",
-      LATER,
-    );
-    expect(replaced).toMatchObject({ generation: 2, status: "provisioning" });
-    expect(replaced.instanceId).toBeUndefined();
-    const failed = runnerStopped(replaced, { code: "setup_failed", message: "no" }, LATER);
-    expect(failed).toMatchObject({
-      status: "failed",
-      failure: { code: "setup_failed" },
-    });
   });
 });
 
@@ -730,74 +664,231 @@ describe("settleBatch", () => {
   });
 });
 
-describe("recordLineDecision and announceLineAgent", () => {
-  const decisionBody = (overrides: Record<string, unknown> = {}) =>
-    ({
-      generation: 1,
-      authority: "line",
-      unit: { kind: "main", commit: "a".repeat(40) },
-      base: "b".repeat(40),
-      commit: "c".repeat(40),
-      context: "c",
-      alternatives: [],
-      choice: "x",
-      rationale: "r",
-      reversibility: "reversible",
-      resolverModel: "m",
-      examinerModel: "n",
-      attempts: 1,
-      verificationId: "ver_00000000000000000000000001",
-      decidedAt: AT,
-      ...overrides,
-    }) as never;
-
-  it("exports the idle wait", () => {
+describe("the line's idle wait", () => {
+  it("is exported", () => {
     expect(LINE_IDLE_SECONDS).toBe(600);
   });
+});
 
-  it("records a decision once per (commit, unit), keeps the newest, and refuses a stale generation", () => {
-    const record = makeLineRecord(createFixtures());
-    const first = recordLineDecision(record, decisionBody(), "dec_1", 1, AT);
-    if (!first.ok) throw new Error("refused");
-    expect(first.record.decisions).toHaveLength(1);
-    const again = recordLineDecision(first.record, decisionBody(), "dec_2", 1, AT);
-    expect(again.ok && again.record).toBe(first.record);
-    let held = first.record;
-    for (let n = 0; n < MAX_LINE_DECISIONS + 5; n += 1) {
-      const next = recordLineDecision(
-        held,
-        decisionBody({ commit: n.toString(16).padStart(40, "0") }),
-        `dec_n${n}`,
+describe("held entries", () => {
+  const sha = (n: number) => n.toString(16).padStart(40, "0");
+  const manyHeld = Array.from({ length: MAX_LINE_BATCH_ENTRIES + 5 }, (_, i) => ({
+    program: P1,
+    upTo: sha(i + 1),
+    enqueuedAt: AT,
+    repairs: 2,
+  }));
+  const settleHolding = (held: LineRecord["held"], generation = 1) => {
+    const base = { ...empty(), queue: held };
+    const taken = takeBatch(base, generation, { batchId: "b1" }, AT);
+    const result = settleBatch(
+      taken.record,
+      { batchId: "b1", parked: [], held: held.slice(0, MAX_LINE_BATCH_ENTRIES) } as never,
+      { parkedIds: [] },
+      generation,
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    return result.record;
+  };
+
+  it("moves settled held entries into record.held, deduplicated keeping the larger repairs", () => {
+    const taken = takeBatch(queued(), 1, { batchId: "b1" }, AT).record;
+    const entries = taken.batch?.entries ?? [];
+    const first = entries[0];
+    if (first === undefined) throw new Error("no entry");
+    const result = settleBatch(
+      taken,
+      {
+        batchId: "b1",
+        parked: [],
+        held: [
+          { ...first, repairs: 1 },
+          { ...first, repairs: 3 },
+          { ...first, repairs: 2 },
+        ],
+      } as never,
+      { parkedIds: [] },
+      1,
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.record.held).toEqual([{ ...first, repairs: 3 }]);
+    expect(result.record.batch).toBeUndefined();
+  });
+
+  it("refuses held entries that were not in the settled batch", () => {
+    const taken = takeBatch(queued(), 1, { batchId: "b1" }, AT).record;
+    expect(
+      settleBatch(
+        taken,
+        { batchId: "b1", parked: [], held: [{ program: P1, upTo: C, enqueuedAt: AT }] } as never,
+        { parkedIds: [] },
         1,
-        AT,
-      );
-      if (!next.ok) throw new Error("refused");
-      held = next.record;
-    }
-    expect(held.decisions).toHaveLength(MAX_LINE_DECISIONS);
-    expect(held.decisions?.at(-1)?.decisionId).toBe(`dec_n${MAX_LINE_DECISIONS + 4}`);
-    expect(recordLineDecision(record, decisionBody(), "dec_x", 2, AT)).toMatchObject({
-      ok: false,
-      reason: "stale_generation",
+        LATER,
+      ),
+    ).toMatchObject({ ok: false, reason: "held_not_in_batch" });
+  });
+
+  it("never blocks unrelated queued entries, however many are held", () => {
+    const record = settleHolding(manyHeld);
+    expect(record.held).toHaveLength(MAX_LINE_BATCH_ENTRIES);
+    const withWork = appendQueueEntry(record, { program: P2, upTo: B }, LATER);
+    const taken = takeBatch(withWork, 1, { batchId: "b2" }, LATER).record;
+    expect(taken.batch?.entries.map((e) => e.upTo)).toEqual([
+      ...manyHeld.slice(MAX_LINE_BATCH_ENTRIES).map((e) => e.upTo),
+      B,
+    ]);
+    expect(taken.held).toHaveLength(MAX_LINE_BATCH_ENTRIES);
+  });
+
+  it("puts released entries at the queue front with repairs intact", () => {
+    const record = appendQueueEntry(
+      settleHolding(manyHeld.slice(0, 2)),
+      { program: P2, upTo: B },
+      LATER,
+    );
+    const released = takeBatch(record, 1, { batchId: "b2" }, LATER, [
+      { program: P1, upTo: sha(2) },
+    ]).record;
+    expect(released.batch?.entries.map((e) => [e.upTo, e.repairs])).toEqual([
+      [sha(2), 2],
+      [B, undefined],
+    ]);
+    expect(released.held.map((e) => e.upTo)).toEqual([sha(1)]);
+  });
+
+  it("releases every held entry when a newer generation takes", () => {
+    const record = settleHolding(manyHeld.slice(0, 2));
+    const taken = takeBatch(record, 2, { batchId: "b2" }, LATER).record;
+    expect(taken.held).toEqual([]);
+    expect(taken.batch).toMatchObject({ generation: 2 });
+    expect(taken.batch?.entries).toEqual(manyHeld.slice(0, 2));
+  });
+
+  it("keeps repairs when a rejected push requeues the composition's ranges", () => {
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const composed = composeBatch(
+      batched,
+      compositionBody("b", { ranges: [{ program: P1, upTo: A, repairs: 3 }] }) as never,
+      "comp-1",
+      AT,
+    );
+    if (!composed.ok) throw new Error("expected ok");
+    const pushed = requestPush(
+      composed.record,
+      { head: C, expectedPredecessor: A, bundleKey: "k" },
+      1,
+      AT,
+    );
+    if (!pushed.ok) throw new Error("expected ok");
+    const resolved = resolvePush(pushed.record, C, "conflict", "no", LATER);
+    if (!resolved.ok) throw new Error("expected ok");
+    expect(resolved.record.queue[0]).toMatchObject({ program: P1, upTo: A, repairs: 3 });
+  });
+
+  it("keeps the repaired commit through settle, a rejected push, held and a new generation", () => {
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const composed = composeBatch(
+      batched,
+      compositionBody("b", {
+        ranges: [{ program: P1, upTo: A, repairs: 3, repaired: B }],
+      }) as never,
+      "comp-1",
+      AT,
+    );
+    if (!composed.ok) throw new Error("expected ok");
+    expect(composed.record.compositions[0]?.ranges).toEqual([
+      { program: P1, upTo: A, repairs: 3, repaired: B },
+    ]);
+    const pushed = requestPush(
+      composed.record,
+      { head: C, expectedPredecessor: A, bundleKey: "k" },
+      1,
+      AT,
+    );
+    if (!pushed.ok) throw new Error("expected ok");
+    const resolved = resolvePush(pushed.record, C, "conflict", "no", LATER);
+    if (!resolved.ok) throw new Error("expected ok");
+    expect(resolved.record.queue[0]).toMatchObject({
+      program: P1,
+      upTo: A,
+      repairs: 3,
+      repaired: B,
+    });
+
+    // Taken again and held behind another repair, it keeps the commit through a generation change.
+    const retaken = takeBatch(resolved.record, 1, { batchId: "b2" }, LATER).record;
+    const entry = retaken.batch?.entries.find((e) => e.program === P1);
+    if (entry === undefined) throw new Error("no entry");
+    expect(entry).toMatchObject({ repairs: 3, repaired: B });
+    const held = settleBatch(
+      retaken,
+      { batchId: "b2", parked: [], held: [entry] } as never,
+      { parkedIds: [] },
+      1,
+      LATER,
+    );
+    if (!held.ok) throw new Error("expected ok");
+    expect(held.record.held[0]).toMatchObject({ repaired: B });
+    const replaced = takeBatch(held.record, 2, { batchId: "b3" }, LATER).record;
+    expect(replaced.batch?.entries.find((e) => e.program === P1)).toMatchObject({
+      repairs: 3,
+      repaired: B,
     });
   });
 
-  it("announces an agent once per agentId and refuses a stale generation", () => {
-    const dispatch = makeLineDispatch(createFixtures());
-    const agent = {
-      agentId: "agent_01M5XW8F0SCAAWKGW76RXXZQ98",
-      generation: dispatch.generation,
-      role: "line_examiner",
-      model: { harness: "h", provider: "p", model: "m" },
-      announcedAt: AT,
-    } as never;
-    const first = announceLineAgent(dispatch, agent, AT);
-    if (!first.ok) throw new Error("refused");
-    expect(first.dispatch.agents).toHaveLength(1);
-    const again = announceLineAgent(first.dispatch, agent, AT);
-    expect(again.ok && again.dispatch).toBe(first.dispatch);
-    expect(
-      announceLineAgent(dispatch, { ...(agent as object), generation: 99 } as never, AT),
-    ).toMatchObject({ ok: false, reason: "stale_generation" });
+  it("stores the repair ref from a composition and from parked bodies", () => {
+    const repair = { runId: f.ids.next("run"), jobContractId: f.ids.next("job") };
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const { batchId: _id, ...composition } = compositionBody("b", { repair });
+    const result = settleBatch(
+      batched,
+      {
+        batchId: "b",
+        composition,
+        push: { head: C, expectedPredecessor: A, bundleKey: "k" },
+        parked: [{ ranges: [{ program: P2, upTo: B }], reason: "x", repair }],
+      } as never,
+      { compositionId: "c1", parkedIds: ["p1"] },
+      1,
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.record.compositions[0]?.repair).toEqual(repair);
+    expect(result.record.parked[0]?.repair).toEqual(repair);
+  });
+});
+
+describe("recordAttempt", () => {
+  const held = (): LineRecord => ({
+    ...empty(),
+    held: [{ program: P1, upTo: A, enqueuedAt: AT, repairs: 1 }],
+    heldBy: 1,
+  });
+
+  it("raises the held entry's repairs and keeps the words, never lowering the count", () => {
+    const first = recordAttempt(
+      held(),
+      { program: P1, upTo: A, repairs: 2, lastWords: "no" },
+      1,
+      LATER,
+    );
+    if (!first.ok) throw new Error("expected ok");
+    expect(first.record.held[0]).toMatchObject({ repairs: 2, lastWords: "no" });
+    const late = recordAttempt(first.record, { program: P1, upTo: A, repairs: 1 }, 1, LATER);
+    if (!late.ok) throw new Error("expected ok");
+    expect(late.record.held[0]?.repairs).toBe(2);
+  });
+
+  it("refuses a generation that does not hold the entries, and a range not held", () => {
+    expect(recordAttempt(held(), { program: P1, upTo: A, repairs: 2 }, 2, LATER)).toMatchObject({
+      ok: false,
+      reason: "stale_generation",
+    });
+    expect(recordAttempt(held(), { program: P2, upTo: B, repairs: 2 }, 1, LATER)).toMatchObject({
+      ok: false,
+      reason: "not_held",
+    });
   });
 });

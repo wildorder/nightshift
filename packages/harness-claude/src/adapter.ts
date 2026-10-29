@@ -69,7 +69,6 @@ import type {
   Harness,
   HarnessExit,
   HarnessHandle,
-  HarnessLineStartInput,
   HarnessStartInput,
   HookSink,
   MeasurementSink,
@@ -78,13 +77,10 @@ import type {
 import {
   agentStatusForExit,
   type CliLauncher,
-  cancelAtDeadline,
   commandAs,
   hookTypeForExit,
   millis,
-  nullHookSink,
   promptFor,
-  renderLineBrief,
   withTmpDir,
 } from "@nightshift/harness";
 import {
@@ -107,12 +103,7 @@ import {
   VERIFIED_CLAUDE_VERSION,
 } from "./command.js";
 import { HEADLESS_CLAUDE_ENV, sanitizeClaudeEnvironment } from "./environment.js";
-import {
-  type ClaudeToolPolicy,
-  claudeLineToolPolicy,
-  claudeMcpToolName,
-  claudeToolPolicy,
-} from "./permissions.js";
+import { type ClaudeToolPolicy, claudeMcpToolName, claudeToolPolicy } from "./permissions.js";
 import type { AdapterFileSystem, SpawnedChild, SpawnLike, TranscriptSink } from "./process.js";
 import { killProcessTree, nodeFileSystem, nodeSpawn } from "./process.js";
 import { createSessionCloser } from "./session.js";
@@ -236,7 +227,7 @@ interface RunState {
 }
 
 /**
- * One launch, normalised: what `start` and `startLine` both reduce to, so the
+ * One launch, normalised: what `start` reduces to, so the
  * command, permission and process code below is written once.
  */
 interface Launch {
@@ -708,28 +699,6 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
       extraEnv: declaredSecrets(input.program.secrets, parentEnv),
     });
 
-  /**
-   * The line owner's resolver or examiner: no MCP server, no run-scoped records,
-   * the environment handed in and none of the engine's. Git writes are denied as
-   * for a worker; an examiner may not edit a file.
-   */
-  const startLine = async (input: HarnessLineStartInput): Promise<HarnessHandle> => {
-    const handle = await launch({
-      agentId: input.agentId,
-      prompt: `${renderLineBrief(input.task).trimEnd()}\n`,
-      policy: claudeLineToolPolicy(input.role),
-      worktree: input.worktree,
-      tmpDir: input.tmpDir,
-      model: input.model,
-      runAs: input.runAs,
-      sink: nullHookSink,
-      parentEnv: {},
-      extraEnv: input.env,
-    });
-    cancelAtDeadline({ handle, deadline: input.deadline, nowMs: clock.now(), cancel });
-    return handle;
-  };
-
   const cancel = async (handle: HarnessHandle, grace: Duration): Promise<void> => {
     const state = runs.get(handle);
     if (state === undefined) return;
@@ -806,7 +775,6 @@ export const createClaudeHarness = (options: ClaudeHarnessOptions = {}): Harness
     id: CLAUDE_HARNESS_ID,
     capabilities: { usage: true, observations: true },
     start,
-    startLine,
     cancel,
     status,
   };

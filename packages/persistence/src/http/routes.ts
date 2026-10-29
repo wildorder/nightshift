@@ -53,20 +53,11 @@ export const routes = {
   line: (projectId: ProjectId, branch: string, action = "") =>
     `/projects/${projectId}/line${action}?branch=${encodeURIComponent(branch)}`,
   lineBatch: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/batch"),
-  lineCompositions: (projectId: ProjectId, branch: string) =>
-    routes.line(projectId, branch, "/compositions"),
-  lineDecisions: (projectId: ProjectId, branch: string) =>
-    routes.line(projectId, branch, "/decisions"),
-  lineAgents: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/agents"),
   lineSettle: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/settle"),
-  lineParked: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/parked"),
+  lineAttempt: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/attempt"),
   linePush: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/push"),
   lineBundleUploadUrl: (projectId: ProjectId, branch: string) =>
     routes.line(projectId, branch, "/bundle-upload-url"),
-  lineHeartbeat: (projectId: ProjectId, branch: string) =>
-    routes.line(projectId, branch, "/heartbeat"),
-  lineCancel: (projectId: ProjectId, branch: string) =>
-    routes.line(projectId, branch, "/dispatch/cancel"),
 
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,

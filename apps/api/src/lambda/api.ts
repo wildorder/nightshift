@@ -124,8 +124,6 @@ const dispatcher: Dispatcher | undefined =
     ? undefined
     : {
         provision: (scope) => invoke(dispatchFunctionArn, scope),
-        provisionLine: ({ projectId, branch }) =>
-          invoke(dispatchFunctionArn, { kind: "line", projectId, branch }),
         // The publisher (D-P10-22), when the runner stack exports one.
         ...(publisherFunctionArn === undefined
           ? {}

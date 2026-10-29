@@ -261,7 +261,10 @@ export const placeProviderCredentials = async (
 };
 
 export interface RootEnvironmentInput {
-  readonly context: RunnerContext;
+  readonly context: Pick<
+    RunnerContext,
+    "scope" | "layout" | "dispatch" | "program" | "projectEnv" | "projectEnvFile"
+  >;
   readonly apiEndpoint: string;
   /** The user project code runs as (D-P10-30); absent runs every agent as the engine. */
   readonly projectUser?: string;
@@ -323,7 +326,10 @@ export const rootEnvironment = (input: RootEnvironmentInput): Record<string, str
   // A landing's predecessor is the engine's to read from the record each time,
   // so a resumed machine or a relaunched root carries the chain on from where
   // it stands (2026-10-14, 2026-10-19).
-  env.NIGHTSHIFT_PUBLISH_BASE = context.dispatch.input.baseSha;
+  // A line run never sets it: with no base the engine installs no landing
+  // publisher, and a repair's landing is never pushed to GitHub by the engine
+  // (the line's push is the composer's bundle upload).
+  if (context.program.kind !== "line") env.NIGHTSHIFT_PUBLISH_BASE = context.dispatch.input.baseSha;
   if (input.projectUser !== undefined && input.projectUser !== "") {
     env.NIGHTSHIFT_PROJECT_USER = input.projectUser;
     env.NIGHTSHIFT_PROJECT_CREDENTIAL_DIR = projectCredentialRoot(context.scope.runId);

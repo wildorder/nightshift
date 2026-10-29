@@ -3,7 +3,7 @@
  * batch an owner takes, what it composes or parks, and the one push in flight;
  * the project's self-started spend against its cap; and the machine's slot.
  *
- * Pure over `LineRecord`, `ProjectSelfStartedUsage` and `LineDispatch`. The
+ * Pure over `LineRecord` and `ProjectSelfStartedUsage`. The
  * stores apply them inside a compare-and-swap `update`, so each is a function
  * of the current record alone and is safe to call again on a lost race. A
  * refusal is a value, not a throw: the routes (J3) map each reason to a status.
@@ -13,14 +13,13 @@ import type {
   CommitSha,
   Dispatch,
   DispatchStatus,
-  LineAgent,
+  LineAttemptBody,
   LineBatch,
   LineCompositionBody,
-  LineDecisionBody,
-  LineDispatch,
   LineParkBody,
   LinePushBody,
   LinePushStatus,
+  LineQueueEntry,
   LineRange,
   LineRecord,
   LineResolver,
@@ -28,15 +27,10 @@ import type {
   ProgramId,
   ProjectId,
   ProjectSelfStartedUsage,
+  RunId,
 } from "@nightshift/contracts";
-import {
-  type AgentId,
-  type ComputeTier,
-  MAX_LINE_AGENTS,
-  MAX_LINE_COMPOSITIONS,
-  MAX_LINE_DECISIONS,
-  MAX_LINE_PARKED,
-} from "@nightshift/contracts";
+import { MAX_LINE_COMPOSITIONS, MAX_LINE_PARKED } from "@nightshift/contracts";
+import { composedEntryOf, parkedEntryOf, settlementDigest } from "../line/settlement.js";
 
 /** What the plane's own starts may spend on one project's line per month, unless the config says. */
 export const DEFAULT_LINE_MONTHLY_USD = 25;
@@ -49,6 +43,34 @@ export const LINE_RESOLVER_ATTEMPTS = 3;
 /** The most queue entries one batch takes; the rest wait for the next. */
 export const MAX_LINE_BATCH_ENTRIES = 25;
 
+/**
+ * Who holds a batch. The line principal is its generation alone; a line run is
+ * its `runId` and generation together, because a replacement run may carry the
+ * same generation number as the run it replaced.
+ */
+export interface LineOwner {
+  readonly runId: RunId;
+  readonly generation: number;
+}
+
+export type LineOwnerArg = number | LineOwner;
+
+const generationOf = (owner: LineOwnerArg): number =>
+  typeof owner === "number" ? owner : owner.generation;
+
+/** Whether a run owner is the holder of `batch`. A generation-only owner is not judged here. */
+const holdsBatch = (batch: LineBatch, owner: LineOwnerArg): boolean =>
+  typeof owner === "number" ||
+  (batch.runId === owner.runId && batch.generation === owner.generation);
+
+const notHolder = (owner: LineOwnerArg, batch: LineBatch | undefined): LineRefusal | undefined =>
+  batch === undefined || holdsBatch(batch, owner)
+    ? undefined
+    : {
+        reason: "stale_generation",
+        detail: `this call is not from the owner that holds batch ${batch.batchId}`,
+      };
+
 export type LineRefusal =
   /** The batch named is not the one the line holds: the owner is stale, or the batch was settled already. */
   | { readonly reason: "stale_batch"; readonly detail: string }
@@ -58,6 +80,10 @@ export type LineRefusal =
   | { readonly reason: "push_pending"; readonly detail: string }
   /** The push named is not the one the line holds. */
   | { readonly reason: "no_such_push"; readonly detail: string }
+  /** A held entry was not an entry of the settled batch. */
+  | { readonly reason: "held_not_in_batch"; readonly detail: string }
+  /** The range an attempt names is not held back by the line. */
+  | { readonly reason: "not_held"; readonly detail: string }
   /** The write is from an owner generation the line has moved past. */
   | { readonly reason: "stale_generation"; readonly detail: string };
 
@@ -103,6 +129,22 @@ export const appendQueueEntry = (
   };
 };
 
+/** Moves the held entries `pick` chooses to the front of the queue, repairs and enqueuedAt kept. */
+const releaseHeld = (record: LineRecord, pick: (entry: LineQueueEntry) => boolean): LineRecord => {
+  const released = record.held.filter(pick);
+  if (released.length === 0) return record;
+  const kept = record.held.filter((entry) => !pick(entry));
+  const { heldBy: _heldBy, ...rest } = record;
+  return {
+    ...(kept.length === 0 ? rest : record),
+    held: kept,
+    queue: [
+      ...released.filter((entry) => !record.queue.some((queued) => sameRange(queued, entry))),
+      ...record.queue,
+    ],
+  };
+};
+
 /**
  * Moves the oldest `MAX_LINE_BATCH_ENTRIES` of the queue into one batch for the owner of `generation`. An empty
  * queue gives no batch. A batch already held is the owner's to finish, so it is
@@ -111,13 +153,40 @@ export const appendQueueEntry = (
  */
 export const takeBatch = (
   record: LineRecord,
-  generation: number,
+  owner: LineOwnerArg,
   ids: { readonly batchId: string },
   at: string,
+  release: readonly Pick<LineQueueEntry, "program" | "upTo">[] = [],
 ): { readonly record: LineRecord; readonly batch?: LineBatch } => {
+  const generation = generationOf(owner);
+  // A newer owner has no reservations, so everything held returns; otherwise only what was named.
+  const replaced =
+    record.held.length > 0 &&
+    ((record.heldBy !== undefined && generation > record.heldBy) ||
+      (record.batch !== undefined && record.batch.generation !== generation));
+  const released = replaced
+    ? releaseHeld(record, () => true)
+    : release.length === 0
+      ? record
+      : releaseHeld(record, (entry) => release.some((named) => sameRange(named, entry)));
+  if (released !== record) {
+    const next = takeBatch(released, owner, ids, at);
+    return {
+      record: next.record === released ? { ...released, updatedAt: at } : next.record,
+      ...(next.batch === undefined ? {} : { batch: next.batch }),
+    };
+  }
+  const ownedBy = typeof owner === "number" ? {} : { runId: owner.runId };
   if (record.batch !== undefined) {
-    if (record.batch.generation === generation) return { record, batch: record.batch };
-    const batch: LineBatch = { ...record.batch, generation };
+    if (
+      record.batch.generation === generation &&
+      (typeof owner === "number" || holdsBatch(record.batch, owner))
+    ) {
+      return { record, batch: record.batch };
+    }
+    // A newer owner takes back the batch the plane already fenced the old one out of.
+    const { runId: _previous, ...held } = record.batch;
+    const batch: LineBatch = { ...held, generation, ...ownedBy };
     return { record: { ...record, batch, updatedAt: at }, batch };
   }
   if (record.queue.length === 0) return { record };
@@ -126,6 +195,7 @@ export const takeBatch = (
     entries: record.queue.slice(0, MAX_LINE_BATCH_ENTRIES),
     takenAt: at,
     generation,
+    ...ownedBy,
   };
   return {
     record: {
@@ -159,6 +229,21 @@ const resolverOver = (resolver: LineResolver | undefined): LineRefusal | undefin
 const newest = <T>(items: readonly T[], max: number): T[] =>
   items.length > max ? items.slice(items.length - max) : [...items];
 
+const notInBatch = (
+  record: LineRecord,
+  held: readonly LineQueueEntry[],
+): LineRefusal | undefined => {
+  const missing = held.find(
+    (entry) => !(record.batch?.entries ?? []).some((taken) => sameRange(taken, entry)),
+  );
+  return missing === undefined
+    ? undefined
+    : {
+        reason: "held_not_in_batch",
+        detail: `${missing.program} up to ${missing.upTo.slice(0, 12)} was not an entry of batch ${record.batch?.batchId ?? "(none)"}`,
+      };
+};
+
 /** Records the owner's composition and settles its batch. */
 export const composeBatch = (
   record: LineRecord,
@@ -183,6 +268,7 @@ export const composeBatch = (
             ranges: body.ranges,
             verification: body.verification,
             ...(body.resolver === undefined ? {} : { resolver: body.resolver }),
+            ...(body.repair === undefined ? {} : { repair: body.repair }),
             composedAt: at,
           },
         ],
@@ -217,6 +303,7 @@ export const parkBatch = (
             ...(body.commit === undefined ? {} : { commit: body.commit }),
             ...(body.verification === undefined ? {} : { verification: body.verification }),
             ...(body.resolver === undefined ? {} : { resolver: body.resolver }),
+            ...(body.repair === undefined ? {} : { repair: body.repair }),
             parkedAt: at,
           },
         ],
@@ -226,6 +313,14 @@ export const parkBatch = (
     },
   };
 };
+
+/** The ids a settlement records: the same batch always yields the same ones. */
+export const settleIds = (
+  body: Pick<LineSettleBody, "batchId" | "composition" | "parked">,
+): { readonly compositionId?: string; readonly parkedIds: readonly string[] } => ({
+  ...(body.composition === undefined ? {} : { compositionId: `${body.batchId}-c` }),
+  parkedIds: body.parked.map((_, index) => `${body.batchId}-p${index}`),
+});
 
 /**
  * Settles a batch with a composition and/or parked entries in one change. The
@@ -239,11 +334,13 @@ export const settleBatch = (
     readonly compositionId?: string;
     readonly parkedIds: readonly string[];
   },
-  generation: number,
+  owner: LineOwnerArg,
   at: string,
 ): LineChange => {
+  const generation = generationOf(owner);
   const pending = record.push?.status === "pending" ? record.push : undefined;
   const refusal =
+    notHolder(owner, record.batch) ??
     staleBatch(record, body.batchId) ??
     (body.push !== undefined && pending !== undefined && pending.head !== body.push.head
       ? ({
@@ -251,31 +348,33 @@ export const settleBatch = (
           detail: `a push to ${pending.head.slice(0, 12)} is still pending`,
         } as const)
       : undefined) ??
+    notInBatch(record, body.held ?? []) ??
     resolverOver(body.composition?.resolver) ??
     body.parked.map((entry) => resolverOver(entry.resolver)).find((r) => r !== undefined);
   if (refusal !== undefined) return refuse(refusal);
   const { batch: _settled, ...rest } = record;
   const composition = body.composition;
+  const heldNow = (body.held ?? []).reduce<LineQueueEntry[]>(
+    (all, entry) => {
+      const at = all.findIndex((have) => sameRange(have, entry));
+      if (at < 0) return [...all, entry];
+      if ((entry.repairs ?? 0) > (all[at]?.repairs ?? 0)) all[at] = entry;
+      return all;
+    },
+    [...record.held],
+  );
   return {
     ok: true,
     record: {
       ...rest,
+      ...(body.held === undefined || body.held.length === 0
+        ? {}
+        : { held: heldNow, heldBy: generation }),
       compositions:
         composition === undefined
           ? record.compositions
           : newest(
-              [
-                ...record.compositions,
-                {
-                  compositionId: ids.compositionId ?? "",
-                  commit: composition.commit,
-                  parent: composition.parent,
-                  ranges: composition.ranges,
-                  verification: composition.verification,
-                  ...(composition.resolver === undefined ? {} : { resolver: composition.resolver }),
-                  composedAt: at,
-                },
-              ],
+              [...record.compositions, composedEntryOf(composition, ids.compositionId ?? "", at)],
               MAX_LINE_COMPOSITIONS,
             ),
       ...(body.push === undefined
@@ -297,18 +396,63 @@ export const settleBatch = (
           : newest(
               [
                 ...record.parked,
-                ...body.parked.map((entry, index) => ({
-                  compositionId: ids.parkedIds[index] ?? "",
-                  ranges: entry.ranges,
-                  reason: entry.reason,
-                  ...(entry.commit === undefined ? {} : { commit: entry.commit }),
-                  ...(entry.verification === undefined ? {} : { verification: entry.verification }),
-                  ...(entry.resolver === undefined ? {} : { resolver: entry.resolver }),
-                  parkedAt: at,
-                })),
+                ...body.parked.map((entry, index) =>
+                  parkedEntryOf(entry, ids.parkedIds[index] ?? "", at),
+                ),
               ],
               MAX_LINE_PARKED,
             ),
+      lastSettled: {
+        batchId: body.batchId,
+        digest: settlementDigest(body),
+        ...(typeof owner === "number" ? {} : { runId: owner.runId }),
+        generation,
+        at,
+      },
+      updatedAt: at,
+    },
+  };
+};
+
+/**
+ * Records a repair attempt the owner has consumed on a held entry, with the words
+ * of the repair that failed before it. Repairs never go down, so a repeated or
+ * late write cannot give budget back. Refused when the generation that holds the
+ * entries is not the caller's (a replacement has taken them) or the range is not held.
+ */
+export const recordAttempt = (
+  record: LineRecord,
+  body: Pick<LineAttemptBody, "program" | "upTo" | "repairs" | "lastWords">,
+  owner: LineOwnerArg,
+  at: string,
+): LineChange => {
+  const generation = generationOf(owner);
+  if (record.heldBy !== undefined && record.heldBy !== generation) {
+    return refuse({
+      reason: "stale_generation",
+      detail: `the held entries belong to generation ${record.heldBy}, not ${generation}`,
+    });
+  }
+  const index = record.held.findIndex((entry) => sameRange(entry, body));
+  const held = record.held[index];
+  if (held === undefined) {
+    return refuse({
+      reason: "not_held",
+      detail: `${body.program} up to ${body.upTo.slice(0, 12)} is not held by the line`,
+    });
+  }
+  const { lastWords: _old, ...rest } = held;
+  const next: LineQueueEntry = {
+    ...rest,
+    repairs: Math.max(held.repairs ?? 0, body.repairs),
+    ...(body.lastWords === undefined ? {} : { lastWords: body.lastWords }),
+  };
+  return {
+    ok: true,
+    record: {
+      ...record,
+      held: record.held.map((entry, at2) => (at2 === index ? next : entry)),
+      heldBy: generation,
       updatedAt: at,
     },
   };
@@ -322,9 +466,12 @@ export const settleBatch = (
 export const requestPush = (
   record: LineRecord,
   request: LinePushBody,
-  generation: number,
+  owner: LineOwnerArg,
   at: string,
 ): LineChange => {
+  const generation = generationOf(owner);
+  const stale = notHolder(owner, record.batch);
+  if (stale !== undefined) return refuse(stale);
   const current = record.push;
   if (current?.status === "pending") {
     if (current.head === request.head) return { ok: true, record };
@@ -379,6 +526,8 @@ export const resolvePush = (
               program: range.program,
               upTo: range.upTo,
               enqueuedAt: unpushed.composedAt,
+              ...(range.repairs === undefined ? {} : { repairs: range.repairs }),
+              ...(range.repaired === undefined ? {} : { repaired: range.repaired }),
             })),
           ...record.queue,
         ];
@@ -407,84 +556,12 @@ export const resolvePush = (
   };
 };
 
-/**
- * Records a resolver's decision on the line record. The same (commit, unit)
- * again is the same decision and is stored once; a generation other than the
- * current one is refused.
- */
-export const recordLineDecision = (
-  record: LineRecord,
-  body: LineDecisionBody,
-  decisionId: string,
-  generation: number,
-  at: string,
-): LineChange => {
-  if (body.generation !== generation) {
-    return refuse({
-      reason: "stale_generation",
-      detail: `this decision is from generation ${body.generation}; the line's dispatch is at ${generation}`,
-    });
-  }
-  const decisions = record.decisions ?? [];
-  const key = unitKey(body.unit);
-  if (decisions.some((held) => held.commit === body.commit && unitKey(held.unit) === key)) {
-    return { ok: true, record };
-  }
-  const { generation: _generation, ...decision } = body;
-  return {
-    ok: true,
-    record: {
-      ...record,
-      decisions: newest(
-        [...decisions, { ...decision, decisionId, generation }],
-        MAX_LINE_DECISIONS,
-      ),
-      updatedAt: at,
-    },
-  };
-};
-
-const unitKey = (unit: LineDecisionBody["unit"]): string =>
-  unit.kind === "main"
-    ? `main:${unit.commit}`
-    : `range:${unit.range.program}:${unit.range.from ?? ""}:${unit.range.upTo}`;
-
-/** A line dispatch with one more announced agent, or a refusal as a value. */
-export type LineAgentChange =
-  | { readonly ok: true; readonly dispatch: LineDispatch }
-  | { readonly ok: false; readonly reason: "stale_generation"; readonly detail: string };
-
-/**
- * Appends an announced agent to the dispatch. Idempotent per `agentId`; refused
- * when `agent.generation` is not the dispatch's current generation.
- */
-export const announceLineAgent = (
-  dispatch: LineDispatch,
-  agent: LineAgent,
-  at: string,
-): LineAgentChange => {
-  if (agent.generation !== dispatch.generation) {
-    return {
-      ok: false,
-      reason: "stale_generation",
-      detail: `this announcement is from generation ${agent.generation}; the line's dispatch is at ${dispatch.generation}`,
-    };
-  }
-  const agents = dispatch.agents ?? [];
-  if (agents.some((held) => held.agentId === agent.agentId)) return { ok: true, dispatch };
-  return {
-    ok: true,
-    dispatch: {
-      ...dispatch,
-      agents: newest([...agents, agent], MAX_LINE_AGENTS),
-      updatedAt: at,
-    },
-  };
-};
-
 /** Whether the line has anything left for an owner to do: a queue, a batch, or a push to resolve. */
 export const lineHasWork = (record: LineRecord): boolean =>
-  record.queue.length > 0 || record.batch !== undefined || record.push?.status === "pending";
+  record.queue.length > 0 ||
+  record.held.length > 0 ||
+  record.batch !== undefined ||
+  record.push?.status === "pending";
 
 /**
  * Whether a run's publication owes the line a range it has not queued: the run
@@ -629,55 +706,6 @@ export const capReached = (
   month: CalendarMonth,
   capUsd: number,
 ): boolean => usage !== undefined && usage.month === month && usage.meteredUsd >= capUsd;
-
-/** The machine a line owner is asked for, until provisioning (J5) settles it. */
-export interface LineMachineSpec {
-  readonly tier: ComputeTier;
-  readonly instanceType: string;
-  readonly usdPerHour: number;
-  readonly amiVersion: string;
-  readonly workspace?: LineDispatch["workspace"];
-}
-
-/**
- * A requested dispatch of the line. The generation continues from `previous`
- * (plus one, never back to 1), so an owner of an older dispatch stays fenced.
- */
-export const newLineDispatch = (input: {
-  readonly projectId: ProjectId;
-  readonly branch: string;
-  readonly previous?: Pick<LineDispatch, "generation"> | undefined;
-  readonly engineAgentId: AgentId;
-  readonly machine: LineMachineSpec;
-  readonly at: string;
-}): LineDispatch => {
-  const generation = (input.previous?.generation ?? 0) + 1;
-  const { machine } = input;
-  return {
-    schemaVersion: 1,
-    projectId: input.projectId,
-    branch: input.branch,
-    version: 1,
-    status: "requested",
-    tier: machine.tier,
-    instanceType: machine.instanceType,
-    usdPerHour: machine.usdPerHour,
-    ...(machine.workspace === undefined ? {} : { workspace: machine.workspace }),
-    amiVersion: machine.amiVersion,
-    generation,
-    engineAgentId: input.engineAgentId,
-    attempts: [{ generation, reason: "dispatch", startedAt: input.at }],
-    spend: {
-      estimatedUsd: (LINE_COMPOSITION_SECONDS / 3600) * machine.usdPerHour,
-      ceilingSeconds: LINE_COMPOSITION_SECONDS,
-      meteredUsd: 0,
-      meteredSeconds: 0,
-    },
-    cleanup: { volumeDeleted: false, failures: [] },
-    requestedAt: input.at,
-    updatedAt: input.at,
-  };
-};
 
 const SLOT_STATUSES: readonly DispatchStatus[] = ["provisioning", "ready", "running", "stopping"];
 

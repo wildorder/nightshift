@@ -52,10 +52,11 @@ export const isPlanned = (contract: ProgramContract): boolean => strandsOf(contr
 
 /**
  * Whether a run of this contract may start (D-P7-02). A contract with no strands
- * is not gated; a planned one runs only once a human has ratified it.
+ * is not gated; a planned one runs only once a human has ratified it. A line
+ * program is the plane's own and is never ratified.
  */
 export const mayRunContract = (contract: ProgramContract): boolean =>
-  !isPlanned(contract) || contract.status === "ratified";
+  contract.kind === "line" || !isPlanned(contract) || contract.status === "ratified";
 
 // --- glob overlap -------------------------------------------------------------
 

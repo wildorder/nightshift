@@ -103,8 +103,6 @@ export interface Dispatcher {
   provision(scope: RunScope): Promise<void>;
   /** The publisher Lambda (D-P10-22), invoked when an intent is recorded; absent where nothing publishes. */
   publish?(scope: RunScope): Promise<void>;
-  /** Brings up the project line's owner machine (Pipkin M1b); absent where nothing provisions a line. */
-  provisionLine?(target: { readonly projectId: ProjectId; readonly branch: string }): Promise<void>;
   /** The publisher for the project line's push (Pipkin M1b); absent where nothing publishes. */
   publishLine?(target: { readonly projectId: ProjectId; readonly branch: string }): Promise<void>;
 }

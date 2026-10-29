@@ -2046,7 +2046,7 @@ export const recordArtifact = async (
   input: {
     readonly scope: RunSession["scope"];
     readonly nodeId: ExecutionNodeId;
-    readonly kind: "transcript" | "verification-log" | "build-log";
+    readonly kind: "transcript" | "verification-log" | "build-log" | "runner-log";
     readonly contentType: string;
     readonly bytes: Uint8Array;
   },

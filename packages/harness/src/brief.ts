@@ -38,7 +38,6 @@ import type {
   CarriedOverWork,
   ExaminationEvidence,
   HarnessStartInput,
-  LineTask,
   ProgramRuling,
   StrandContinuation,
 } from "./harness.js";
@@ -1411,51 +1410,4 @@ export const promptFor = (
         input.mcp.name,
         nightshiftToolNames(input.node.kind, input.program, input.agent.role, input.task?.kind),
       );
-};
-
-/**
- * The prompt of a line agent (strand S-04): the line owner's brief inside the
- * rules that hold for every agent here. No run, no tools to report through: the
- * resolver's work is what it leaves in the worktree, the examiner's is its
- * final answer.
- */
-export const renderLineBrief = (task: LineTask): string => {
-  if (task.kind === "line_resolve") {
-    return [
-      "You are a Nightshift line resolver. Work for several programs has been merged onto",
-      "the project's development line and the merge needs your hand. Edit files in the",
-      "current working directory to resolve it, as the brief below asks.",
-      "",
-      "Rules:",
-      "  - Edit files only. Do not run git commands that write state (add, commit, merge,",
-      "    checkout, reset, push and the like); Nightshift commits what you leave.",
-      "  - Do not push, deploy, or touch anything outside the working directory.",
-      "  - When you are done, end with a short plain summary of what you changed and why.",
-      "",
-      "BRIEF",
-      "",
-      task.brief.trimEnd(),
-      "",
-    ].join("\n");
-  }
-  return [
-    "You are a Nightshift line examiner. A line resolver produced the commit described",
-    "below. You are an independent check on it. Read the working directory and run what",
-    "you need to judge it, but do not edit any file and do not run git commands that",
-    "write state.",
-    "",
-    "Finish with exactly one fenced JSON block as the last thing you write:",
-    "",
-    "```json",
-    '{"verdict": "approved" | "rejected", "findings": ["each problem, one sentence"]}',
-    "```",
-    "",
-    'Use "approved" only when the resolution is correct and nothing it dropped or broke',
-    'is left; otherwise "rejected" with at least one finding.',
-    "",
-    "BRIEF",
-    "",
-    task.brief.trimEnd(),
-    "",
-  ].join("\n");
 };

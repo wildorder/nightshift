@@ -4,7 +4,12 @@
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type LineView, NIGHTSHIFT_CONFIG_FILE } from "@nightshift/contracts";
+import {
+  type Dispatch,
+  type LineView,
+  NIGHTSHIFT_CONFIG_FILE,
+  type Run,
+} from "@nightshift/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createTestEnvironment, type TestEnvironment } from "../testing/harness.js";
 import { describeLine, lineStatus, NO_LINE_CONFIGURED } from "./line.js";
@@ -18,6 +23,8 @@ const PROJECT = "proj_00000000000000000000000001";
 const ALPHA = "prog_00000000000000000000000001";
 const BETA = "prog_00000000000000000000000002";
 const sha = (c: string): string => c.repeat(40);
+const RUN_A = "run_01J0000000000000000000000A";
+const RUN_B = "run_01J0000000000000000000000B";
 const AT = "2026-10-27T10:00:00.000Z";
 
 const range = (program: string, upTo: string, from?: string) => ({
@@ -46,6 +53,7 @@ const view = (record: object = {}, rest: object = {}): LineView =>
       repositoryUrl: "https://example.test/r.git",
       version: 1,
       queue: [],
+      held: [],
       compositions: [],
       parked: [],
       updatedAt: AT,
@@ -65,39 +73,10 @@ describe("describeLine", () => {
     const out = text(describeLine(view({ head: sha("a") })));
     expect(out).toContain("line nightshift/develop  head aaaaaaa");
     expect(out).toContain("last push: none");
-    expect(out).toContain("line owner: none started");
+    expect(out).toContain("runs: none");
     expect(out).toContain("queue: empty");
     expect(out).toContain("compositions: none");
     expect(out).not.toContain("parked");
-  });
-
-  it("summarises the decisions: their count and the newest's unit and choice", () => {
-    const decision = (choice: string, upTo: string) => ({
-      decisionId: "dec_1",
-      generation: 1,
-      authority: "line",
-      unit: { kind: "range", range: range(ALPHA, upTo) },
-      base: sha("b"),
-      commit: sha("c"),
-      context: "c",
-      alternatives: [],
-      choice,
-      rationale: "r",
-      reversibility: "reversible",
-      resolverModel: "m",
-      examinerModel: "n",
-      attempts: 1,
-      verificationId: "ver_00000000000000000000000001",
-      decidedAt: AT,
-    });
-    const out = text(
-      describeLine(
-        view({ decisions: [decision("first", sha("d")), decision("keep both", sha("e"))] }),
-      ),
-    );
-    expect(out).toContain("decisions: 2");
-    expect(out).toContain("newest: nightshift/alpha base..eeeeeee: keep both");
-    expect(text(describeLine(view()))).not.toContain("decisions");
   });
 
   it("lists the queue with branch names and short shas", () => {
@@ -119,25 +98,20 @@ describe("describeLine", () => {
   it("shows a composition with its resolver decision, ranges and push", () => {
     const out = text(
       describeLine(
-        view(
-          {
-            compositions: [
-              {
-                compositionId: "comp-1",
-                commit: sha("f"),
-                parent: sha("a"),
-                ranges: [range(ALPHA, sha("d")), range(BETA, sha("e"), sha("1"))],
-                verification: verification(),
-                resolver: { decision: "resolved", attempts: 2, detail: "kept both imports" },
-                composedAt: AT,
-                pushed: { at: AT },
-              },
-            ],
-          },
-          {
-            dispatch: { status: "running", generation: 3, spend: { meteredUsd: 1.5 } },
-          },
-        ),
+        view({
+          compositions: [
+            {
+              compositionId: "comp-1",
+              commit: sha("f"),
+              parent: sha("a"),
+              ranges: [range(ALPHA, sha("d")), range(BETA, sha("e"), sha("1"))],
+              verification: verification(),
+              resolver: { decision: "resolved", attempts: 2, detail: "kept both imports" },
+              composedAt: AT,
+              pushed: { at: AT },
+            },
+          ],
+        }),
       ),
     );
     expect(out).toContain(
@@ -146,7 +120,49 @@ describe("describeLine", () => {
     expect(out).toContain("verification passed (ver_00000000000000000000000001)");
     expect(out).toContain("resolver resolved, 2 attempts: kept both imports");
     expect(out).toContain(`pushed ${AT}`);
-    expect(out).toContain("line owner: running, generation 3, metered $1.50");
+  });
+
+  it("prints a composition's repair run and job contract", () => {
+    const out = text(
+      describeLine(
+        view({
+          compositions: [
+            {
+              compositionId: "comp-3",
+              commit: sha("f"),
+              parent: sha("a"),
+              ranges: [range(ALPHA, sha("d"))],
+              verification: verification(),
+              repair: { runId: RUN_A, jobContractId: "job_00000000000000000000000001" },
+              composedAt: AT,
+            },
+          ],
+        }),
+      ),
+    );
+    expect(out).toContain(`repair ${RUN_A} job_00000000000000000000000001`);
+  });
+
+  it("lists the runs newest first, with machine and spend, or no machine", () => {
+    const running = {
+      run: { runId: RUN_A, status: "running", startedAt: "2026-10-27T11:00:00.000Z" },
+      dispatch: { instanceType: "c7i.xlarge", instanceId: "i-abc", spend: { meteredUsd: 1.5 } },
+    } as unknown as { run: Run; dispatch: Dispatch };
+    const ended = {
+      run: {
+        runId: RUN_B,
+        status: "succeeded",
+        startedAt: AT,
+        endedAt: "2026-10-27T10:30:00.000Z",
+      },
+    } as unknown as { run: Run };
+    const out = text(describeLine(view(), [running, ended]));
+    expect(out).toContain("runs: 2");
+    expect(out).toContain(`${RUN_A}  running (live)`);
+    expect(out).toContain("c7i.xlarge i-abc, metered $1.50");
+    expect(out).toContain(`${RUN_B}  succeeded`);
+    expect(out).toContain("ended 2026-10-27T10:30:00.000Z  no machine");
+    expect(out.indexOf(RUN_A)).toBeLessThan(out.indexOf(RUN_B));
   });
 
   it("shows a parked composition with its ranges and reason", () => {

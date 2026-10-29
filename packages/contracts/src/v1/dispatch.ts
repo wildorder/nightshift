@@ -382,6 +382,8 @@ export const DispatchFailureCodeSchema = z.enum([
   "routes_limited",
   /** A gate green in the reference audit is red on the machine (P16 D-07). */
   "environment_fault",
+  /** A line run stopped because the project's self-started spend reached its monthly cap. */
+  "line_cap",
 ]);
 export type DispatchFailureCode = z.infer<typeof DispatchFailureCodeSchema>;
 

@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LineRow } from "../components/line-row.js";
 import { PageHeader } from "../components/page-header.js";
 import { StatusBadge } from "../components/status-badge.js";
 import { between, readable, shortId } from "../lib/format.js";
@@ -323,7 +324,13 @@ export const ProjectPage = () => {
     return <p role="alert">Could not list programs: {String(programs.error)}</p>;
   if (project.data === undefined) return <p role="alert">No such project.</p>;
 
-  const rows = programRows(programs.data, drafts.data ?? []);
+  const lines = programs.data.filter(({ program }) => program.kind === "line");
+  const rows = programRows(
+    programs.data.filter(({ program }) => program.kind !== "line"),
+    drafts.data ?? [],
+  );
+  const nameOf = (programId: string): string =>
+    drafts.data?.find((draft) => draft.programId === programId)?.name ?? programId;
   const now = Date.now();
 
   return (
@@ -350,6 +357,24 @@ export const ProjectPage = () => {
         }
       />
       {editing ? <EditProject project={project.data} onDone={() => setEditing(false)} /> : null}
+
+      {lines.length === 0 ? null : (
+        <>
+          <h2 className="mb-3 text-lg font-semibold">Line</h2>
+          <ul className="mb-8" aria-label="Line">
+            {lines.map(({ program, runs }) => (
+              <LineRow
+                key={program.programId}
+                projectId={projectId}
+                program={program}
+                runs={runs}
+                nameOf={nameOf}
+                now={now}
+              />
+            ))}
+          </ul>
+        </>
+      )}
 
       <h2 className="mb-3 text-lg font-semibold">Programs</h2>
       {drafts.isError ? (

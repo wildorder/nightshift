@@ -20,8 +20,6 @@ import {
   GateHealthSchema,
   type IsoTimestamp,
   JobContractSchema,
-  type LineDispatch,
-  LineDispatchSchema,
   LineRecordSchema,
   MeasurementSummarySchema,
   MembershipSchema,
@@ -366,79 +364,6 @@ export const createAwsStores = ({
     listWithWork: async () => listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition())),
   };
 
-  const lineDispatches: NightshiftStores["lineDispatches"] = {
-    get: (projectId, branch) => getRecord(LineDispatchSchema, keys.lineDispatch(projectId, branch)),
-    start: async (next) => {
-      // The version continues a settled predecessor's, so a stale writer of the old
-      // row cannot match the new one; the condition alone decides who starts.
-      const stored = await getRecord(
-        LineDispatchSchema,
-        keys.lineDispatch(next.projectId, next.branch),
-      );
-      const parsed = LineDispatchSchema.parse({ ...next, version: (stored?.version ?? 0) + 1 });
-      try {
-        await table.put({
-          TableName: tableName,
-          Item: toItem(
-            "LineDispatch",
-            keys.lineDispatch(parsed.projectId, parsed.branch),
-            parsed,
-            keys.lineDispatchIndex(
-              parsed.status,
-              parsed.updatedAt,
-              parsed.projectId,
-              parsed.branch,
-            ),
-          ),
-          // Nothing stored, or a terminal dispatch whose cleanup settled and whose
-          // generation this one follows.
-          ConditionExpression:
-            "attribute_not_exists(#pk) OR ((#status = :stopped OR #status = :failed) AND " +
-            "attribute_exists(#cleanup.#settledAt) AND #generation = :previous)",
-          ExpressionAttributeNames: {
-            "#pk": "PK",
-            "#status": "status",
-            "#cleanup": "cleanup",
-            "#settledAt": "settledAt",
-            "#generation": "generation",
-          },
-          ExpressionAttributeValues: {
-            ":stopped": "stopped",
-            ":failed": "failed",
-            ":previous": parsed.generation - 1,
-          },
-        });
-        return "started";
-      } catch (error) {
-        if (!isConditionalCheckFailure(error)) throw error;
-        return "live";
-      }
-    },
-    update: async (projectId, branch, change) => {
-      const key = keys.lineDispatch(projectId, branch);
-      return updateVersioned(
-        "LineDispatch",
-        LineDispatchSchema,
-        key,
-        (current) => {
-          if (current === undefined) return undefined;
-          const next = change(current);
-          return next === undefined ? undefined : { ...next, projectId, branch };
-        },
-        (record) => keys.lineDispatchIndex(record.status, record.updatedAt, projectId, branch),
-      );
-    },
-    listByStatus: async (statuses) => {
-      const found: LineDispatch[] = [];
-      for (const status of statuses) {
-        found.push(
-          ...(await listAll(LineDispatchSchema, inIndex(keys.lineDispatchIndexPartition(status)))),
-        );
-      }
-      return found;
-    },
-  };
-
   const projectSelfStartedUsage: NightshiftStores["projectSelfStartedUsage"] = {
     get: (projectId, month) =>
       getRecord(ProjectSelfStartedUsageSchema, keys.projectSelfStartedUsage(projectId, month)),
@@ -460,7 +385,6 @@ export const createAwsStores = ({
 
     // Pipkin M1b: the project line.
     lines,
-    lineDispatches,
     projectSelfStartedUsage,
 
     // P10 (D-P10-19): one row per org and month, read to refuse a dispatch.

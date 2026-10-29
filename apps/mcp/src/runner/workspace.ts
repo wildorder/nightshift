@@ -190,8 +190,11 @@ export interface PrepareInput {
   readonly layout: WorkspaceLayout;
   readonly dispatch: Dispatch;
   readonly program: ProgramContract;
-  /** The ratified plan's text, read from the plane, to be hashed against the dispatch. */
-  readonly planText: string;
+  /**
+   * The ratified plan's text, read from the plane, to be hashed against the
+   * dispatch. A line program (`kind: "line"`) has no plan: absent, nothing is hashed.
+   */
+  readonly planText?: string;
   /** The GitHub read token the heartbeat carried. */
   readonly githubToken: string | (() => Promise<string>);
   readonly log: (line: string) => void;
@@ -500,14 +503,24 @@ export const prepareCheckout = async (machine: Machine, input: PrepareInput): Pr
   const progress = (stage: RunnerProgress["stage"], detail: string): void =>
     input.onProgress?.({ stage, detail });
   const url = dispatch.input.repositoryUrl.replace(/\.git$/, "");
-  const cloneUrl = `${url}.git`;
+  // `https://github.com/o/r` is cloned as `…/r.git`; anything else (a path, in a test) as it is.
+  const cloneUrl = /^https?:\/\//.test(url) ? `${url}.git` : url;
+
+  // A line program has no plan document and no plan hash; its branch may not
+  // exist at the remote yet, and then it starts from the repository's main head.
+  const isLine = program.kind === "line";
 
   // The hash first: a changed plan is refused before anything is fetched.
-  const hash = planHash(program, input.planText, sha256Hex);
-  if (hash.hash !== dispatch.input.planHash) {
-    throw new WorkspaceError(
-      `the plan on the plane hashes to ${hash.hash.slice(0, 12)}, not the ${dispatch.input.planHash.slice(0, 12)} dispatched; the plan changed since`,
-    );
+  if (!isLine) {
+    if (input.planText === undefined) {
+      throw new WorkspaceError("the program is planned and the plan's text was not supplied");
+    }
+    const hash = planHash(program, input.planText, sha256Hex);
+    if (hash.hash !== dispatch.input.planHash) {
+      throw new WorkspaceError(
+        `the plan on the plane hashes to ${hash.hash.slice(0, 12)}, not the ${dispatch.input.planHash.slice(0, 12)} dispatched; the plan changed since`,
+      );
+    }
   }
 
   for (const dir of [layout.stores, layout.run, `${layout.run}/worktrees`, `${layout.run}/logs`]) {
@@ -533,22 +546,26 @@ export const prepareCheckout = async (machine: Machine, input: PrepareInput): Pr
   const recovering =
     previous !== undefined || (dispatch.generation > 1 && existingCheckout.exitCode === 0);
   if (recovering) {
-    await run(
-      machine,
-      "git",
-      ["-C", layout.checkout, "merge-base", "--is-ancestor", dispatch.input.baseSha, "HEAD"],
-      "recover the existing checkout without rewinding it",
-    );
-    const branch = await run(
-      machine,
-      "git",
-      ["-C", layout.checkout, "branch", "--show-current"],
-      "read the recovered branch",
-    );
-    if (branch.stdout.trim() !== program.repository.programBranch) {
-      throw new WorkspaceError(
-        "the recovered checkout is not on the program branch; it was left untouched",
+    // The line's head moves with every composition and its owner checks it out
+    // detached, so neither the base nor the branch says anything of a line's checkout.
+    if (!isLine) {
+      await run(
+        machine,
+        "git",
+        ["-C", layout.checkout, "merge-base", "--is-ancestor", dispatch.input.baseSha, "HEAD"],
+        "recover the existing checkout without rewinding it",
       );
+      const branch = await run(
+        machine,
+        "git",
+        ["-C", layout.checkout, "branch", "--show-current"],
+        "read the recovered branch",
+      );
+      if (branch.stdout.trim() !== program.repository.programBranch) {
+        throw new WorkspaceError(
+          "the recovered checkout is not on the program branch; it was left untouched",
+        );
+      }
     }
     const environmentFile = `${layout.run}/project.env`;
     const saved = await machine.readFile(environmentFile);
@@ -592,21 +609,51 @@ export const prepareCheckout = async (machine: Machine, input: PrepareInput): Pr
     ]);
     if (cloned.exitCode !== 0) throw new WorkspaceError(`clone: ${cloned.stderr.trim()}`);
   }
-  const has = await machine.exec("git", [
-    "-C",
-    layout.mirror,
-    "cat-file",
-    "-e",
-    `${dispatch.input.baseSha}^{commit}`,
-  ]);
-  if (has.exitCode !== 0) {
-    throw new WorkspaceError(
-      `the mirror has no commit ${dispatch.input.baseSha.slice(0, 12)}; the branch at GitHub moved or was never pushed`,
-    );
+  let startSha: string = dispatch.input.baseSha;
+  if (isLine) {
+    // The line's head, or main's (the mirror's HEAD) while the line has never been pushed.
+    const lineHead = await machine.exec("git", [
+      "-C",
+      layout.mirror,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${program.repository.programBranch}^{commit}`,
+    ]);
+    const head =
+      lineHead.exitCode === 0
+        ? lineHead
+        : await machine.exec("git", [
+            "-C",
+            layout.mirror,
+            "rev-parse",
+            "--verify",
+            "HEAD^{commit}",
+          ]);
+    if (head.exitCode !== 0 || head.stdout.trim() === "") {
+      throw new WorkspaceError("the mirror has neither the line's branch nor a main to start from");
+    }
+    startSha = head.stdout.trim();
+    if (lineHead.exitCode !== 0) {
+      log(`line ${program.repository.programBranch} is not at the remote yet; starting from main`);
+    }
+  } else {
+    const has = await machine.exec("git", [
+      "-C",
+      layout.mirror,
+      "cat-file",
+      "-e",
+      `${dispatch.input.baseSha}^{commit}`,
+    ]);
+    if (has.exitCode !== 0) {
+      throw new WorkspaceError(
+        `the mirror has no commit ${dispatch.input.baseSha.slice(0, 12)}; the branch at GitHub moved or was never pushed`,
+      );
+    }
   }
 
   // The checkout: made from the mirror, moved to the SHA; a divergent one is remade.
-  progress("workspace", `checking out ${dispatch.input.baseSha.slice(0, 8)}`);
+  progress("workspace", `checking out ${startSha.slice(0, 8)}`);
   const checkedOut = existingCheckout;
   const fresh = checkedOut.exitCode !== 0;
   if (fresh) {
@@ -637,16 +684,8 @@ export const prepareCheckout = async (machine: Machine, input: PrepareInput): Pr
   await run(
     machine,
     "git",
-    [
-      "-C",
-      layout.checkout,
-      "checkout",
-      "-q",
-      "-B",
-      program.repository.programBranch,
-      dispatch.input.baseSha,
-    ],
-    `check out ${dispatch.input.baseSha.slice(0, 12)}`,
+    ["-C", layout.checkout, "checkout", "-q", "-B", program.repository.programBranch, startSha],
+    `check out ${startSha.slice(0, 12)}`,
   );
   await followMirror(machine, layout.checkout, program.repository.programBranch);
   // The push target is GitHub, through the publisher; the checkout's origin

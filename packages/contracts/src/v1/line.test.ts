@@ -5,7 +5,6 @@ import {
   LineBundleUploadUrlBodySchema,
   LineCompositionBodySchema,
   LineConfigSchema,
-  LineDispatchSchema,
   LineParkBodySchema,
   LinePushBodySchema,
   LineRecordSchema,
@@ -14,12 +13,10 @@ import {
   LineViewSchema,
   TakeLineBatchBodySchema,
 } from "./line.js";
-import { LinePrincipalSchema, LineTokenClaimsSchema, TokenClaimsSchema } from "./principal.js";
 import { ProgramContractSchema } from "./program-contract.js";
 
 const PROJECT = "proj_01J0000000000000000000000A";
 const PROGRAM = "prog_01J0000000000000000000000A";
-const AGENT = "agent_01J0000000000000000000000A";
 const VER = "ver_01J0000000000000000000000A";
 const A = "a".repeat(40);
 const B = "b".repeat(40);
@@ -241,76 +238,52 @@ describe("the line's request bodies and view", () => {
     expect(
       LineViewSchema.safeParse({
         record,
+        programId: "prog_01J0000000000000000000000B",
         programs: [{ program: PROGRAM, branch: "program/x" }],
+      }).success,
+    ).toBe(true);
+    expect(
+      LineViewSchema.safeParse({
+        record,
+        programId: "prog_01J0000000000000000000000B",
+        runId: "run_01J0000000000000000000000A",
+        dispatchStatus: "running",
+        generation: 2,
+        meteredUsd: 0.5,
+        programs: [],
       }).success,
     ).toBe(true);
   });
 });
 
-describe("the line dispatch", () => {
-  const dispatch = {
-    schemaVersion: 1,
-    projectId: PROJECT,
-    branch: "nightshift/develop",
-    version: 1,
-    status: "stopped",
-    tier: "good",
-    instanceType: "c8id.2xlarge",
-    usdPerHour: 0.4,
-    amiVersion: "1.0.0",
-    generation: 3,
-    engineAgentId: AGENT,
-    attempts: [{ generation: 3, reason: "dispatch", startedAt: AT }],
-    spend: { estimatedUsd: 0.4, meteredUsd: 0.1, meteredSeconds: 900 },
-    cleanup: { volumeDeleted: true, failures: [], settledAt: AT },
-    requestedAt: AT,
-    updatedAt: AT,
-  };
-
-  it("records when its cleanup settled, and the line's own failure codes", () => {
-    expect(LineDispatchSchema.parse(dispatch).cleanup.settledAt).toBe(AT);
-    for (const code of ["line_cap", "org_month"]) {
-      expect(
-        LineDispatchSchema.safeParse({
-          ...dispatch,
-          status: "failed",
-          failure: { code, message: "m" },
-        }).success,
-      ).toBe(true);
-    }
-    expect(
-      LineDispatchSchema.safeParse({
-        ...dispatch,
-        failure: { code: "input_refused", message: "m" },
-      }).success,
-    ).toBe(false);
+describe("a legacy line record", () => {
+  it("reads with its decisions and agents stripped", () => {
+    const parsed = LineRecordSchema.parse({ ...record, decisions: [{ choice: "x" }], agents: [] });
+    expect(parsed).toEqual({ ...record, held: [] });
+    expect("decisions" in parsed).toBe(false);
   });
 });
 
-describe("the line principal and its token", () => {
-  const principal = {
-    kind: "line",
-    projectId: PROJECT,
-    branch: "nightshift/develop",
-    agentId: AGENT,
-    generation: 2,
-  };
+describe("held entries and repairs", () => {
+  const entry = { program: PROGRAM, upTo: A, enqueuedAt: AT };
 
-  it("is a principal with a generation and no run", () => {
-    expect(LinePrincipalSchema.safeParse(principal).success).toBe(true);
-    expect(LinePrincipalSchema.safeParse({ ...principal, runId: "x" }).success).toBe(false);
+  it("parses a record without held, and with held entries carrying repairs", () => {
+    expect(LineRecordSchema.parse(record).held).toEqual([]);
+    const held = LineRecordSchema.parse({ ...record, held: [{ ...entry, repairs: 3 }] });
+    expect(held.held[0]?.repairs).toBe(3);
+    expect(
+      LineRecordSchema.safeParse({ ...record, queue: [{ ...entry, repairs: 4 }] }).success,
+    ).toBe(false);
   });
 
-  it("is an alternative in the token claims", () => {
-    const claims = {
-      iss: "https://api.example",
-      sub: AGENT,
-      aud: "nightshift-api",
-      nightshift: principal,
-      iat: 1,
-      exp: 2,
-    };
-    expect(LineTokenClaimsSchema.safeParse(claims).success).toBe(true);
-    expect(TokenClaimsSchema.safeParse(claims).success).toBe(true);
+  it("accepts release on the take body and held on the settle body", () => {
+    expect(
+      TakeLineBatchBodySchema.safeParse({ generation: 1, release: [{ program: PROGRAM, upTo: A }] })
+        .success,
+    ).toBe(true);
+    expect(TakeLineBatchBodySchema.safeParse({ generation: 1 }).success).toBe(true);
+    expect(
+      LineSettleBodySchema.safeParse({ batchId: "b", parked: [], held: [entry] }).success,
+    ).toBe(true);
   });
 });

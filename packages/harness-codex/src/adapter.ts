@@ -79,7 +79,6 @@ import type {
   Harness,
   HarnessExit,
   HarnessHandle,
-  HarnessLineStartInput,
   HarnessStartInput,
   HookSink,
   RunAs,
@@ -87,12 +86,9 @@ import type {
 import {
   agentStatusForExit,
   type CliLauncher,
-  cancelAtDeadline,
   commandAs,
   hookTypeForExit,
-  nullHookSink,
   promptFor,
-  renderLineBrief,
   startLocalReceiver,
   withTmpDir,
 } from "@nightshift/harness";
@@ -148,7 +144,7 @@ interface RunState {
 }
 
 /**
- * One launch, normalised: what `start` and `startLine` both reduce to, so the
+ * One launch, normalised: what `start` reduces to, so the
  * command, permission and process code below is written once.
  */
 interface Launch {
@@ -169,8 +165,6 @@ interface Launch {
   readonly extraEnv: Readonly<Record<string, string>>;
   /** Let the model's shell see credential-named variables (declared secrets only). */
   readonly passSecrets?: boolean;
-  /** No file edits: the examiner's sandbox. */
-  readonly readOnly?: boolean;
 }
 
 export interface CodexHarnessOptions {
@@ -342,8 +336,7 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       shellPath,
       ...(input.resume === undefined ? {} : { resumeSessionId: input.resume.sessionId }),
       ...(capture?.otel === undefined ? {} : { otel: capture.otel }),
-      passSecrets: input.readOnly !== true && input.passSecrets === true,
-      ...(input.readOnly === true ? { readOnly: true } : {}),
+      passSecrets: input.passSecrets === true,
     });
 
     let child: SpawnedChild;
@@ -468,28 +461,6 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       passSecrets: Object.keys(declaredSecrets(input.program.secrets, parentEnv)).length > 0,
     });
 
-  /**
-   * The line owner's resolver or examiner: no MCP server, no run-scoped records,
-   * the environment handed in and none of the engine's. Git writes are refused
-   * by the same guard as a worker's; an examiner runs in a read-only sandbox.
-   */
-  const startLine = async (input: HarnessLineStartInput): Promise<HarnessHandle> => {
-    const handle = await launch({
-      agentId: input.agentId,
-      prompt: `${renderLineBrief(input.task).trimEnd()}\n`,
-      worktree: input.worktree,
-      tmpDir: input.tmpDir,
-      model: input.model,
-      runAs: input.runAs,
-      sink: nullHookSink,
-      parentEnv: {},
-      extraEnv: input.env,
-      readOnly: input.role === "line_examiner",
-    });
-    cancelAtDeadline({ handle, deadline: input.deadline, nowMs: clock.now(), cancel });
-    return handle;
-  };
-
   const cancel = async (handle: HarnessHandle, grace: Duration): Promise<void> => {
     const state = runs.get(handle);
     if (state === undefined) return;
@@ -551,7 +522,6 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
     id: CODEX_HARNESS_ID,
     capabilities: { usage: true, observations: true },
     start,
-    startLine,
     cancel,
     status,
   };

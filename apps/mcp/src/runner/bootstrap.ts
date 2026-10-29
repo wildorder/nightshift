@@ -11,8 +11,6 @@
  * disk afterwards.
  */
 import {
-  type AgentId,
-  AgentIdSchema,
   ExecutionTokenClaimsSchema,
   LineBranchSchema,
   ProgramIdSchema,
@@ -35,16 +33,11 @@ export const RUNNER_TAGS = {
   api: "nightshift-api",
 } as const;
 
-/** The tags a line owner's machine carries (`lineMachineTags`, apps/api provision-line.ts). */
-export const LINE_TAGS = {
-  kind: "nightshift-kind",
-  project: "nightshift-project",
-  line: "nightshift-line",
-  agent: "nightshift-agent",
-  generation: "nightshift-generation",
-  stage: "nightshift-stage",
-  api: "nightshift-api",
-} as const;
+/**
+ * The tag a line run's machine carries besides a run's (`machineTags`, apps/api
+ * provision.ts): the line's branch. A machine with it is the owner of that line.
+ */
+export const LINE_TAG = "nightshift:line";
 
 export interface RunnerIdentity {
   readonly scope: RunScope;
@@ -54,24 +47,19 @@ export interface RunnerIdentity {
   readonly instanceId: string;
 }
 
-/** Who a line owner's machine is: the project's line on a branch, and the engine agent its token is minted for. */
-export interface LineIdentity {
+/** Who a line owner's machine is: a run of the project's line program, and the line's branch. */
+export interface LineIdentity extends RunnerIdentity {
   readonly kind: "line";
   readonly projectId: ProjectId;
   readonly branch: string;
-  readonly engineAgentId: AgentId;
-  readonly generation: number;
-  readonly stage: string;
-  readonly apiEndpoint: string;
-  readonly instanceId: string;
 }
 
 export const isLineIdentity = (identity: RunnerIdentity | LineIdentity): identity is LineIdentity =>
   "kind" in identity && identity.kind === "line";
 
-/** The name a machine's directory and first token are kept under: the run's id, or the line owner's agent id. */
+/** The name a machine's directory and first token are kept under: the run's id. */
 export const machineKeyOf = (identity: RunnerIdentity | LineIdentity): string =>
-  isLineIdentity(identity) ? identity.engineAgentId : identity.scope.runId;
+  identity.scope.runId;
 
 /** The parameter the first engine token waits in (the runner stack's `dispatchParameterPrefix`). */
 export const firstTokenParameter = (identity: RunnerIdentity | LineIdentity): string =>
@@ -117,27 +105,11 @@ const optionalMetadata = async (
 export const readIdentity = async (machine: Machine): Promise<RunnerIdentity | LineIdentity> => {
   const token = await imdsToken(machine);
   const tag = (name: string) => metadata(machine, token, `tags/instance/${name}`);
-  if ((await optionalMetadata(machine, token, `tags/instance/${LINE_TAGS.kind}`)) === "line") {
-    const lineGeneration = Number.parseInt(await tag(LINE_TAGS.generation), 10);
-    if (!Number.isInteger(lineGeneration) || lineGeneration < 1) {
-      throw new BootstrapError("the generation tag is not a positive integer");
-    }
-    return {
-      kind: "line",
-      projectId: ProjectIdSchema.parse(await tag(LINE_TAGS.project)),
-      branch: LineBranchSchema.parse(await tag(LINE_TAGS.line)),
-      engineAgentId: AgentIdSchema.parse(await tag(LINE_TAGS.agent)),
-      generation: lineGeneration,
-      stage: await tag(LINE_TAGS.stage),
-      apiEndpoint: await tag(LINE_TAGS.api),
-      instanceId: await metadata(machine, token, "instance-id"),
-    };
-  }
   const generation = Number.parseInt(await tag(RUNNER_TAGS.generation), 10);
   if (!Number.isInteger(generation) || generation < 1) {
     throw new BootstrapError("the generation tag is not a positive integer");
   }
-  return {
+  const identity: RunnerIdentity = {
     scope: {
       projectId: ProjectIdSchema.parse(await tag(RUNNER_TAGS.project)),
       programId: ProgramIdSchema.parse(await tag(RUNNER_TAGS.program)),
@@ -148,6 +120,15 @@ export const readIdentity = async (machine: Machine): Promise<RunnerIdentity | L
     apiEndpoint: await tag(RUNNER_TAGS.api),
     instanceId: await metadata(machine, token, "instance-id"),
   };
+  const branch = await optionalMetadata(machine, token, `tags/instance/${LINE_TAG}`);
+  return branch === undefined
+    ? identity
+    : {
+        ...identity,
+        kind: "line",
+        projectId: identity.scope.projectId,
+        branch: LineBranchSchema.parse(branch),
+      };
 };
 
 /**

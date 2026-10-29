@@ -10,29 +10,19 @@
  * dispatch that still holds a pending publication intent, or owes the line a
  * range, has the publisher asked again.
  *
- * Line dispatches: the same machine rules, with the line's own provisioning
- * (`provision-line.ts`), cap re-check on replacement and cleanup
- * (`line-cleanup.ts`). Lines with work and no live dispatch are admitted again,
+ * A line's owner is a run of its line program, so its dispatch is walked with
+ * the rest. Lines with work and no live run have one started again (`startLineRun`),
  * which restores a start that was lost or a month that rolled over.
  */
-import type { LineDispatch, LineRecord, ProjectId } from "@nightshift/contracts";
+import type { LineRecord, ProgramContract, ProjectId } from "@nightshift/contracts";
 import { DispatchStatusSchema } from "@nightshift/contracts";
-import {
-  type EnsureLineDispatchDeps,
-  ensureLineDispatch,
-  hasPendingIntent,
-  isDispatchTerminal,
-  leaseLost,
-  lineAdmission,
-  lineQueueOwed,
-  nowIso,
-} from "@nightshift/core";
-import { cleanupStopped, enforceStop, withMachineEnding } from "./cleanup.js";
-import { cleanupLineDispatch, type LineCleanupDeps } from "./line-cleanup.js";
-import { failureCodeOf, lineCapUsd, recordLineWaiting } from "./line-support.js";
+import { hasPendingIntent, lineQueueOwed } from "@nightshift/core";
+import type { ApiDeps } from "../http.js";
+import { cleanupStopped, enforceStop } from "./cleanup.js";
+import { followLineRun } from "./line-lifecycle.js";
+import { startLineRun } from "./line-run.js";
 import { type ProvisionDeps, provisionDispatch } from "./provision.js";
-import { launchLineDispatch, provisionLineDispatch } from "./provision-line.js";
-import { recoverLease, recoverLostLease } from "./recover.js";
+import { recoverLostLease } from "./recover.js";
 
 /** A `requested` dispatch older than this was not picked up by the API's invocation. */
 export const REQUESTED_GRACE_MS = 2 * 60_000;
@@ -44,7 +34,8 @@ export type PublisherRequest =
 
 export interface ReconcileDeps {
   readonly provision: ProvisionDeps;
-  readonly ids: EnsureLineDispatchDeps["ids"];
+  /** The control plane's wiring, through which a line run is started as any dispatch is admitted. */
+  readonly plane: ApiDeps;
   readonly askPublisher: (request: PublisherRequest) => Promise<void>;
 }
 
@@ -87,6 +78,8 @@ export const reconcileRuns = async (deps: ReconcileDeps, count: Counter): Promis
       } else if (dispatch.status === "stopped" || dispatch.status === "failed") {
         if (!dispatch.cleanup.volumeDeleted)
           count(`cleanup:${await cleanupStopped(cleanup, dispatch)}`);
+        // A line run has no engine to end it: the plane ends it with its dispatch.
+        await followLineRun(stores, clock, dispatch);
       }
       // A push that failed for a passing reason is retried, the last landing of
       // a run is never left waiting for a next one that will not come, and a
@@ -103,193 +96,23 @@ export const reconcileRuns = async (deps: ReconcileDeps, count: Counter): Promis
 };
 
 /**
- * Only one line owner is ever live: a replacement waits until the previous
- * machine is authoritatively gone (not found, or terminated). A describe or
- * terminate error is no proof. Answers the dispatch with the ending recorded
- * when it is gone, and undefined when the machine may still run (the request
- * or the failure is recorded, and the next pass looks again).
+ * Lines with work: a run of the line program is started for each that has none
+ * live, which restores a start that was lost or a month that rolled over, and
+ * their pending pushes are asked after.
  */
-const awaitMachineGone = async (
-  provision: ReconcileDeps["provision"],
-  dispatch: LineDispatch,
-  instanceId: string,
-): Promise<LineDispatch | undefined> => {
-  const { stores, compute, clock } = provision;
-  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
-  const record = async (
-    failure: string | undefined,
-    change: (current: LineDispatch) => LineDispatch,
-  ): Promise<void> => {
-    if (failure !== undefined)
-      console.error(`line recover ${dispatch.projectId}/${dispatch.branch}: ${failure}`);
-    await stores.lineDispatches.update(dispatch.projectId, dispatch.branch, (current) =>
-      current.version === dispatch.version && current.generation === dispatch.generation
-        ? { ...change(current), updatedAt: nowIso(clock) }
-        : undefined,
-    );
-  };
-  const failed = (failure: string, terminate: boolean) => (current: LineDispatch) => ({
-    ...(terminate ? withMachineEnding(current, { terminationFailed: true }) : current),
-    cleanup: { ...current.cleanup, failures: [...current.cleanup.failures, failure] },
-  });
-  let described: Awaited<ReturnType<typeof compute.describe>>;
-  try {
-    described = await compute.describe(instanceId);
-  } catch (error) {
-    const failure = `describe ${instanceId}: ${message(error)}`;
-    await record(failure, failed(failure, false));
-    return undefined;
-  }
-  if (described === undefined || described.state === "terminated") {
-    return withMachineEnding(dispatch, { terminatedAt: nowIso(clock) });
-  }
-  if (described.state !== "shutting-down") {
-    try {
-      await compute.terminate(instanceId);
-    } catch (error) {
-      const failure = `terminate ${instanceId}: ${message(error)}`;
-      await record(failure, failed(failure, true));
-      return undefined;
-    }
-    const at = nowIso(clock);
-    await record(undefined, (current) =>
-      withMachineEnding(current, { terminationRequestedAt: at }),
-    );
-  }
-  // A request, not an ending: the next pass observes the machine gone.
-  return undefined;
-};
-
-/** Replaces a line dispatch whose lease lapsed, or ends it failed. */
-const recoverLineDispatch = async (
-  deps: ReconcileDeps,
-  dispatch: LineDispatch,
-  count: Counter,
-): Promise<void> => {
-  const { provision } = deps;
-  const { stores, compute, clock } = provision;
-  const line = { projectId: dispatch.projectId, branch: dispatch.branch };
-  let original = dispatch;
-  if (dispatch.instanceId !== undefined && leaseLost(dispatch, clock.now())) {
-    const gone = await awaitMachineGone(provision, dispatch, dispatch.instanceId);
-    if (gone === undefined) {
-      count("line-lease:terminating");
-      return;
-    }
-    original = gone;
-  }
-  const { step, dispatch: after } = await recoverLease<LineDispatch>(
-    {
-      compute,
-      clock,
-      label: `${dispatch.projectId}/${dispatch.branch}`,
-      save: async (next, original) => {
-        let applied = false;
-        await stores.lineDispatches.update(line.projectId, line.branch, (current) => {
-          applied = current.version === original.version;
-          return applied ? next : undefined;
-        });
-        return applied;
-      },
-    },
-    original,
-    {
-      machineGone: original !== dispatch,
-      // Spend may have reached the cap while the owner ran.
-      refuseReplacement: async () => {
-        const project = await stores.projects.get(line.projectId);
-        if (project === undefined) return undefined;
-        const admission = await lineAdmission(provision, {
-          ...line,
-          capUsd: await lineCapUsd(stores, line.projectId, line.branch),
-          orgId: project.orgId,
-        });
-        if (admission.ok) return undefined;
-        await recordLineWaiting(stores, clock, line, {
-          reason: admission.reason,
-          detail: admission.detail,
-        });
-        return {
-          code: failureCodeOf(admission.reason) ?? "provisioning_failed",
-          message: admission.detail,
-        };
-      },
-    },
-  );
-  count(`line-lease:${step}`);
-  if (step === "replacing") {
-    const stored = (await stores.lineDispatches.get(line.projectId, line.branch)) ?? after;
-    count(`line-provision:${(await launchLineDispatch(provision, stored)).kind}`);
-  }
-};
-
-/** Line dispatches: provision, recover, stop and clean up, and restart what has work. */
-export const reconcileLineDispatches = async (
-  deps: ReconcileDeps,
-  count: Counter,
-): Promise<void> => {
-  const { provision } = deps;
-  const { stores, compute, clock } = provision;
-  const cleanup: LineCleanupDeps = {
-    stores,
-    compute,
-    clock,
-    ids: deps.ids,
-    startMachine: async (line) => {
-      count(`line-provision:${(await provisionLineDispatch(provision, line)).kind}`);
-    },
-  };
-  for (const dispatch of await stores.lineDispatches.listByStatus(ALL_STATUSES)) {
-    const line = { projectId: dispatch.projectId, branch: dispatch.branch };
-    try {
-      if (dispatch.status === "requested") {
-        // Past the grace, the invocation was lost; or the dispatch was put back
-        // for the org's concurrency, which may have freed since.
-        const record = await stores.lines.get(line.projectId, line.branch);
-        if (
-          clock.now() - Date.parse(dispatch.updatedAt) > REQUESTED_GRACE_MS ||
-          record?.waiting?.reason === "org_concurrency"
-        ) {
-          count(`line-provision:${(await provisionLineDispatch(provision, line)).kind}`);
-        }
-      } else if (dispatch.status === "provisioning" && dispatch.instanceId === undefined) {
-        count(`line-provision:${(await provisionLineDispatch(provision, line)).kind}`);
-      } else if (!isDispatchTerminal(dispatch.status) && dispatch.status !== "stopping") {
-        await recoverLineDispatch(deps, dispatch, count);
-      } else {
-        count(`line-cleanup:${await cleanupLineDispatch(cleanup, dispatch)}`);
-      }
-    } catch (error) {
-      count("error");
-      console.error(`reconciler: line ${line.projectId}/${line.branch}:`, error);
-    }
-  }
-};
-
-/** Lines with work: admitted again when no dispatch is live, and their pending pushes asked after. */
 export const reconcileLinesWithWork = async (
   deps: ReconcileDeps,
   count: Counter,
 ): Promise<void> => {
-  const { provision } = deps;
-  const { stores, clock } = provision;
+  const { stores } = deps.provision;
   const records: readonly LineRecord[] = await stores.lines.listWithWork();
   for (const record of records) {
     const line = { projectId: record.projectId as ProjectId, branch: record.branch };
     try {
-      const dispatch = await stores.lineDispatches.get(line.projectId, line.branch);
-      if (dispatch === undefined || isDispatchTerminal(dispatch.status)) {
-        const result = await ensureLineDispatch(
-          {
-            stores,
-            clock,
-            ids: deps.ids,
-            startMachine: async (target) => {
-              count(`line-provision:${(await provisionLineDispatch(provision, target)).kind}`);
-            },
-          },
-          { ...line, capUsd: await lineCapUsd(stores, line.projectId, line.branch) },
-        );
+      // The one-live-run guard answers `live` when the line already has a run.
+      const naming = await namingProgramOf(stores, line);
+      if (naming !== undefined) {
+        const result = await startLineRun(deps.plane, { ...line, naming });
         count(`line-admit:${result.kind}`);
       }
       if (record.push?.status === "pending") {
@@ -303,13 +126,32 @@ export const reconcileLinesWithWork = async (
   }
 };
 
+/** A program of the project that names the line's branch: the line program is made from it. */
+const namingProgramOf = async (
+  stores: Pick<ProvisionDeps["stores"], "programContracts">,
+  line: { readonly projectId: ProjectId; readonly branch: string },
+): Promise<ProgramContract | undefined> => {
+  let cursor: string | undefined;
+  do {
+    const page = await stores.programContracts.listByProject(
+      line.projectId,
+      cursor === undefined ? {} : { cursor },
+    );
+    const found = page.items.find(
+      (contract) => contract.kind !== "line" && contract.line?.branch === line.branch,
+    );
+    if (found !== undefined) return found;
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return undefined;
+};
+
 export const reconcile = async (deps: ReconcileDeps): Promise<Record<string, number>> => {
   const counts: Record<string, number> = {};
   const count: Counter = (key) => {
     counts[key] = (counts[key] ?? 0) + 1;
   };
   await reconcileRuns(deps, count);
-  await reconcileLineDispatches(deps, count);
   await reconcileLinesWithWork(deps, count);
   return counts;
 };

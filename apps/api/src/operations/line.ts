@@ -1,81 +1,63 @@
 /**
- * The project line's routes (Pipkin M1b): what the line owner (a machine holding
- * a `line` token) and humans use. Everything is keyed by (project, branch); the
- * branch is one URL-encoded path segment, which the router has decoded.
+ * The project line's routes (Pipkin M1b): what the engine of the line's run (a
+ * run of the line program) and humans use. Everything is keyed by (project,
+ * branch); the branch is one URL-encoded path segment, which the router has
+ * decoded.
  *
  * The rules are `core`'s (`rules/line.ts`) and return refusals as values; this
  * file only maps each to a status and applies the result inside the store's
- * compare-and-swap `update`. The heartbeat mirrors a run's (`dispatch.ts`),
- * applied to a `LineDispatch` and metered against the project's own cap as well
- * as the org's ledger.
+ * compare-and-swap `update`. The line run's heartbeat is a run's own
+ * (`dispatch.ts`).
  */
+import { createHash } from "node:crypto";
 import {
   calendarMonthOf,
-  DEFAULT_COMPUTE_CEILINGS,
-  type HeartbeatResponse,
-  HeartbeatResponseSchema,
-  LineAgentBodySchema,
+  EventSchema,
+  type EventType,
+  inlinePayloadBytes,
+  LineAttemptBodySchema,
   LineBundleUploadUrlBodySchema,
-  type LineCompositionBody,
-  LineCompositionBodySchema,
-  LineDecisionBodySchema,
-  type LineDispatch,
-  type LineDispatchFailureCode,
-  LineHeartbeatBodySchema,
-  type LineParkBody,
-  LineParkBodySchema,
+  type LineComposition,
+  type LineParked,
   LinePushBodySchema,
   type LineRecord,
   type LineSettleBody,
   LineSettleBodySchema,
+  type LineSettledPayload,
   type LineView,
   LineViewSchema,
-  type OrgId,
-  PROVIDERS,
-  type Project,
+  MAX_INLINE_PAYLOAD_BYTES,
+  MAX_LINE_SETTLED_ENTRIES_PER_EVENT,
+  type Principal,
   type ProjectId,
-  type Provider,
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
-  announceLineAgent,
-  chargeDispatchUsage,
-  composeBatch,
+  composedEntryOf,
   createUlidIdGenerator,
-  DEFAULT_LINE_MONTHLY_USD,
-  dispatchChargeDue,
-  dispatchChargeKey,
-  ensureLineDispatch,
-  foldProgress,
-  foldStages,
-  installationGranting,
-  isDispatchTerminal,
-  LINE_COMPOSITION_SECONDS,
+  entryText,
   LINE_RESOLVER_ATTEMPTS,
   type LineChange,
+  type LineOwnerArg,
   type LineRefusal,
-  leaseExpiryFrom,
   lineBundleObjectKey,
-  meterUsd,
+  lineProgramId,
   nowIso,
-  parkBatch,
-  previousMonthOf,
-  recordLineDecision,
-  repositoryNameOf,
+  parkedEntryOf,
+  type RunScope,
+  recordAttempt,
   requestPush,
   requireEffectivePolicy,
-  runnerStopped,
   settleBatch,
+  settledMarkers,
+  settleIds,
+  settlementDigest,
   takeBatch,
-  transitionDispatch,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
 import { projectIdFrom } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
-import { mintLineToken } from "../tokens/mint.js";
 import { pageAt, readAll, requireProject } from "./common.js";
-import { keepRefreshedLogin, usageOf } from "./dispatch.js";
-import { openProjectSecrets } from "./secrets.js";
 
 interface LineTarget {
   readonly projectId: ProjectId;
@@ -106,29 +88,46 @@ const requireLine = async (deps: ApiDeps, target: LineTarget): Promise<LineRecor
   return record;
 };
 
-const requireLineDispatch = async (deps: ApiDeps, target: LineTarget): Promise<LineDispatch> => {
-  const dispatch = await deps.stores.lineDispatches.get(target.projectId, target.branch);
-  if (dispatch === undefined) {
-    throw new HttpError(404, "not_found", `the line on ${target.branch} has no dispatch`);
+/** Humans read the line; every line write is the line run's engine's. */
+const refuseUser = (principal: Principal, what: string): void => {
+  if (principal.kind === "user") {
+    throw new HttpError(403, "execution_forbidden_operation", `a user may not ${what}`);
   }
-  return dispatch;
 };
 
-/** A dispatch of the generation the caller claims, or 409: the owner is stale. */
-const requireGeneration = async (
-  deps: ApiDeps,
-  target: LineTarget,
-  generation: number,
-): Promise<LineDispatch> => {
-  const dispatch = await requireLineDispatch(deps, target);
-  if (dispatch.generation !== generation) {
+/**
+ * The owner a line write acts as: the line run's engine, fenced on its own
+ * run's dispatch (and on the generation the body claims, where it names one).
+ * The batch is held as (runId, generation).
+ */
+const ownerOf = async (
+  { deps, principal }: Pick<RouteContext, "deps" | "principal">,
+  claimed: number | undefined,
+): Promise<LineOwnerArg> => {
+  if (principal.kind !== "execution") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "only the line run's engine may write to the line",
+    );
+  }
+  const dispatch = await deps.stores.dispatches.get({
+    projectId: principal.projectId,
+    programId: principal.programId,
+    runId: principal.runId,
+  });
+  if (
+    dispatch === undefined ||
+    dispatch.generation !== principal.generation ||
+    (claimed !== undefined && claimed !== dispatch.generation)
+  ) {
     throw new HttpError(
       409,
       "stale_generation",
-      `this call is from generation ${generation}; the line's dispatch is at ${dispatch.generation}`,
+      `this call is from generation ${String(claimed ?? principal.generation)}; the run's dispatch is at ${String(dispatch?.generation)}`,
     );
   }
-  return dispatch;
+  return { runId: principal.runId, generation: dispatch.generation };
 };
 
 const refusalStatus = (refusal: LineRefusal): HttpError =>
@@ -136,6 +135,8 @@ const refusalStatus = (refusal: LineRefusal): HttpError =>
     409,
     refusal.reason === "stale_batch" ||
       refusal.reason === "resolver_attempts" ||
+      refusal.reason === "held_not_in_batch" ||
+      refusal.reason === "not_held" ||
       refusal.reason === "stale_generation"
       ? refusal.reason
       : "conflict",
@@ -172,23 +173,6 @@ const applyLineChange = async (
   return stored;
 };
 
-/**
- * The project's monthly cap for this line: the lowest `line.monthlyUsd` among
- * the project's programs configured for this branch that set one, else the
- * default. Read from the programs' contracts, which inherit the config.
- */
-const capUsdOf = async (deps: ApiDeps, target: LineTarget): Promise<number> => {
-  const contracts = await readAll((cursor) =>
-    deps.stores.programContracts.listByProject(target.projectId, pageAt(cursor)),
-  );
-  const caps = contracts.flatMap((contract) =>
-    contract.line?.branch === target.branch && contract.line.monthlyUsd !== undefined
-      ? [contract.line.monthlyUsd]
-      : [],
-  );
-  return caps.length === 0 ? DEFAULT_LINE_MONTHLY_USD : Math.min(...caps);
-};
-
 const fedProgramsOf = (record: LineRecord) => [
   ...new Set([
     ...record.queue.map((entry) => entry.program),
@@ -200,7 +184,22 @@ const fedProgramsOf = (record: LineRecord) => [
 export const getLine: Handler = async ({ deps, params }) => {
   const target = targetOf(params);
   const record = await requireLine(deps, target);
-  const dispatch = await deps.stores.lineDispatches.get(target.projectId, target.branch);
+  const programId = lineProgramId(target.projectId, target.branch);
+  const runs = await readAll((cursor) =>
+    deps.stores.runs.listByProgram({ projectId: target.projectId, programId }, pageAt(cursor)),
+  );
+  const latest = runs.reduce<(typeof runs)[number] | undefined>(
+    (best, run) => (best === undefined || run.runId > best.runId ? run : best),
+    undefined,
+  );
+  const dispatch =
+    latest === undefined
+      ? undefined
+      : await deps.stores.dispatches.get({
+          projectId: target.projectId,
+          programId,
+          runId: latest.runId,
+        });
   const month = calendarMonthOf(nowIso(deps.clock));
   const usage = await deps.stores.projectSelfStartedUsage.get(target.projectId, month);
   const programs: LineView["programs"] = [];
@@ -224,7 +223,15 @@ export const getLine: Handler = async ({ deps, params }) => {
         });
   const view: LineView = {
     record,
-    ...(dispatch === undefined ? {} : { dispatch }),
+    programId,
+    ...(latest === undefined ? {} : { runId: latest.runId }),
+    ...(dispatch === undefined
+      ? {}
+      : {
+          dispatchStatus: dispatch.status,
+          generation: dispatch.generation,
+          meteredUsd: dispatch.spend.meteredUsd,
+        }),
     ...(usage === undefined ? {} : { usage }),
     ...(policy === undefined ? {} : { policy }),
     programs,
@@ -233,16 +240,17 @@ export const getLine: Handler = async ({ deps, params }) => {
 };
 
 /** `POST …/line/batch?branch=` — the whole queue as one batch, or none. */
-export const takeLineBatch: Handler = async ({ deps, request, params }) => {
+export const takeLineBatch: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
   const body = parseBody(TakeLineBatchBodySchema, request.body);
-  await requireGeneration(deps, target, body.generation);
+  const owner = await ownerOf(context, body.generation);
   const at = nowIso(deps.clock);
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
   let taken: ReturnType<typeof takeBatch> | undefined;
   const stored = await deps.stores.lines.update(target.projectId, target.branch, (current) => {
     if (current === undefined) return undefined;
-    taken = takeBatch(current, body.generation, { batchId: ids.next("comp") }, at);
+    taken = takeBatch(current, owner, { batchId: ids.next("comp") }, at, body.release);
     return taken.record === current ? undefined : taken.record;
   });
   if (stored === undefined || taken === undefined) {
@@ -253,7 +261,10 @@ export const takeLineBatch: Handler = async ({ deps, request, params }) => {
     );
   }
   // The record holds the batch just taken, or the one already held.
-  return { status: 200, body: stored.batch === undefined ? {} : { batch: stored.batch } };
+  return {
+    status: 200,
+    body: stored.batch === undefined ? {} : { batch: stored.batch },
+  };
 };
 
 /**
@@ -271,68 +282,6 @@ const refuseResolverOver = (body: unknown): void => {
   }
 };
 
-/** `POST …/line/compositions?branch=`. */
-export const postLineComposition: Handler = async ({ deps, request, params }) => {
-  const target = targetOf(params);
-  refuseResolverOver(request.body);
-  const body: LineCompositionBody = parseBody(LineCompositionBodySchema, request.body);
-  const at = nowIso(deps.clock);
-  const compositionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp");
-  const record = await applyLineChange(deps, target, (current) =>
-    composeBatch(current, body, compositionId, at),
-  );
-  return { status: 200, body: record };
-};
-
-/** `POST …/line/decisions?branch=` — a resolver's decision, recorded for later review. */
-export const postLineDecision: Handler = async ({ deps, request, params }) => {
-  const target = targetOf(params);
-  const body = parseBody(LineDecisionBodySchema, request.body);
-  const dispatch = await requireGeneration(deps, target, body.generation);
-  const at = nowIso(deps.clock);
-  const decisionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("dec");
-  const record = await applyLineChange(deps, target, (current) =>
-    recordLineDecision(current, body, decisionId, dispatch.generation, at),
-  );
-  return { status: 200, body: record };
-};
-
-/** `POST …/line/agents?branch=` — an agent announced before it runs (A-04). */
-export const postLineAgent: Handler = async ({ deps, request, params }) => {
-  const target = targetOf(params);
-  const body = parseBody(LineAgentBodySchema, request.body);
-  await requireGeneration(deps, target, body.generation);
-  const at = nowIso(deps.clock);
-  let refused: string | undefined;
-  const stored = await deps.stores.lineDispatches.update(
-    target.projectId,
-    target.branch,
-    (current) => {
-      const change = announceLineAgent(current, { ...body.agent, generation: body.generation }, at);
-      refused = change.ok ? undefined : change.detail;
-      return change.ok && change.dispatch !== current ? change.dispatch : undefined;
-    },
-  );
-  if (refused !== undefined) throw new HttpError(409, "stale_generation", refused);
-  if (stored === undefined) {
-    throw new HttpError(404, "not_found", `the line on ${target.branch} has no dispatch`);
-  }
-  return { status: 200, body: stored };
-};
-
-/** `POST …/line/parked?branch=`. */
-export const postLineParked: Handler = async ({ deps, request, params }) => {
-  const target = targetOf(params);
-  refuseResolverOver(request.body);
-  const body: LineParkBody = parseBody(LineParkBodySchema, request.body);
-  const at = nowIso(deps.clock);
-  const compositionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp");
-  const record = await applyLineChange(deps, target, (current) =>
-    parkBatch(current, body, compositionId, at),
-  );
-  return { status: 200, body: record };
-};
-
 /** Ask the publisher for a pending push; recorded first, then published, so an error is only logged. */
 const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> => {
   await deps.dispatcher?.publishLine?.(target).catch((error: unknown) => {
@@ -344,26 +293,256 @@ const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> =>
   });
 };
 
-/** `POST …/line/settle?branch=` — the batch settled with a composition and/or parked entries. */
-export const postLineSettle: Handler = async ({ deps, request, params }) => {
+/** What a chunk event's payload may weigh, with room under the inline bound for the envelope's own fields. */
+const CHUNK_PAYLOAD_BYTES = 6000;
+
+interface PlannedEvent {
+  readonly type: EventType;
+  readonly key: string;
+  readonly payload: Record<string, unknown>;
+}
+
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+
+/** An idempotency key within the schema's bound: an over-long id is stood for by its hash. */
+const keyOf = (...parts: readonly string[]): string => {
+  const key = parts.join(":");
+  return key.length <= 256
+    ? key
+    : [parts[0] ?? "", sha256(parts[1] ?? ""), ...parts.slice(2)].join(":");
+};
+
+/**
+ * Splits `text` into ordered slices whose chunk payloads each measure under
+ * `CHUNK_PAYLOAD_BYTES` by `inlinePayloadBytes` (not by string length), never
+ * between the halves of a surrogate pair.
+ */
+const chunkText = (head: { kind: string; id: string; digest: string }, text: string): string[] => {
+  const slices: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let size = Math.min(text.length - start, CHUNK_PAYLOAD_BYTES);
+    const fits = (n: number) =>
+      inlinePayloadBytes({
+        ...head,
+        part: 99999,
+        parts: 99999,
+        text: text.slice(start, start + n),
+      }) <= CHUNK_PAYLOAD_BYTES;
+    while (size > 1 && !fits(size)) size = Math.max(1, Math.floor(size * 0.8));
+    const last = text.charCodeAt(start + size - 1);
+    if (size > 1 && last >= 0xd800 && last <= 0xdbff) size -= 1;
+    slices.push(text.slice(start, start + size));
+    start += size;
+  }
+  return slices;
+};
+
+/**
+ * An entry's events: one event carrying the entry with its id and digest, or,
+ * when that would not fit inline, ordered chunks of its JSON text. Keys carry
+ * the content digest, so a different body for the same id is a new event.
+ */
+const planEntry = (
+  type: "line.composed" | "line.parked",
+  entry: LineComposition | LineParked,
+): { events: PlannedEvent[]; digest: string } => {
+  const id = entry.compositionId;
+  const text = entryText(entry);
+  const digest = sha256(text);
+  const payload = { ...JSON.parse(text), id, digest } as Record<string, unknown>;
+  if (inlinePayloadBytes(payload) <= MAX_INLINE_PAYLOAD_BYTES) {
+    return { events: [{ type, key: keyOf(type, id, digest), payload }], digest };
+  }
+  const head = { kind: type === "line.composed" ? "composed" : "parked", id, digest };
+  const slices = chunkText(head, text);
+  return {
+    digest,
+    events: slices.map((slice, part) => ({
+      type: "line.entry_chunk" as const,
+      key: keyOf("line.entry_chunk", id, digest, String(part)),
+      payload: { ...head, part, parts: slices.length, text: slice },
+    })),
+  };
+};
+
+/**
+ * The settlement's events on the run that held the batch, in two steps around
+ * the record change. `appendEntryEvents` runs BEFORE it: content-addressed
+ * (keys carry the entry's digest) and reportable only once a `line.settled`
+ * marker names them, so an attempt that never commits (a failed append, a
+ * refused takeover, a superseded owner) is never a fact. `appendSettledMarker`
+ * runs AFTER the record committed; a failure there is a 5xx and the composer's
+ * retry of the same body recovers (the record's `lastSettled`). Nothing is
+ * truncated: an entry too large for one event is chunked.
+ */
+const appendPlanned = async (
+  deps: ApiDeps,
+  principal: Extract<Principal, { kind: "execution" }>,
+  planned: readonly PlannedEvent[],
+  at: string,
+): Promise<void> => {
+  const scope: RunScope = {
+    projectId: principal.projectId,
+    programId: principal.programId,
+    runId: principal.runId,
+  };
+  const nodes = await deps.stores.executionNodes.listByRun(scope);
+  const executionNodeId = nodes.items.find((n) => n.parentNodeId === null)?.executionNodeId ?? null;
+  const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
+  for (const event of planned) {
+    await deps.stores.events.append(
+      EventSchema.parse({
+        schemaVersion: 1,
+        ...scope,
+        eventId: ids.next("evt"),
+        idempotencyKey: event.key,
+        sequence: null,
+        type: event.type,
+        source: "control-plane",
+        executionNodeId,
+        agentId: null,
+        payload: event.payload,
+        occurredAt: at,
+        recordedAt: at,
+      }),
+    );
+  }
+};
+
+interface SettlementPlan {
+  readonly events: PlannedEvent[];
+  readonly marked: LineSettledPayload["entries"];
+}
+
+const planSettlement = (
+  body: LineSettleBody,
+  ids: ReturnType<typeof settleIds>,
+  at: string,
+): SettlementPlan => {
+  const events: PlannedEvent[] = [];
+  const marked: LineSettledPayload["entries"][number][] = [];
+  const add = (type: "line.composed" | "line.parked", entry: LineComposition | LineParked) => {
+    const planned = planEntry(type, entry);
+    events.push(...planned.events);
+    marked.push({ type, id: entry.compositionId, digest: planned.digest });
+  };
+  if (body.composition !== undefined) {
+    add("line.composed", composedEntryOf(body.composition, ids.compositionId ?? "", at));
+  }
+  body.parked.forEach((entry, index) => {
+    add("line.parked", parkedEntryOf(entry, ids.parkedIds[index] ?? "", at));
+  });
+  return { events, marked };
+};
+
+const appendSettledMarker = async (
+  deps: ApiDeps,
+  principal: Extract<Principal, { kind: "execution" }>,
+  plan: SettlementPlan,
+  settlement: { batchId: string; generation: number; digest: string },
+  at: string,
+): Promise<void> => {
+  const markers = settledMarkers(
+    { ...settlement, entries: plan.marked },
+    MAX_LINE_SETTLED_ENTRIES_PER_EVENT,
+  );
+  await appendPlanned(
+    deps,
+    principal,
+    markers.map((payload) => ({
+      type: "line.settled" as const,
+      key: keyOf(
+        "line.settled",
+        settlement.batchId,
+        settlement.digest,
+        ...(markers.length > 1 ? [String(payload.part)] : []),
+      ),
+      payload,
+    })),
+    at,
+  );
+};
+
+/**
+ * `POST …/line/attempt?branch=`: a consumed repair attempt, and the words of the
+ * one that failed, written to the range's held entry before the repair launches.
+ */
+export const postLineAttempt: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
+  const body = parseBody(LineAttemptBodySchema, request.body);
+  const owner = await ownerOf(context, body.generation);
+  const at = nowIso(deps.clock);
+  const record = await applyLineChange(deps, target, (latest) =>
+    recordAttempt(latest, body, owner, at),
+  );
+  return { status: 200, body: { held: record.held } };
+};
+
+/**
+ * `POST …/line/settle?branch=` — the batch settled with a composition and/or
+ * parked entries. The rule is dry-run (a refusal writes nothing), the entry
+ * events are appended (not yet facts), the record is changed (the commit), and
+ * only then the `line.settled` marker is appended. A settle for a batch the
+ * record already shows settled with the same body is a retry of one whose
+ * marker was lost: its events and marker are re-appended and it answers 200.
+ */
+export const postLineSettle: Handler = async (context) => {
+  const { deps, request, params } = context;
+  const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
   const raw = request.body as { composition?: unknown; parked?: unknown } | null | undefined;
   refuseResolverOver(raw?.composition);
   if (Array.isArray(raw?.parked)) for (const entry of raw.parked) refuseResolverOver(entry);
   const body: LineSettleBody = parseBody(LineSettleBodySchema, request.body);
-  const at = nowIso(deps.clock);
-  const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
-  const compositionId = body.composition === undefined ? undefined : ids.next("comp");
-  const parkedIds = body.parked.map(() => ids.next("comp"));
-  const dispatch = await requireLineDispatch(deps, target);
-  const record = await applyLineChange(deps, target, (current) =>
-    settleBatch(
-      current,
-      body,
-      { ...(compositionId === undefined ? {} : { compositionId }), parkedIds },
-      dispatch.generation,
-      at,
-    ),
+  const settled = settleIds(body);
+  const owner = await ownerOf(context, undefined);
+  const principal = context.principal;
+  if (principal.kind !== "execution") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "only the line run's engine may settle",
+    );
+  }
+  const digest = settlementDigest(body);
+  const current = await requireLine(deps, target);
+  const prior = current.lastSettled;
+  const recovered =
+    prior !== undefined &&
+    prior.batchId === body.batchId &&
+    prior.digest === digest &&
+    current.batch?.batchId !== body.batchId &&
+    (prior.runId === undefined || prior.runId === principal.runId);
+  let record: LineRecord;
+  let at: string;
+  let generation: number;
+  let plan: SettlementPlan;
+  if (recovered) {
+    record = current;
+    at = prior.at;
+    generation = prior.generation;
+    plan = planSettlement(body, settled, at);
+    await appendPlanned(deps, principal, plan.events, at);
+  } else {
+    at = nowIso(deps.clock);
+    generation = typeof owner === "number" ? owner : owner.generation;
+    const dryRun = settleBatch(current, body, settled, owner, at);
+    if (!dryRun.ok) throw refusalStatus(dryRun);
+    plan = planSettlement(body, settled, at);
+    await appendPlanned(deps, principal, plan.events, at);
+    record = await applyLineChange(deps, target, (latest) =>
+      settleBatch(latest, body, settled, owner, at),
+    );
+  }
+  await appendSettledMarker(
+    deps,
+    principal,
+    plan,
+    { batchId: body.batchId, generation, digest },
+    at,
   );
   if (
     body.push !== undefined &&
@@ -375,13 +554,15 @@ export const postLineSettle: Handler = async ({ deps, request, params }) => {
 };
 
 /** `POST …/line/push?branch=` — recorded pending, then the publisher is asked. */
-export const postLinePush: Handler = async ({ deps, request, params }) => {
+export const postLinePush: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
   const body = parseBody(LinePushBodySchema, request.body);
-  const dispatch = await requireLineDispatch(deps, target);
+  const owner = await ownerOf(context, undefined);
   const at = nowIso(deps.clock);
   const record = await applyLineChange(deps, target, (current) =>
-    requestPush(current, body, dispatch.generation, at),
+    requestPush(current, body, owner, at),
   );
   await askPublisher(deps, target);
   return { status: 200, body: record };
@@ -391,13 +572,15 @@ export const postLinePush: Handler = async ({ deps, request, params }) => {
 const BUNDLE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** `POST …/line/bundle-upload-url?branch=` — a presigned PUT for one bundle. */
-export const createLineBundleUploadUrl: Handler = async ({ deps, request, params }) => {
+export const createLineBundleUploadUrl: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
   const body = parseBody(LineBundleUploadUrlBodySchema, request.body);
   if (!BUNDLE_ID.test(body.id)) {
     throw new HttpError(400, "validation_failed", "id must be 1-64 letters, digits, - or _");
   }
-  await requireGeneration(deps, target, body.generation);
+  await ownerOf(context, body.generation);
   const signKey = deps.uploads?.signKey?.bind(deps.uploads);
   if (signKey === undefined) {
     throw new HttpError(
@@ -418,350 +601,4 @@ export const createLineBundleUploadUrl: Handler = async ({ deps, request, params
       expiresAt: signed.expiresAt,
     },
   };
-};
-
-const STOP_STATUSES = ["stopping", "stopped", "failed"] as const;
-
-/**
- * `POST …/line/dispatch/cancel?branch=` — a human stops the line owner.
- * `authorize` refuses the line principal this operation.
- */
-export const cancelLineDispatch: Handler = async ({ deps, params }) => {
-  const target = targetOf(params);
-  const at = nowIso(deps.clock);
-  let result: LineDispatch | undefined;
-  const stored = await deps.stores.lineDispatches.update(
-    target.projectId,
-    target.branch,
-    (current) => {
-      result = current;
-      if (isDispatchTerminal(current.status) || current.status === "stopping") return undefined;
-      return transitionDispatch<LineDispatch>(
-        { ...current, failure: { code: "cancelled", message: "cancelled by the operator" } },
-        "stop",
-        at,
-      );
-    },
-  );
-  if (stored === undefined || result === undefined) {
-    throw new HttpError(404, "not_found", `the line on ${target.branch} has no dispatch`);
-  }
-  return { status: 200, body: stored };
-};
-
-/** `POST …/line/heartbeat?branch=`. */
-export const lineHeartbeat: Handler = async (context) => {
-  const { deps, request, params } = context;
-  const target = targetOf(params);
-  const body = parseBody(LineHeartbeatBodySchema, request.body);
-  const at = nowIso(deps.clock);
-  const month = calendarMonthOf(at);
-
-  const current = await requireLineDispatch(deps, target);
-  // The fence: only the current generation is heard.
-  if (body.generation !== current.generation) {
-    throw new HttpError(
-      409,
-      "stale_generation",
-      `this heartbeat is from generation ${body.generation}; the line's dispatch is at ${current.generation}`,
-    );
-  }
-  if (current.status === "requested") {
-    throw new HttpError(409, "no_machine", "the dispatch has no machine yet to heartbeat from");
-  }
-
-  let previousUsd = 0;
-  let dispatch = current;
-  const stored = await deps.stores.lineDispatches.update(
-    target.projectId,
-    target.branch,
-    (held): LineDispatch | undefined => {
-      if (held.generation !== body.generation) return undefined;
-      let next = held;
-      if (body.report === "ready" && next.status === "provisioning") {
-        next = transitionDispatch(next, "ready", at);
-      } else if (body.report === "running" && next.status === "ready") {
-        next = transitionDispatch(next, "start", at);
-      } else if (body.report === "stopped") {
-        next = runnerStopped(next, body.failure, at);
-      }
-      previousUsd = held.spend.meteredUsd;
-      const attempts = next.attempts.map((attempt) =>
-        attempt.generation === next.generation
-          ? {
-              ...attempt,
-              meteredSeconds: Math.max(attempt.meteredSeconds ?? 0, body.meteredSeconds),
-              ...(body.report === "ready" && attempt.readyAt === undefined ? { readyAt: at } : {}),
-              ...(body.report === "running" && attempt.runningAt === undefined
-                ? { runningAt: at }
-                : {}),
-              ...(body.report === "stopped" && attempt.endedAt === undefined
-                ? {
-                    endedAt: at,
-                    endReason:
-                      body.failure === undefined ? ("stopped" as const) : ("failed" as const),
-                  }
-                : {}),
-            }
-          : attempt,
-      );
-      const meteredSeconds = attempts.reduce(
-        (total, attempt) => total + (attempt.meteredSeconds ?? 0),
-        0,
-      );
-      const live = !STOP_STATUSES.includes(next.status as (typeof STOP_STATUSES)[number]);
-      const progress =
-        body.progress === undefined
-          ? undefined
-          : foldProgress(next.progress, body.progress, next.generation, at);
-      const updated: LineDispatch = {
-        ...next,
-        attempts,
-        spend: {
-          ...next.spend,
-          meteredSeconds,
-          meteredUsd: meterUsd(next.tier, meteredSeconds),
-        },
-        ...(live ? { leaseExpiresAt: leaseExpiryFrom(deps.clock.now()) } : {}),
-        ...(progress === undefined ? {} : { progress, stages: foldStages(next.stages, progress) }),
-        updatedAt: at,
-      };
-      dispatch = updated;
-      return updated;
-    },
-  );
-  if (stored === undefined) {
-    throw new HttpError(
-      409,
-      "stale_generation",
-      "the line's dispatch moved on during the heartbeat",
-    );
-  }
-  dispatch = stored;
-  const live = !STOP_STATUSES.includes(dispatch.status as (typeof STOP_STATUSES)[number]);
-  const { meteredUsd, meteredSeconds } = dispatch.spend;
-  const delta = Math.max(0, meteredUsd - previousUsd);
-
-  const project = await requireProject(deps.stores, target.projectId);
-  if (live && body.refreshedCredentials?.openai !== undefined) {
-    await keepRefreshedLogin(
-      deps,
-      project.orgId,
-      `line ${target.branch}`,
-      body.refreshedCredentials.openai,
-    );
-  }
-
-  // The org's ledger, exactly as a run's.
-  if (delta > 0) {
-    const usage = await usageOf(deps, project.orgId, at);
-    await deps.stores.computeLedger.put({
-      ...usage,
-      meteredUsd: usage.meteredUsd + (meteredUsd - previousUsd),
-      updatedAt: at,
-    });
-  }
-
-  // The project's own: shared by every line branch of the project, by CAS.
-  let record = await requireLine(deps, target);
-  const capUsd = await capUsdOf(deps, target);
-  const held = await deps.stores.projectSelfStartedUsage.get(target.projectId, month);
-  let usage = held;
-  // Charged by the dispatch's cumulative spend against what the row already
-  // holds for it, never by this beat's delta: a write that failed is repaired
-  // by the next beat, and a repeated beat charges nothing.
-  const chargeKey = dispatchChargeKey(dispatch.branch, dispatch.engineAgentId);
-  const baselineUsd =
-    held !== undefined && held.charged?.[chargeKey] !== undefined
-      ? 0
-      : ((await deps.stores.projectSelfStartedUsage.get(target.projectId, previousMonthOf(month)))
-          ?.charged?.[chargeKey] ?? 0);
-  const charge = { month, key: chargeKey, dispatchUsd: meteredUsd, baselineUsd };
-  if (
-    dispatchChargeDue(held, charge) ||
-    (held !== undefined && held.meteredUsd >= capUsd && held.reachedAt === undefined)
-  ) {
-    usage = await deps.stores.projectSelfStartedUsage.update(target.projectId, month, (row) =>
-      chargeDispatchUsage(row, { projectId: target.projectId, capUsd, ...charge }, at),
-    );
-  }
-
-  // Ceilings: the project's cap, then the org's per-run and wall-clock ones.
-  let stop = !live;
-  const ceilings =
-    (await deps.stores.orgConfigs.get(project.orgId))?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-  if (live) {
-    const overCap = usage !== undefined && usage.month === month && usage.meteredUsd >= capUsd;
-    const overRun = meteredUsd > ceilings.maxUsdPerRun;
-    const overHours = meteredSeconds > ceilings.maxRunHours * 3600;
-    if (overCap || overRun || overHours) {
-      const code: LineDispatchFailureCode = overCap
-        ? "line_cap"
-        : overRun
-          ? "run_cap"
-          : "wall_clock";
-      const message =
-        code === "line_cap"
-          ? `the project's self-started spend $${(usage?.meteredUsd ?? 0).toFixed(2)} reached the $${capUsd.toFixed(2)} monthly cap for ${month}`
-          : code === "run_cap"
-            ? `metered $${meteredUsd.toFixed(2)} crossed the $${ceilings.maxUsdPerRun.toFixed(2)} cap per run`
-            : `metered ${Math.round(meteredSeconds / 60)} minutes crossed the ${ceilings.maxRunHours}-hour wall clock`;
-      const stopped = await deps.stores.lineDispatches.update(
-        target.projectId,
-        target.branch,
-        (now) =>
-          now.generation === dispatch.generation &&
-          !isDispatchTerminal(now.status) &&
-          now.status !== "stopping"
-            ? transitionDispatch<LineDispatch>({ ...now, failure: { code, message } }, "stop", at)
-            : undefined,
-      );
-      if (stopped !== undefined) dispatch = stopped;
-      if (code === "line_cap") {
-        await deps.stores.lines.update(target.projectId, target.branch, (row) =>
-          row === undefined
-            ? undefined
-            : {
-                ...row,
-                waiting: {
-                  reason: "monthly_cap",
-                  detail: message,
-                  since: row.waiting?.reason === "monthly_cap" ? row.waiting.since : at,
-                },
-                updatedAt: at,
-              },
-        );
-      }
-      stop = true;
-    }
-  }
-
-  // A batch an owner has held past the composition hour is parked, whole.
-  if (live) {
-    await deps.stores.lines.update(target.projectId, target.branch, (row) => {
-      const batch = row?.batch;
-      if (row === undefined || batch === undefined) return undefined;
-      if (Date.parse(at) - Date.parse(batch.takenAt) <= LINE_COMPOSITION_SECONDS * 1000) {
-        return undefined;
-      }
-      const parked = parkBatch(
-        row,
-        {
-          batchId: batch.batchId,
-          ranges: batch.entries.map((entry) => ({ program: entry.program, upTo: entry.upTo })),
-          reason: "composition_hour",
-        },
-        (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp"),
-        at,
-      );
-      return parked.ok ? parked.record : undefined;
-    });
-  }
-
-  // The owner stopped with work still queued: ask for the next dispatch. It
-  // answers `live` until the last one's cleanup has settled (J5 restarts then).
-  if (body.report === "stopped") {
-    record = await requireLine(deps, target);
-    if (record.queue.length > 0) {
-      await ensureLineDispatch(
-        {
-          stores: deps.stores,
-          clock: deps.clock,
-          ids: deps.ids ?? createUlidIdGenerator(deps.clock),
-          startMachine: async (line) => {
-            await deps.dispatcher?.provisionLine?.(line).catch((error: unknown) => {
-              console.error(`line ${line.branch}: the dispatcher could not be invoked`, error);
-            });
-          },
-        },
-        { ...target, capUsd: await capUsdOf(deps, target) },
-      );
-    }
-  }
-
-  record = await requireLine(deps, target);
-  const response: HeartbeatResponse = {
-    generation: dispatch.generation,
-    status: dispatch.status,
-    leaseExpiresAt: dispatch.leaseExpiresAt ?? at,
-    stop,
-    ...(await renewedLineToken(context, dispatch, stop)),
-    ...(await credentialsFor(deps, project, record, dispatch, stop)),
-    ...(await secretsFor(deps, project, dispatch, stop)),
-  };
-  return { status: 200, body: HeartbeatResponseSchema.parse(response) };
-};
-
-const renewedLineToken = async (
-  { deps }: RouteContext,
-  dispatch: LineDispatch,
-  stop: boolean,
-): Promise<Pick<HeartbeatResponse, "token" | "tokenExpiresAt">> => {
-  if (stop || deps.tokens === undefined) return {};
-  const minted = await mintLineToken(deps.tokens.signer, {
-    dispatch,
-    issuer: deps.tokens.issuer,
-    now: deps.clock.now(),
-  });
-  return { token: minted.token, tokenExpiresAt: minted.expiresAt };
-};
-
-/** The project's secrets, only while the owner is running and is to carry on. */
-const secretsFor = async (
-  deps: ApiDeps,
-  project: Project,
-  dispatch: LineDispatch,
-  stop: boolean,
-): Promise<Pick<HeartbeatResponse, "secrets">> => {
-  if (stop || dispatch.status !== "running") return {};
-  const secrets = await openProjectSecrets(deps, project);
-  return Object.keys(secrets).length === 0 ? {} : { secrets };
-};
-
-/**
- * The org's provider keys and a GitHub read token for the line's repository,
- * only while the owner is running and is to carry on. The read token is the one
- * credential for GitHub the owner is given: only the publisher writes.
- */
-const credentialsFor = async (
-  deps: ApiDeps,
-  project: Project,
-  record: LineRecord,
-  dispatch: LineDispatch,
-  stop: boolean,
-): Promise<Pick<HeartbeatResponse, "credentials">> => {
-  if (stop || dispatch.status !== "running") return {};
-  const orgId: OrgId = project.orgId;
-  const credentials: Record<string, string> = {};
-  const repository = repositoryNameOf(record.repositoryUrl);
-  const installation =
-    repository === undefined
-      ? undefined
-      : installationGranting(
-          (await deps.stores.orgConfigs.get(orgId))?.installations ?? [],
-          repository,
-        );
-  if (deps.github !== undefined && installation !== undefined && repository !== undefined) {
-    try {
-      credentials.github = (
-        await deps.github.readToken(installation.installationId, [repository])
-      ).token;
-    } catch (error) {
-      console.error(`line ${dispatch.branch}: no GitHub read token for the machine`, error);
-    }
-  }
-  if (deps.envelope !== undefined) {
-    for (const provider of PROVIDERS) {
-      let sealed: Awaited<ReturnType<typeof deps.stores.credentials.sealed>>;
-      try {
-        sealed = await deps.stores.credentials.sealed(orgId, provider as Provider);
-      } catch (error) {
-        if (error instanceof Error && error.name === "CredentialsTableUnavailableError") break;
-        throw error;
-      }
-      if (sealed === undefined) continue;
-      credentials[provider] = await deps.envelope.open(orgId, provider as Provider, sealed);
-    }
-  }
-  return Object.keys(credentials).length === 0 ? {} : { credentials };
 };

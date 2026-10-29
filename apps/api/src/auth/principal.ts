@@ -20,7 +20,6 @@
  */
 import {
   type ExecutionPrincipal,
-  type LinePrincipal,
   type OrgId,
   OrgIdSchema,
   type UserId,
@@ -36,7 +35,7 @@ export interface UserToken {
   readonly activeOrg?: OrgId;
 }
 
-export type RequestPrincipal = UserToken | ExecutionPrincipal | LinePrincipal;
+export type RequestPrincipal = UserToken | ExecutionPrincipal;
 
 export const isUserToken = (principal: RequestPrincipal): principal is UserToken =>
   principal.kind === "user";

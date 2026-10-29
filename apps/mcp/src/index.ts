@@ -41,7 +41,7 @@ export {
   workerLaunchEnv,
 } from "./role.js";
 export { examinationServices, routeJob } from "./routing.js";
-export { LINE_TAGS } from "./runner/bootstrap.js";
+export { LINE_TAG } from "./runner/bootstrap.js";
 export {
   auditOnMachine,
   auditThenRoot,
@@ -50,11 +50,12 @@ export {
   type MachineAuditRuntime,
   nodeOnMachine,
 } from "./runner/gates.js";
-export { createLineAgents, type LineAgentsOptions } from "./runner/line-agents.js";
 export { type LineOwnerOptions, runLineOwner } from "./runner/line-owner.js";
+export { createLineRepair, lineRepairBrief } from "./runner/line-repair.js";
 export type { CommandResult, Machine } from "./runner/machine.js";
 export { runRunner } from "./runner/main.js";
 export type { LineRunnerPlane } from "./runner/plane.js";
+export { createRunnerLog, runnerLogRecorder } from "./runner/runner-log.js";
 export {
   type CreateServerInput,
   createNightshiftServer,

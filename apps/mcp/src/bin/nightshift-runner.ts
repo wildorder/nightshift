@@ -10,9 +10,9 @@ import { userInfo } from "node:os";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import { createEventOutbox, nodeGitRunner, recordArtifact } from "@nightshift/execution";
 import {
-  createLineHarnesses,
   createLineRunnerPlane,
   createLineScratchPaths,
+  createRunnerLogRuntime,
   createRunnerPlane,
   createRuntime,
 } from "../compose.js";
@@ -30,17 +30,56 @@ import {
   startCodexWatch,
   tokenFile,
 } from "../runner/root.js";
+import { appendRunnerLog, createRunnerLog, runnerLogRecorder } from "../runner/runner-log.js";
+import { layoutOf } from "../runner/workspace.js";
 
-const say = (line: string): void => {
-  process.stderr.write(`[nightshift-runner] ${line}\n`);
+const workspaceRoot = process.env.NIGHTSHIFT_WORKSPACE ?? "/workspace";
+
+// The runner's own log (S-02): every said line is appended to `<run>/runner.log`,
+// held in memory until the first token names the run.
+let logFile: string | undefined;
+let logChain: Promise<void> = Promise.resolve();
+const pendingLines: string[] = [];
+const appendLine = (line: string): void => {
+  logChain = logChain.then(() =>
+    logFile === undefined ? undefined : appendRunnerLog(logFile, line),
+  );
+};
+const teeTo = (runId: string): void => {
+  if (logFile !== undefined) return;
+  logFile = `${layoutOf(workspaceRoot, runId).run}/runner.log`;
+  for (const line of pendingLines.splice(0)) appendLine(line);
 };
 
+const say = (line: string): void => {
+  const stamped = `${new Date().toISOString()} ${line}`;
+  process.stderr.write(`[nightshift-runner] ${line}\n`);
+  if (logFile === undefined) pendingLines.push(stamped);
+  else appendLine(stamped);
+};
+
+const runnerLog = createRunnerLog({
+  get file() {
+    return logFile ?? "";
+  },
+  log: say,
+  read: async (file) => {
+    await logChain;
+    return readFile(file);
+  },
+});
+
 runRunner({
+  runnerLog,
+  runnerLogRecorder: (endpoint, tokens, scope) => {
+    const runtime = createRunnerLogRuntime(endpoint, tokens);
+    return runnerLogRecorder(async () => runtime, scope);
+  },
   machine: nodeMachine,
   log: say,
   plane: createRunnerPlane,
   linePlane: createLineRunnerPlane,
-  workspace: process.env.NIGHTSHIFT_WORKSPACE ?? "/workspace",
+  workspace: workspaceRoot,
   device: process.env.NIGHTSHIFT_WORKSPACE_DEVICE ?? "/dev/xvdf",
   sidecar: process.env.NIGHTSHIFT_SIDECAR ?? "/workspace-sidecar",
   engineUser: process.env.NIGHTSHIFT_ENGINE_USER ?? "engine",
@@ -50,9 +89,15 @@ runRunner({
     ? {}
     : { projectUser: process.env.NIGHTSHIFT_PROJECT_USER }),
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
-  onToken: (token, scope) => installTokenFile(scope.runId, token),
+  onToken: (token, scope) => {
+    teeTo(scope.runId);
+    return installTokenFile(scope.runId, token);
+  },
   // The line owner's token, where a run's is: the machine's layout is the same.
-  onLineToken: (token, identity) => installTokenFile(identity.engineAgentId, token),
+  onLineToken: (token, identity) => {
+    teeTo(identity.scope.runId);
+    return installTokenFile(identity.scope.runId, token);
+  },
   readCachedToken: async (scope) => {
     try {
       return await readFile(tokenFile(scope.runId), "utf8");
@@ -65,27 +110,17 @@ runRunner({
   lineWork: async (context) => {
     const projectUser = process.env.NIGHTSHIFT_PROJECT_USER;
     const user = projectUser === undefined || projectUser === "" ? undefined : projectUser;
-    const agentId = context.identity.engineAgentId;
+    const agentId = context.identity.scope.runId;
+    // The Codex login the line's repair agents refresh goes back to the org, as a root's does.
+    let codexWatch: { readonly stop: () => Promise<void> } | undefined;
     return runLineOwner(context, {
       git: nodeGitRunner,
       ids: createUlidIdGenerator(),
       clock: systemClock,
       paths: createLineScratchPaths(process.env),
       parentEnv: process.env,
-      upload: async ({ url, contentType, file }) => {
-        const bytes = await readFile(file);
-        const response = await fetch(url, {
-          method: "PUT",
-          headers: { "content-type": contentType, "content-length": String(bytes.length) },
-          body: bytes,
-        });
-        if (!response.ok) {
-          throw new Error(`the bundle upload answered ${response.status}`);
-        }
-      },
-      createHarnesses: createLineHarnesses,
-      placeCredentials: (credentials) =>
-        placeProviderCredentials(agentId, credentials, {
+      placeCredentials: async (credentials) => {
+        const providerKeys = await placeProviderCredentials(context.scope.runId, credentials, {
           ...(user === undefined ? {} : { user }),
           grant: async (granted, path) => {
             const owned = await context.machine.exec("sudo", [
@@ -98,7 +133,21 @@ runRunner({
               throw new Error(`chown ${path} to ${granted}: ${owned.stderr}`);
           },
           reclaim: createReclaim(userInfo().username),
-        }),
+        });
+        codexWatch = startCodexWatch({ context, credentials, projectUser: user, log: say });
+        return providerKeys;
+      },
+      upload: async ({ url, contentType, file }) => {
+        const bytes = await readFile(file);
+        const response = await fetch(url, {
+          method: "PUT",
+          headers: { "content-type": contentType, "content-length": String(bytes.length) },
+          body: bytes,
+        });
+        if (!response.ok) {
+          throw new Error(`the bundle upload answered ${response.status}`);
+        }
+      },
       ...(user === undefined
         ? {}
         : {
@@ -110,7 +159,7 @@ runRunner({
               })({ agentId, role: "line" }),
             reclaim: createReclaim(userInfo().username),
           }),
-    });
+    }).finally(() => codexWatch?.stop());
   },
   work: async (context) => {
     // `running` first: the plane hands the org's provider keys to a running
@@ -214,11 +263,13 @@ runRunner({
     }
     return undefined;
   },
-})
-  .then((code) => {
+}).then(
+  async (code) => {
+    // Normal stop, failure and told-to-stop all return here; `runRunner` has uploaded the log.
     process.exit(code);
-  })
-  .catch((error: unknown) => {
+  },
+  async (error: unknown) => {
     say(error instanceof Error ? error.message : String(error));
     process.exit(2);
-  });
+  },
+);

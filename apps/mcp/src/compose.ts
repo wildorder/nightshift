@@ -100,7 +100,7 @@ import {
 } from "./role.js";
 import { createProjectUser, createReclaim } from "./run-as.js";
 import { nodeMachine } from "./runner/machine.js";
-import type { LinePlaneFactory, PlaneFactory } from "./runner/plane.js";
+import type { EngineTokens, LinePlaneFactory, PlaneFactory } from "./runner/plane.js";
 import {
   createProjectSetup,
   type ProjectSetup,
@@ -132,23 +132,44 @@ export const createRunnerPlane: PlaneFactory = (endpoint, tokens) => {
 };
 
 /**
+ * What the runner's log needs to record itself as an artifact: the standard
+ * HTTP stores and artifact body store under the engine token, with no agent,
+ * session or work runtime behind them.
+ */
+export const createRunnerLogRuntime = (
+  endpoint: string,
+  tokens: EngineTokens,
+): Pick<Runtime, "stores" | "bodies" | "clock" | "ids"> => {
+  const transport = createFetchTransport({ endpoint, tokens });
+  return {
+    stores: createHttpStores({ transport }),
+    bodies: createHttpArtifactBodyStore({ transport }),
+    clock: systemClock,
+    ids: createUlidIdGenerator(),
+  };
+};
+
+/**
  * The line owner's view of the control plane (Pipkin M1b, S-04), over the line
- * routes. Every call carries the dispatch generation the plane fences on.
+ * routes and its run's dispatch heartbeat. Every call carries the dispatch
+ * generation the plane fences on.
  */
 export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target) => {
   const transport = createFetchTransport({ endpoint, tokens });
-  const { projectId, branch, generation } = target;
+  const { projectId, branch, scope, generation } = target;
+  const dispatches = createHttpStores({ transport }).dispatches;
   return {
+    dispatch: () => dispatches.get(scope),
     line: async () =>
       LineViewSchema.parse(
         await send(transport, { method: "GET", path: routes.line(projectId, branch) }),
       ),
-    takeBatch: async () =>
+    takeBatch: async (release) =>
       TakeLineBatchResponseSchema.parse(
         await send(transport, {
           method: "POST",
           path: routes.lineBatch(projectId, branch),
-          body: { generation },
+          body: { generation, ...(release === undefined ? {} : { release }) },
         }),
       ).batch,
     settle: async (body) => {
@@ -158,11 +179,18 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
         body,
       });
     },
+    attempt: async (body) => {
+      await send(transport, {
+        method: "POST",
+        path: routes.lineAttempt(projectId, branch),
+        body: { generation, ...body },
+      });
+    },
     heartbeat: async (body) =>
       HeartbeatResponseSchema.parse(
         await send(transport, {
           method: "POST",
-          path: routes.lineHeartbeat(projectId, branch),
+          path: routes.dispatchHeartbeat(scope),
           body,
         }),
       ),
@@ -173,20 +201,6 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
         body: { generation, id },
       })) as { uploadUrl: string; key: string; contentType: string };
       return { uploadUrl: signed.uploadUrl, key: signed.key, contentType: signed.contentType };
-    },
-    decide: async (decision) => {
-      await send(transport, {
-        method: "POST",
-        path: routes.lineDecisions(projectId, branch),
-        body: { ...decision, generation },
-      });
-    },
-    announce: async (agent) => {
-      await send(transport, {
-        method: "POST",
-        path: routes.lineAgents(projectId, branch),
-        body: { generation, agent },
-      });
     },
   };
 };
@@ -505,40 +519,10 @@ export const createRoutedHarness = (construct: (harness: string) => Harness): Ha
       owners.set(handle, adapter);
       return handle;
     },
-    startLine: async (input) => {
-      const adapter = adapterFor(input.model.harness);
-      if (adapter.startLine === undefined) {
-        throw new Error(`the ${input.model.harness} harness cannot launch a line agent`);
-      }
-      const handle = await adapter.startLine(input);
-      owners.set(handle, adapter);
-      return handle;
-    },
     cancel: async (handle, grace) => {
       await owners.get(handle)?.cancel(handle, grace);
     },
     status: async (handle) => (await owners.get(handle)?.status(handle)) ?? "created",
-  };
-};
-
-/**
- * The harnesses a line owner's agents launch through, by `RouteTarget.harness`
- * (Pipkin M1b, S-04): built on a machine, on first use, over the environment
- * the agents run in.
- */
-export const createLineHarnesses = (env: Env): { get(harness: string): Harness | undefined } => {
-  const adapters = new Map<string, Harness | undefined>();
-  return {
-    get: (harness) => {
-      if (!adapters.has(harness)) {
-        try {
-          adapters.set(harness, constructAdapter(harness, env, true));
-        } catch {
-          adapters.set(harness, undefined);
-        }
-      }
-      return adapters.get(harness);
-    },
   };
 };
 

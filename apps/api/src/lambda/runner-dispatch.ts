@@ -16,7 +16,6 @@ import { createAwsClients, createAwsStores } from "@nightshift/persistence/aws";
 import { createEc2Compute, createSsmFirstTokens } from "../aws/ec2-compute.js";
 import { loadConfig, loadRunnerConfig, loadTokenConfig } from "../config.js";
 import { type ProvisionOutcome, provisionDispatch } from "../runner/provision.js";
-import { type LineProvisionOutcome, provisionLineDispatch } from "../runner/provision-line.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 
 const config = loadConfig(process.env);
@@ -40,15 +39,6 @@ export interface RunDispatchEvent {
   readonly runId: string;
 }
 
-/** The project line's owner machine, asked for by the API or the reconciler. */
-export interface LineDispatchEvent {
-  readonly kind: "line";
-  readonly projectId: string;
-  readonly branch: string;
-}
-
-export type DispatchEvent = RunDispatchEvent | LineDispatchEvent;
-
 const provisionDeps = {
   stores,
   compute,
@@ -66,19 +56,7 @@ const provisionDeps = {
   subnetZones: runner.subnetZones,
 };
 
-export const handler = async (
-  event: DispatchEvent,
-): Promise<ProvisionOutcome | LineProvisionOutcome> => {
-  if ("branch" in event) {
-    const outcome = await provisionLineDispatch(provisionDeps, {
-      projectId: ProjectIdSchema.parse(event.projectId),
-      branch: event.branch,
-    });
-    console.warn(
-      `line dispatch ${event.projectId}/${event.branch}: ${outcome.kind}${"reason" in outcome ? ` (${outcome.reason})` : ""}`,
-    );
-    return outcome;
-  }
+export const handler = async (event: RunDispatchEvent): Promise<ProvisionOutcome> => {
   const scope = {
     projectId: ProjectIdSchema.parse(event.projectId),
     programId: ProgramIdSchema.parse(event.programId),

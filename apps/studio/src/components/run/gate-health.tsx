@@ -20,6 +20,8 @@ import { StatusBadge } from "../status-badge.js";
 const CAUSE_WORD: Readonly<Record<RepairReport["cause"], string>> = {
   red_base: "red base",
   flaky: "flaky",
+  line_conflict: "line conflict",
+  line_red: "line red",
 };
 
 const isEmpty = ({

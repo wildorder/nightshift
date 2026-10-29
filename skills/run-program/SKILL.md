@@ -110,8 +110,20 @@ You do not write code during the run, and you do not touch the checkout: every
 landing fast-forwards the branch it is on.
 
 When the run is remote and the project has a line, the run's published program
-branch is queued onto the project line and composed there by the line owner; the
-run never waits on it. `nightshift line status` shows the line.
+branch is queued onto the project line; the run never waits on it. The line is
+itself a run: of a per-line program of kind `line` that the plane makes per
+(project, line branch). The composer sits in the root orchestrator's seat and
+composes each queued branch range onto the line candidate. A repair is an
+ordinary engine repair job on the same machine, landing on the line candidate.
+The line never stops for a repair: it reserves only the failing range's paths,
+so ranges touching other paths keep composing, and a repair that exhausts its
+budget parks its range. Every machine keeps its runner log as an artifact.
+A verification made on the line is never landing evidence for a program run.
+
+`nightshift line status` prints the line record, then the line program's runs
+with their machines and spend. The Studio lists the line apart from plan
+programs; a line run's page and report read as compositions, parked ranges and
+repairs.
 
 ### 2a. When a gate breaks
 

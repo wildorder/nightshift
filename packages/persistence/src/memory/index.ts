@@ -50,8 +50,6 @@ import {
   type JobContract,
   type JobContractId,
   JobContractSchema,
-  type LineDispatch,
-  LineDispatchSchema,
   type LineRecord,
   LineRecordSchema,
   type MeasurementSummary,
@@ -115,11 +113,9 @@ import {
   type GateHealthStore,
   IllegalTransitionError,
   type InstallationClaimStore,
-  isDispatchTerminal,
   isNeverStartedRun,
   isRunTerminal,
   type JobContractStore,
-  type LineDispatchStore,
   type LineStore,
   lineHasWork,
   type MeasurementSummaryStore,
@@ -270,7 +266,6 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
   const computeLedger = table<OrgComputeUsage>("computeLedger");
   // Pipkin M1b: the project line, its owner's machine, and the project's self-started spend.
   const lines = table<LineRecord>("lines");
-  const lineDispatches = table<LineDispatch>("lineDispatches");
   const selfStartedUsage = table<ProjectSelfStartedUsage>("projectSelfStartedUsage");
 
   const all = [
@@ -308,7 +303,6 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     projectSecrets,
     computeLedger,
     lines,
-    lineDispatches,
     selfStartedUsage,
   ];
 
@@ -986,44 +980,6 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     listWithWork: async () => lines.all().filter(lineHasWork),
   };
 
-  const lineDispatchStore: LineDispatchStore = {
-    get: async (projectId, branch) => lineDispatches.get(lineKey(projectId, branch)),
-    start: async (next) => {
-      const parsed = LineDispatchSchema.parse(next);
-      return atomically(() => {
-        const key = lineKey(parsed.projectId, parsed.branch);
-        const stored = lineDispatches.get(key);
-        if (stored !== undefined) {
-          const settled =
-            isDispatchTerminal(stored.status) &&
-            stored.cleanup.settledAt !== undefined &&
-            parsed.generation === stored.generation + 1;
-          if (!settled) return "live" as const;
-        }
-        lineDispatches.set(key, { ...parsed, version: (stored?.version ?? 0) + 1 });
-        return "started" as const;
-      });
-    },
-    update: async (projectId, branch, change) =>
-      atomically(() => {
-        const key = lineKey(projectId, branch);
-        const current = lineDispatches.get(key);
-        if (current === undefined) return undefined;
-        const next = change(current);
-        if (next === undefined) return current;
-        const parsed = LineDispatchSchema.parse({
-          ...next,
-          projectId,
-          branch,
-          version: current.version + 1,
-        });
-        lineDispatches.set(key, parsed);
-        return parsed;
-      }),
-    listByStatus: async (statuses) =>
-      lineDispatches.all().filter((dispatch) => statuses.includes(dispatch.status)),
-  };
-
   const projectSelfStartedUsageStore: ProjectSelfStartedUsageStore = {
     get: async (projectId, month) =>
       selfStartedUsage.get(`${projectPrefix({ projectId })}${month}`),
@@ -1073,7 +1029,6 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
     credentials: credentialsStore,
     computeLedger: computeLedgerStore,
     lines: lineStore,
-    lineDispatches: lineDispatchStore,
     projectSelfStartedUsage: projectSelfStartedUsageStore,
     sequenceLedger: {
       stamp: async (scope, eventId) => stampStored(`${runPrefix(scope)}${eventId}`),

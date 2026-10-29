@@ -189,6 +189,11 @@ Each strand must be:
   here". When two strands genuinely must touch the same files, either they are
   one strand, or one depends on the other.
 
+Watch for a file every program appends to (foodfly's `docs/as-built.md` is the
+example). Each program's branch changes the same lines, so that file is where
+project-line repairs will concentrate. Plan to avoid it, or partition it so each
+program writes its own file.
+
 A strand's scope is **planning information, never a fence** (the owner's ruling,
 2026-10-09). It is how `plan check` finds strands that may overlap, and its
 orchestrator is told it as where the plan expects the work. No job is confined

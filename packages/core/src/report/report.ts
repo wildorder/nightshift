@@ -33,6 +33,17 @@ import {
   type GateHealthVerdict,
   type IsoTimestamp,
   type JobContract,
+  LineComposedPayloadSchema,
+  type LineComposition,
+  LineCompositionSchema,
+  LineEntryChunkPayloadSchema,
+  type LineParked,
+  LineParkedPayloadSchema,
+  LineParkedSchema,
+  type LineRange,
+  type LineRecord,
+  type LineRepairRef,
+  LineSettledPayloadSchema,
   lifecycleObservationsOf,
   type MeasurementSummary,
   type Prerequisite,
@@ -52,6 +63,7 @@ import {
   VerificationStepSchema,
 } from "@nightshift/contracts";
 import { humanDuration } from "../forecast/model.js";
+import { entryDigest, sha256Hex } from "../line/settlement.js";
 import type { ProjectStores } from "../ports/stores.js";
 import { type PublicationState, publicationStateOf } from "../rules/dispatch.js";
 import { buildTree, descendantsOf, type ExecutionTree } from "../rules/execution-tree.js";
@@ -176,7 +188,10 @@ export interface StrandReport {
    * rather than build it again (`Run.carriedStrands`): which run, and what it
    * landed, all of it on the branch this run started from.
    */
-  readonly carriedFrom?: { readonly runId: string; readonly landed: readonly string[] };
+  readonly carriedFrom?: {
+    readonly runId: string;
+    readonly landed: readonly string[];
+  };
 }
 
 export interface UsageRow {
@@ -268,8 +283,23 @@ export interface RunReport {
   readonly feedbackCoverage: FeedbackCoverage;
   /** D-05: the completion histories this run is a member of. */
   readonly completions: readonly CompletionReport[];
+  /** A line run's branch, head, compositions, parked entries and repairs; absent for a plan program. */
+  readonly line?: LineRunReport;
   /** The moment the report was gathered, to which open intervals were observed. */
   readonly asOf: IsoTimestamp;
+}
+
+/** What a line run did to its line: the entries inside the run's window, and its repair jobs. */
+export interface LineRunReport {
+  readonly branch: string;
+  /** The line's head at GitHub as last known; absent when no line record exists. */
+  readonly head?: string;
+  /** From the run's `line.composed` events, with in-window entries still on the line record. */
+  readonly compositions: readonly LineComposition[];
+  /** From the run's `line.parked` events, with in-window entries still on the line record. */
+  readonly parked: readonly LineParked[];
+  /** The run's repair jobs; each composition's or parked entry's `repair` names one of them. */
+  readonly repairs: readonly RepairReport[];
 }
 
 export interface PublicationReport {
@@ -376,7 +406,10 @@ interface Records {
   /** Node id → the prerequisites its deferred checks wait on. */
   readonly waitingOf: ReadonlyMap<string, readonly string[]>;
   /** Every attempt at every strand, oldest first. */
-  readonly strandNodes: readonly { readonly strandId: string; readonly node: ExecutionNode }[];
+  readonly strandNodes: readonly {
+    readonly strandId: string;
+    readonly node: ExecutionNode;
+  }[];
   readonly outcomes: StrandOutcomes;
   /** What the run carried over from an earlier run of the same plan. */
   readonly carried: readonly CarriedStrand[];
@@ -788,6 +821,34 @@ const definitionsOf = (
   };
 };
 
+/** Every job contract of the run that is a repair, oldest first, with its node and decision. */
+const repairsOf = (
+  records: Records,
+  nodes: readonly ExecutionNode[],
+  byId: ReadonlyMap<string, Decision>,
+  repaired: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
+): RepairReport[] =>
+  [...records.jobOf.values()]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .flatMap((job): RepairReport[] => {
+      if (job.repair === undefined) return [];
+      const node = nodes
+        .filter((candidate) => candidate.jobContractId === job.jobContractId)
+        .at(-1);
+      const landed = repaired.get(job.jobContractId);
+      return [
+        {
+          jobContractId: job.jobContractId,
+          cause: job.repair.cause,
+          gates: job.repair.gates,
+          objective: firstLine(job.objective),
+          status: node?.status ?? "not delegated",
+          decision: byId.get(job.repair.decisionId),
+          ...(landed === undefined ? { definitionsChanged: false } : definitionsOf(landed)),
+        },
+      ];
+    });
+
 /**
  * The run's gate health (D-P15-09): the project's record, the run's red base,
  * every job contract that is a repair with its node and decision, and every
@@ -818,26 +879,7 @@ const gatherGateHealth = async (
   const byId = new Map(
     records.decisions.map((decision) => [decision.decisionId as string, decision]),
   );
-  const repairs = [...records.jobOf.values()]
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .flatMap((job): RepairReport[] => {
-      if (job.repair === undefined) return [];
-      const node = nodes
-        .filter((candidate) => candidate.jobContractId === job.jobContractId)
-        .at(-1);
-      const landed = repaired.get(job.jobContractId);
-      return [
-        {
-          jobContractId: job.jobContractId,
-          cause: job.repair.cause,
-          gates: job.repair.gates,
-          objective: firstLine(job.objective),
-          status: node?.status ?? "not delegated",
-          decision: byId.get(job.repair.decisionId),
-          ...(landed === undefined ? { definitionsChanged: false } : definitionsOf(landed)),
-        },
-      ];
-    });
+  const repairs = repairsOf(records, nodes, byId, repaired);
 
   const flakes = [...verifications]
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
@@ -923,7 +965,13 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   );
   const verifications = await gatherVerifications(stores, scope, nodes);
 
-  const p20 = p20Of(records, run, nodes, verifications);
+  const gateHealth = await gatherGateHealth(stores, scope, records, nodes, verifications);
+  const line =
+    program.kind === "line"
+      ? await gatherLine(stores, scope, program, run, gateHealth.repairs, records.events)
+      : undefined;
+
+  const p20 = p20Of(records, run, nodes, verifications, line === undefined ? [] : lineStamps(line));
   const feedbackSections = await feedbackSectionsOf(stores, scope, run, p20.asOf, {
     evidence: memberEvidenceOf(scope, run, records, p20),
     resources: resourcesOfRoutes(
@@ -974,7 +1022,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     ),
     rulings,
     unreviewed,
-    gateHealth: await gatherGateHealth(stores, scope, records, nodes, verifications),
+    gateHealth,
     stepAdjustments: stepAdjustmentsOf(
       program.verification,
       adjustmentDecisionsOf(
@@ -985,6 +1033,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
       { maxWallClockSeconds: program.costPolicy?.maxWallClockSeconds },
     ),
     ...publicationOf(records.dispatch, program.repository.programBranch),
+    ...(line === undefined ? {} : { line }),
     ...p20,
     ...feedbackSections,
   };
@@ -1027,7 +1076,11 @@ const nodeRecordsOf = async (
   stores: ProjectStores,
   scope: RunScope,
   nodes: readonly ExecutionNode[] | undefined,
-): Promise<{ agents?: Agent[]; routes?: RoutingDecision[]; failure?: string }> => {
+): Promise<{
+  agents?: Agent[];
+  routes?: RoutingDecision[];
+  failure?: string;
+}> => {
   if (nodes === undefined) return {};
   const agents: Agent[] = [];
   const routes: RoutingDecision[] = [];
@@ -1172,7 +1225,9 @@ const memberFiguresOf = async (
     ...(evidenceFailure === undefined ? {} : { evidenceUnavailable: evidenceFailure }),
     ...(routes === undefined || measurements === undefined
       ? {}
-      : { resources: resourcesOfRoutes(routes, measurements, rootIdsOf(nodes ?? [])) }),
+      : {
+          resources: resourcesOfRoutes(routes, measurements, rootIdsOf(nodes ?? [])),
+        }),
     ...(infrastructure === undefined ? {} : { infrastructure }),
     ...(failures.length === 0 ? {} : { unavailable: failures.join("; ") }),
   };
@@ -1229,7 +1284,13 @@ export const gatherMemberFigures = async (
     }
     if (figures.unavailable !== undefined) unavailable.set(key, figures.unavailable);
   }
-  return { resources, infrastructure, evidence, evidenceUnavailable, unavailable };
+  return {
+    resources,
+    infrastructure,
+    evidence,
+    evidenceUnavailable,
+    unavailable,
+  };
 };
 
 /**
@@ -1305,6 +1366,169 @@ const feedbackSectionsOf = async (
   };
 };
 
+const inRunWindow = (run: Run, at: string, repair: LineRepairRef | undefined): boolean =>
+  repair?.runId === run.runId ||
+  (Date.parse(at) >= Date.parse(run.startedAt) &&
+    (run.endedAt === undefined || Date.parse(at) <= Date.parse(run.endedAt)));
+
+/**
+ * The line entries the run's events establish as facts. An entry event (inline,
+ * or reassembled from a complete set of `line.entry_chunk`s whose text hashes
+ * to its digest) counts only if a `line.settled` marker of the run names its
+ * (type, id, digest), or the line record currently holds an entry of that id
+ * with that digest. Events of an attempt that never committed, was refused, or
+ * was superseded by a replacement owner are therefore never reported.
+ */
+const settledEntriesOf = (
+  events: readonly Event[],
+  record: LineRecord | undefined,
+): { composed: LineComposition[]; parked: LineParked[] } => {
+  const named = new Set<string>();
+  for (const event of events) {
+    if (event.type !== "line.settled") continue;
+    const parsed = LineSettledPayloadSchema.safeParse(event.payload);
+    if (!parsed.success) continue;
+    for (const e of parsed.data.entries) named.add(`${e.type}\n${e.id}\n${e.digest}`);
+  }
+  const held = new Set<string>([
+    ...(record?.compositions ?? []).map(
+      (c) => `line.composed\n${c.compositionId}\n${entryDigest(c)}`,
+    ),
+    ...(record?.parked ?? []).map((p) => `line.parked\n${p.compositionId}\n${entryDigest(p)}`),
+  ]);
+  const counts = (type: string, id: string, digest: string): boolean =>
+    named.has(`${type}\n${id}\n${digest}`) || held.has(`${type}\n${id}\n${digest}`);
+  const composed: LineComposition[] = [];
+  const parked: LineParked[] = [];
+  const chunks = new Map<string, Map<number, string>>();
+  const chunkInfo = new Map<
+    string,
+    { kind: "composed" | "parked"; id: string; digest: string; parts: number }
+  >();
+  for (const event of events) {
+    if (event.type === "line.composed") {
+      const parsed = LineComposedPayloadSchema.safeParse(event.payload);
+      if (!parsed.success) continue;
+      const { id, digest, ...entry } = parsed.data;
+      if (
+        id === entry.compositionId &&
+        entryDigest(entry) === digest &&
+        counts(event.type, id, digest)
+      )
+        composed.push(entry);
+    } else if (event.type === "line.parked") {
+      const parsed = LineParkedPayloadSchema.safeParse(event.payload);
+      if (!parsed.success) continue;
+      const { id, digest, ...entry } = parsed.data;
+      if (
+        id === entry.compositionId &&
+        entryDigest(entry) === digest &&
+        counts(event.type, id, digest)
+      )
+        parked.push(entry);
+    } else if (event.type === "line.entry_chunk") {
+      const parsed = LineEntryChunkPayloadSchema.safeParse(event.payload);
+      if (!parsed.success || parsed.data.part >= parsed.data.parts) continue;
+      const key = `${parsed.data.kind}\n${parsed.data.id}\n${parsed.data.digest}`;
+      const info = chunkInfo.get(key);
+      if (info !== undefined && info.parts !== parsed.data.parts) continue;
+      chunkInfo.set(key, parsed.data);
+      const parts = chunks.get(key) ?? new Map<number, string>();
+      parts.set(parsed.data.part, parsed.data.text);
+      chunks.set(key, parts);
+    }
+  }
+  for (const [key, parts] of chunks) {
+    const info = chunkInfo.get(key);
+    if (info === undefined || parts.size !== info.parts) continue;
+    const type = info.kind === "composed" ? "line.composed" : "line.parked";
+    if (!counts(type, info.id, info.digest)) continue;
+    const text = Array.from({ length: info.parts }, (_, i) => parts.get(i) ?? "").join("");
+    if (sha256Hex(text) !== info.digest) continue;
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    if (info.kind === "composed") {
+      const entry = LineCompositionSchema.safeParse(json);
+      if (entry.success && entry.data.compositionId === info.id) composed.push(entry.data);
+    } else {
+      const entry = LineParkedSchema.safeParse(json);
+      if (entry.success && entry.data.compositionId === info.id) parked.push(entry.data);
+    }
+  }
+  return { composed, parked };
+};
+
+/**
+ * A line run's part of the report: the entries its committed settlements
+ * established (`settledEntriesOf`), uncapped, unioned with the line record's
+ * entries that belong to the run (by repair ref, or by time within the run's
+ * window; a live run has no upper bound), so runs from before the events
+ * existed still show what the record holds. Deduped by compositionId, the
+ * record's copy winning on overlap (a push lands on it). A missing line record
+ * yields none, not a throw.
+ */
+const gatherLine = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  program: ProgramContract,
+  run: Run,
+  repairs: readonly RepairReport[],
+  events: readonly Event[],
+): Promise<LineRunReport> => {
+  const branch = program.line?.branch ?? "";
+  const record = await stores.lines.get(scope.projectId, branch);
+  const union = <T extends { readonly compositionId: string }>(
+    fromEvents: readonly T[],
+    fromRecord: readonly T[],
+    stamp: (entry: T) => string,
+  ): T[] => {
+    const held = new Map(fromRecord.map((entry) => [entry.compositionId, entry]));
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const entry of fromEvents) {
+      if (seen.has(entry.compositionId)) continue;
+      seen.add(entry.compositionId);
+      // The record's copy may have moved on since the event (a push lands on it).
+      out.push({ ...entry, ...(held.get(entry.compositionId) ?? {}) });
+    }
+    for (const entry of fromRecord) {
+      if (seen.has(entry.compositionId)) continue;
+      seen.add(entry.compositionId);
+      out.push(entry);
+    }
+    return out.sort((a, b) => Date.parse(stamp(a)) - Date.parse(stamp(b)));
+  };
+  const settled = settledEntriesOf(events, record);
+  return {
+    branch,
+    ...(record?.head === undefined ? {} : { head: record.head }),
+    compositions: union(
+      settled.composed,
+      (record?.compositions ?? []).filter((c) => inRunWindow(run, c.composedAt, c.repair)),
+      (c) => c.composedAt,
+    ),
+    parked: union(
+      settled.parked,
+      (record?.parked ?? []).filter((p) => inRunWindow(run, p.parkedAt, p.repair)),
+      (p) => p.parkedAt,
+    ),
+    repairs,
+  };
+};
+
+/** The line activity of the included entries, folded into the report's `asOf`. */
+const lineStamps = (line: LineRunReport): string[] => [
+  ...line.compositions.flatMap((c) => [
+    c.composedAt,
+    ...(c.pushed === undefined ? [] : [c.pushed.at]),
+  ]),
+  ...line.parked.map((p) => p.parkedAt),
+];
+
 /**
  * The newest timestamp on any record read. `gatherReport` has no clock (core
  * is offline and the stores carry none), so the report's `asOf` is taken from
@@ -1314,8 +1538,9 @@ const newestOf = (
   run: Run,
   records: Records,
   verifications: readonly Verification[],
+  extra: readonly string[] = [],
 ): IsoTimestamp => {
-  const stamps: string[] = [run.startedAt];
+  const stamps: string[] = [run.startedAt, ...extra];
   if (run.endedAt !== undefined) stamps.push(run.endedAt);
   for (const node of records.tree.nodes.values()) stamps.push(node.createdAt);
   for (const event of records.events) stamps.push(event.occurredAt, event.recordedAt);
@@ -1337,8 +1562,9 @@ const p20Of = (
   run: Run,
   nodes: readonly ExecutionNode[],
   verifications: readonly Verification[],
+  extraStamps: readonly string[] = [],
 ): Pick<RunReport, "operations" | "delivery" | "review" | "infrastructure" | "asOf"> => {
-  const asOf = newestOf(run, records, verifications);
+  const asOf = newestOf(run, records, verifications, extraStamps);
   const jobs = [...records.jobOf.values()];
   const routes = [...records.routesOf.values()].flat();
   const examinations = [...records.examinationsOf.values()].flat();
@@ -1398,7 +1624,13 @@ const publicationOf = (
   const unlanded = (dispatch.publication.strands ?? []).filter(
     (strand) => !landed.has(strand.head),
   );
-  return { publication: { branch, state: publicationStateOf(dispatch.publication), unlanded } };
+  return {
+    publication: {
+      branch,
+      state: publicationStateOf(dispatch.publication),
+      unlanded,
+    },
+  };
 };
 
 /** A-60: where the work of strands that did not land is kept. */
@@ -1673,6 +1905,8 @@ const renderDepartures = (strands: readonly StrandReport[]): string[] => {
 const CAUSE_WORD: Readonly<Record<RepairCause, string>> = {
   red_base: "red base",
   flaky: "flaky",
+  line_conflict: "line conflict",
+  line_red: "line red",
 };
 
 const renderSteps = (title: string, steps: readonly { id: string; command: string }[]) => [
@@ -2468,8 +2702,104 @@ const renderRequestEvidence = (attempts: readonly AttemptRow[] | undefined): str
 ];
 
 /** The report as markdown. Pure: the same records always give the same document. */
+const renderRepairRef = (repair: LineRepairRef | undefined): string =>
+  repair === undefined ? "" : `; repair \`${repair.jobContractId}\` (run \`${repair.runId}\`)`;
+
+const rangeText = (range: LineRange): string =>
+  `${range.program} ${range.from === undefined ? "" : `${range.from.slice(0, 8)}..`}${range.upTo.slice(0, 8)}`;
+
+const renderTail = (report: RunReport): string[] => [
+  "## Usage",
+  "",
+  "Token counts are what each harness reported and are not comparable across harnesses.",
+  "A cost marked * is estimated from the price table, not reported by the harness. A cost",
+  "that is unknown had neither: give the org's price table a price for that model to estimate it.",
+  "Each attempt counts one figure in the cost column (reported when it has one, else estimated). The",
+  "Reported and Estimated columns split that by kind; provider-reported dollars are never summed with",
+  "an API-equivalent estimate.",
+  "",
+  "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost per attempt (USD) | Reported (n: USD) | Estimated (n: USD) | Basis |",
+  "|---|---|---|---|---|---|---|---|---|---|",
+  ...report.usage.map(
+    (row) =>
+      `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${tokenCell(row, row.inputTokens)} | ${tokenCell(row, row.outputTokens)} | ${costCell(row)} | ${subtotalCell(row.reportedAttempts, row.reportedUsd)} | ${subtotalCell(row.estimatedAttempts, row.estimatedUsd)} | ${basisCell(row)} |`,
+  ),
+  ...renderBudget(report),
+  "",
+  ...renderOperations(report.operations),
+  ...renderDelivery(report.delivery),
+  ...renderHumanVerdict(report),
+  ...renderCompletions(report.completions),
+  ...renderReview(report.review),
+  ...renderMachine(report.infrastructure),
+  ...renderRequestEvidence(report.attempts),
+  ...renderDefinitions(report),
+];
+
+const renderLineLead = (line: LineRunReport): string[] => [
+  "## Composed",
+  "",
+  ...(line.compositions.length === 0
+    ? ["Nothing composed in this run.", ""]
+    : [
+        ...line.compositions.map(
+          (c) =>
+            `- \`${c.commit.slice(0, 8)}\` at ${c.composedAt} (${c.compositionId}): ${c.ranges.map(rangeText).join(", ")}; verification ${c.verification.outcome}${renderRepairRef(c.repair)}`,
+        ),
+        "",
+      ]),
+  "## Parked",
+  "",
+  ...(line.parked.length === 0
+    ? ["Nothing parked in this run.", ""]
+    : [
+        ...line.parked.flatMap((p) => [
+          `- ${p.compositionId} at ${p.parkedAt}: ${p.ranges.map(rangeText).join(", ")}${renderRepairRef(p.repair)}`,
+          `  Reason: ${p.reason}`,
+        ]),
+        "",
+      ]),
+  "## Repairs",
+  "",
+  ...(line.repairs.length === 0
+    ? ["No repairs in this run.", ""]
+    : [
+        ...line.repairs.flatMap((repair) => [
+          `- **Repair \`${repair.jobContractId}\`** (${CAUSE_WORD[repair.cause]}): ${repair.status}`,
+          `  ${repair.objective}`,
+        ]),
+        "",
+      ]),
+];
+
+const renderLineReport = (report: RunReport, line: LineRunReport): string => {
+  const { program, run } = report;
+  const lines: string[] = [
+    `# Report: ${firstLine(program.objective)}`,
+    "",
+    `Run \`${run.runId}\`, a line run of \`${line.branch}\`${line.head === undefined ? "" : ` (head \`${line.head.slice(0, 8)}\`)`}: **${run.status}**${
+      run.outcomeReason === undefined ? "" : `. ${run.outcomeReason}`
+    }`,
+    "",
+    `${line.compositions.length} composed; ${line.parked.length} parked; ${line.repairs.length} repair(s). Wall clock ${duration(run)}.`,
+    "",
+    ...renderLineLead(line),
+    ...renderNotVerified(report.stepAdjustments),
+    ...renderCompletionHistories(report),
+    ...renderPublication(report.publication),
+    ...renderCorrections(report.corrections),
+    ...renderRulings(report.rulings),
+    ...renderUnreviewed(report.unreviewed),
+    ...renderGateHealth(report.gateHealth),
+    ...renderDecisionGraph(report.graph),
+    ...renderTail(report),
+  ];
+  return `${lines.join("\n").trimEnd()}\n`;
+};
+
 export const renderReport = (report: RunReport): string => {
   const { program, run, strands } = report;
+  if (report.line !== undefined) return renderLineReport(report, report.line);
   const succeeded = strands.filter((strand) => strand.outcome === "succeeded").length;
   const provisional = strands.filter((strand) => strand.outcome === "provisional").length;
   const lines: string[] = [
@@ -2512,31 +2842,7 @@ export const renderReport = (report: RunReport): string => {
     "",
     ...renderPrerequisites(report.pendingPrerequisites),
     ...renderDecisionGraph(report.graph),
-    "## Usage",
-    "",
-    "Token counts are what each harness reported and are not comparable across harnesses.",
-    "A cost marked * is estimated from the price table, not reported by the harness. A cost",
-    "that is unknown had neither: give the org's price table a price for that model to estimate it.",
-    "Each attempt counts one figure in the cost column (reported when it has one, else estimated). The",
-    "Reported and Estimated columns split that by kind; provider-reported dollars are never summed with",
-    "an API-equivalent estimate.",
-    "",
-    "| Harness | Model | For | Routes | Input tokens | Output tokens | Cost per attempt (USD) | Reported (n: USD) | Estimated (n: USD) | Basis |",
-    "|---|---|---|---|---|---|---|---|---|---|",
-    ...report.usage.map(
-      (row) =>
-        `| ${row.harness} | ${row.model} | ${row.purpose} | ${row.attempts} | ${tokenCell(row, row.inputTokens)} | ${tokenCell(row, row.outputTokens)} | ${costCell(row)} | ${subtotalCell(row.reportedAttempts, row.reportedUsd)} | ${subtotalCell(row.estimatedAttempts, row.estimatedUsd)} | ${basisCell(row)} |`,
-    ),
-    ...renderBudget(report),
-    "",
-    ...renderOperations(report.operations),
-    ...renderDelivery(report.delivery),
-    ...renderHumanVerdict(report),
-    ...renderCompletions(report.completions),
-    ...renderReview(report.review),
-    ...renderMachine(report.infrastructure),
-    ...renderRequestEvidence(report.attempts),
-    ...renderDefinitions(report),
+    ...renderTail(report),
   ];
   return `${lines.join("\n").trimEnd()}\n`;
 };

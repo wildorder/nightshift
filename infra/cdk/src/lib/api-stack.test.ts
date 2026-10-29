@@ -483,6 +483,7 @@ describe("NightshiftApiStack", () => {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:ConditionCheckItem",
+          "dynamodb:DeleteItem",
         ]),
       );
       expect([...actions].filter((action) => !action.startsWith("dynamodb:"))).toContain(

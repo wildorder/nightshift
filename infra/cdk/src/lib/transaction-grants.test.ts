@@ -63,10 +63,9 @@ const tableWritersOf = (
   });
 
 describe("the table's writers and the adapter's transactions", () => {
-  it("grants ConditionCheckItem to every role that puts to the main table, while the adapter checks conditions", () => {
-    expect(adapter).toContain("ConditionCheck:");
+  const templates = () => {
     const app = () => new App({ context: { "aws:cdk:bundling-stacks": [] } });
-    const templates = [
+    return [
       Template.fromStack(new NightshiftApiStack(app(), "Api", { stage: "dev" })),
       Template.fromStack(
         new NightshiftRunnerStack(app(), "Runner", {
@@ -76,23 +75,24 @@ describe("the table's writers and the adapter's transactions", () => {
         }),
       ),
     ];
-    const writers = templates.flatMap(tableWritersOf);
-    expect(writers.length).toBeGreaterThan(0);
-    for (const writer of writers) {
-      expect(writer.actions, writer.role).toContain("dynamodb:ConditionCheckItem");
-    }
-  });
+  };
 
-  it("grants the API every action an item of the adapter's transactions needs", () => {
+  it("grants every role that puts to the main table every action an item of the adapter's transactions needs", () => {
+    // The adapter is shared: any writer may meet its condition checks, and any
+    // writer that puts a run ends one, which deletes the live-run marker
+    // (A-66). A writer granted less refuses at runtime what every test on the
+    // fake table passed (2026-10-27: the API; 2026-10-29: the publisher and the
+    // reconciler, which now start line runs).
     const kinds = transactionItemKinds();
     expect(kinds).toEqual(expect.arrayContaining(["Put", "Delete", "ConditionCheck"]));
-    const app = new App({ context: { "aws:cdk:bundling-stacks": [] } });
-    const template = Template.fromStack(new NightshiftApiStack(app, "Api", { stage: "dev" }));
-    const api = tableWritersOf(template).filter((writer) =>
-      writer.role.startsWith("ApiFunctionRole"),
-    );
-    expect(api.length).toBeGreaterThan(0);
-    const granted = api.flatMap((writer) => writer.actions);
-    for (const kind of kinds) expect(granted, kind).toContain(ITEM_ACTIONS[kind]);
+    const writers = templates().flatMap(tableWritersOf);
+    expect(writers.length).toBeGreaterThan(0);
+    const byRole = new Map<string, string[]>();
+    for (const writer of writers) {
+      byRole.set(writer.role, [...(byRole.get(writer.role) ?? []), ...writer.actions]);
+    }
+    for (const [role, granted] of byRole) {
+      for (const kind of kinds) expect(granted, `${role} ${kind}`).toContain(ITEM_ACTIONS[kind]);
+    }
   });
 });

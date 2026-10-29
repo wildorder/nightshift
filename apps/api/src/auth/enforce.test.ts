@@ -154,7 +154,8 @@ describe("enforce", () => {
       memberships: w.stores.memberships,
       nodes: w.stores.executionNodes,
       dispatches: w.stores.dispatches,
-      lineDispatches: w.stores.lineDispatches,
+      programContracts: w.stores.programContracts,
+      runs: w.stores.runs,
       projectOrgs: w.projectOrgs,
     });
     expect(principal).toEqual({ kind: "user", userId: w.userId, orgId: w.orgId });
@@ -172,7 +173,8 @@ describe("enforce", () => {
         memberships: w.stores.memberships,
         nodes: w.stores.executionNodes,
         dispatches: w.stores.dispatches,
-        lineDispatches: w.stores.lineDispatches,
+        programContracts: w.stores.programContracts,
+        runs: w.stores.runs,
         projectOrgs: w.projectOrgs,
       }),
     ).rejects.toMatchObject({ status: 403, code: "no_membership" });
@@ -208,7 +210,8 @@ describe("enforce", () => {
         memberships: w.stores.memberships,
         nodes: w.stores.executionNodes,
         dispatches: w.stores.dispatches,
-        lineDispatches: w.stores.lineDispatches,
+        programContracts: w.stores.programContracts,
+        runs: w.stores.runs,
         projectOrgs: unusable,
       }),
     ).resolves.toEqual(principal);
@@ -225,7 +228,8 @@ describe("enforce", () => {
       memberships: other.stores.memberships,
       nodes: other.stores.executionNodes,
       dispatches: other.stores.dispatches,
-      lineDispatches: other.stores.lineDispatches,
+      programContracts: other.stores.programContracts,
+      runs: other.stores.runs,
       projectOrgs: w.projectOrgs,
     }).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(HttpError);

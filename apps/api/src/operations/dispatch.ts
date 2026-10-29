@@ -16,6 +16,7 @@ import {
   calendarMonthOf,
   DEFAULT_COMPUTE_CEILINGS,
   type Dispatch,
+  type DispatchBody,
   DispatchBodySchema,
   type DispatchStatus,
   DispatchStatusSchema,
@@ -29,6 +30,7 @@ import {
   type OrgComputeUsage,
   type OrgId,
   PROVIDERS,
+  type ProgramContract,
   type Project,
   type Provider,
   type Run,
@@ -38,7 +40,10 @@ import {
 import {
   attemptsExhausted,
   beginReplacement,
+  chargeDispatchUsage,
   createUlidIdGenerator,
+  dispatchChargeDue,
+  dispatchChargeKey,
   emptyUtilization,
   estimateUsd,
   foldProgress,
@@ -47,13 +52,17 @@ import {
   IllegalTransitionError,
   installationGranting,
   isDispatchTerminal,
+  isLineProgram,
   isPlanned,
+  LINE_COMPOSITION_SECONDS,
   leaseExpiryFrom,
+  lineAdmission,
   mayDispatch,
   mayResume,
   meterUsd,
   nowIso,
-  occupiesComputeSlot,
+  parkBatch,
+  previousMonthOf,
   type RunScope,
   repositoryNameOf,
   runHoursOf,
@@ -62,9 +71,11 @@ import {
   transitionRun,
   volumeUsdPerHour,
 } from "@nightshift/core";
-import { type ApiDeps, HttpError, parseBody } from "../http.js";
+import { type ApiDeps, type ApiResponse, HttpError, parseBody } from "../http.js";
 import { runScopeFrom } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
+import { followLineRun } from "../runner/line-lifecycle.js";
+import { lineCapUsd, recordLineWaiting } from "../runner/line-support.js";
 import { EngineTokenExpiredError, mintEngineToken } from "../tokens/mint.js";
 import { requireProgram, requireProject, requireRun } from "./common.js";
 import { openProjectSecrets } from "./secrets.js";
@@ -106,31 +117,9 @@ const liveRunsOf = async (deps: ApiDeps, orgId: OrgId): Promise<readonly RunId[]
   return runs;
 };
 
-/** The statuses in which a line dispatch holds one of the org's compute slots. */
-const SLOT_DISPATCH_STATUSES: readonly DispatchStatus[] =
-  DispatchStatusSchema.options.filter(occupiesComputeSlot);
-
-/**
- * The org's line dispatches holding a compute slot (Pipkin M1b): a machine
- * being made, up, or being stopped. A `requested` one has no machine and holds
- * none, so lines waiting for capacity cannot deadlock each other.
- */
-const slotLinesOf = async (deps: ApiDeps, orgId: OrgId): Promise<number> => {
-  const lines = await deps.stores.lineDispatches.listByStatus(SLOT_DISPATCH_STATUSES);
-  const orgOf = new Map<string, OrgId | undefined>();
-  let count = 0;
-  for (const line of lines) {
-    if (!orgOf.has(line.projectId)) {
-      orgOf.set(line.projectId, (await deps.stores.projects.get(line.projectId))?.orgId);
-    }
-    if (orgOf.get(line.projectId) === orgId) count += 1;
-  }
-  return count;
-};
-
-/** What the org's concurrency ceiling counts: its live runs and its line dispatches holding a slot. */
+/** What the org's concurrency ceiling counts: its live runs, a line's among them. */
 const concurrentOf = async (deps: ApiDeps, orgId: OrgId): Promise<number> =>
-  (await liveRunsOf(deps, orgId)).length + (await slotLinesOf(deps, orgId));
+  (await liveRunsOf(deps, orgId)).length;
 
 /**
  * `POST …/runs/{runId}/dispatch` — authorise a machine for a run.
@@ -165,9 +154,19 @@ const endRefusedStart = async (
   }
 };
 
-export const createDispatch: Handler = async ({ deps, request, params }) => {
-  const scope = runScopeFrom(params);
-  const body = parseBody(DispatchBodySchema, request.body);
+export const createDispatch: Handler = async ({ deps, request, params }) =>
+  admitDispatch(deps, runScopeFrom(params), parseBody(DispatchBodySchema, request.body));
+
+/**
+ * The admission and the store of a dispatch, with every check the route makes.
+ * The route calls it with what a client sent; the plane calls it for a run it
+ * started itself (a line's), so the two cannot differ.
+ */
+export const admitDispatch = async (
+  deps: ApiDeps,
+  scope: RunScope,
+  body: DispatchBody,
+): Promise<ApiResponse> => {
   const run = await requireRun(deps.stores, scope);
   const program = await requireProgram(deps.stores, scope);
   const project = await requireProject(deps.stores, scope.projectId);
@@ -196,20 +195,24 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
   // Every refusal from here on ends the run it was asked for: a pending run
   // with no machine holds its program's one live slot (A-66), and a start the
   // plane refused must not keep the program from the next one (2026-10-28).
+  const line = isLineProgram(program);
   const admit = async () => {
-    if (!isPlanned(program) || program.status !== "ratified") {
-      throw new HttpError(
-        409,
-        "plan_not_ratified",
-        `program ${scope.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
-      );
-    }
-    if (program.planHash !== body.input.planHash) {
-      throw new HttpError(
-        409,
-        "plan_changed",
-        "the plan hash dispatched is not the one ratified; the plan changed since",
-      );
+    // A line program is the plane's own: no ratification, no plan hash.
+    if (!line) {
+      if (!isPlanned(program) || program.status !== "ratified") {
+        throw new HttpError(
+          409,
+          "plan_not_ratified",
+          `program ${scope.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
+        );
+      }
+      if (program.planHash !== body.input.planHash) {
+        throw new HttpError(
+          409,
+          "plan_changed",
+          "the plan hash dispatched is not the one ratified; the plan changed since",
+        );
+      }
     }
 
     const dispatcher = deps.dispatcher;
@@ -222,10 +225,35 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
     }
 
     const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
+    if (line) {
+      // The project's self-started cap and the org's month ceiling; a refusal
+      // is recorded on the line as what it is waiting for.
+      const branch = body.input.branch;
+      const admission = await lineAdmission(deps, {
+        projectId: scope.projectId,
+        branch,
+        capUsd: await lineCapUsd(deps.stores, scope.projectId, branch),
+        orgId: project.orgId,
+      });
+      if (!admission.ok) {
+        await recordLineWaiting(
+          deps.stores,
+          deps.clock,
+          { projectId: scope.projectId, branch },
+          { reason: admission.reason, detail: admission.detail },
+        );
+        throw new HttpError(409, admission.reason, admission.detail);
+      }
+    }
     // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
     // org's recorded installations must grant the repository, and the branch's
     // head at GitHub must be the SHA dispatched.
-    await assertGithubInput(deps, orgConfig?.installations ?? [], body.input);
+    await assertGithubInput(
+      deps,
+      orgConfig?.installations ?? [],
+      body.input,
+      line ? program : undefined,
+    );
 
     const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
     const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
@@ -239,7 +267,17 @@ export const createDispatch: Handler = async ({ deps, request, params }) => {
       monthSpentUsd: usage.meteredUsd,
       concurrentRuns: await concurrentOf(deps, project.orgId),
     });
-    if (refusal !== undefined) throw new HttpError(409, refusal.reason, refusal.detail);
+    if (refusal !== undefined) {
+      if (line && refusal.reason === "concurrency_over_ceiling") {
+        await recordLineWaiting(
+          deps.stores,
+          deps.clock,
+          { projectId: scope.projectId, branch: body.input.branch },
+          { reason: "org_concurrency", detail: refusal.detail },
+        );
+      }
+      throw new HttpError(409, refusal.reason, refusal.detail);
+    }
     return { dispatcher, runHours, estimatedUsd };
   };
   const { dispatcher, runHours, estimatedUsd } = await admit().catch(async (error: unknown) => {
@@ -306,6 +344,7 @@ const assertGithubInput = async (
   deps: ApiDeps,
   installations: readonly GitHubInstallation[],
   input: Dispatch["input"],
+  line?: ProgramContract,
 ): Promise<void> => {
   if (deps.github === undefined) {
     throw new HttpError(
@@ -332,7 +371,16 @@ const assertGithubInput = async (
       `${input.repositoryUrl} is not among the repositories granted by the org's installation${installations.length === 1 ? "" : "s"} on ${accounts.join(", ")}`,
     );
   }
-  const head = await deps.github.branchHead(installation.installationId, repository, input.branch);
+  let head = await deps.github.branchHead(installation.installationId, repository, input.branch);
+  // A line's ref may not exist yet: the first owner starts from the base
+  // branch's head, which is where the line ref will be cut.
+  if (head === undefined && line !== undefined) {
+    head = await deps.github.branchHead(
+      installation.installationId,
+      repository,
+      line.repository.baseBranch,
+    );
+  }
   if (head === undefined) {
     throw new HttpError(
       409,
@@ -347,6 +395,34 @@ const assertGithubInput = async (
       `${repository}'s ${input.branch} stands at ${head.slice(0, 12)} at GitHub, not ${input.baseSha.slice(0, 12)}; push, or dispatch what is pushed`,
     );
   }
+};
+
+/**
+ * The commit a line run starts from, as `assertGithubInput` will judge it: the
+ * line ref's head at GitHub, or the base branch's when the ref does not exist
+ * yet. `undefined` when GitHub cannot say; the admission then refuses with the
+ * reason.
+ */
+export const lineBaseSha = async (
+  deps: ApiDeps,
+  project: Project,
+  program: ProgramContract,
+): Promise<string | undefined> => {
+  if (deps.github === undefined) return undefined;
+  const repository = repositoryNameOf(program.repository.url);
+  const installation =
+    repository === undefined
+      ? undefined
+      : installationGranting(
+          (await deps.stores.orgConfigs.get(project.orgId))?.installations ?? [],
+          repository,
+        );
+  if (repository === undefined || installation === undefined) return undefined;
+  const { installationId } = installation;
+  return (
+    (await deps.github.branchHead(installationId, repository, program.repository.programBranch)) ??
+    (await deps.github.branchHead(installationId, repository, program.repository.baseBranch))
+  );
 };
 
 export const getDispatch: Handler = async ({ deps, params }) => ({
@@ -506,6 +582,7 @@ export const heartbeat: Handler = async (context) => {
     updatedAt: at,
   };
   await deps.stores.dispatches.put(dispatch);
+  await followLineRun(deps.stores, deps.clock, dispatch);
 
   const project = await requireProject(deps.stores, scope.projectId);
   if (live && body.refreshedCredentials?.openai !== undefined) {
@@ -534,25 +611,50 @@ export const heartbeat: Handler = async (context) => {
       ceilings,
     ) * 3600;
   const hours = ceilingSeconds / 3600;
-  if (live && (meteredSeconds > ceilingSeconds || meteredUsd > ceilings.maxUsdPerRun)) {
-    const code = meteredUsd > ceilings.maxUsdPerRun ? "run_cap" : "wall_clock";
+  // A line run is also metered against the project's own cap (Pipkin).
+  // The charge is made on every beat, a stopping or terminal one included, so
+  // a run's final spend reaches the usage and a failed write is repaired by the
+  // next beat; only the decision to stop on it is a live dispatch's.
+  const charged = await chargeLineRun(deps, dispatch, at);
+  const lineCap = live ? charged : undefined;
+  if (
+    live &&
+    (lineCap !== undefined || meteredSeconds > ceilingSeconds || meteredUsd > ceilings.maxUsdPerRun)
+  ) {
+    const code =
+      lineCap !== undefined
+        ? "line_cap"
+        : meteredUsd > ceilings.maxUsdPerRun
+          ? "run_cap"
+          : "wall_clock";
     dispatch = transitionDispatch(
       {
         ...dispatch,
         failure: {
           code,
           message:
-            code === "run_cap"
-              ? `metered $${meteredUsd.toFixed(2)} crossed the $${ceilings.maxUsdPerRun.toFixed(2)} cap per run`
-              : `metered ${Math.round(meteredSeconds / 60)} minutes crossed the ${hours}-hour wall clock`,
+            code === "line_cap"
+              ? (lineCap?.message ?? "")
+              : code === "run_cap"
+                ? `metered $${meteredUsd.toFixed(2)} crossed the $${ceilings.maxUsdPerRun.toFixed(2)} cap per run`
+                : `metered ${Math.round(meteredSeconds / 60)} minutes crossed the ${hours}-hour wall clock`,
         },
       },
       "stop",
       at,
     );
     await deps.stores.dispatches.put(dispatch);
+    if (lineCap !== undefined) {
+      await recordLineWaiting(
+        deps.stores,
+        deps.clock,
+        { projectId: scope.projectId, branch: lineCap.branch },
+        { reason: "monthly_cap", detail: lineCap.message },
+      );
+    }
     stop = true;
   }
+  if (live) await parkHeldBatch(deps, dispatch, at);
   if (live && attemptsExhausted(dispatch) && dispatch.status === "provisioning") {
     // A replacement past the limit should never have launched; say so loudly.
     stop = true;
@@ -568,6 +670,74 @@ export const heartbeat: Handler = async (context) => {
     ...(await secretsFor(deps, project, dispatch, stop)),
   };
   return { status: 200, body: HeartbeatResponseSchema.parse(response) };
+};
+
+/**
+ * What a line run's beat does besides a run's: charge the dispatch's cumulative
+ * metered dollars to the project's self-started usage, keyed
+ * `<branch>#<runId>`, and say whether that put the project at its cap. Idempotent
+ * by the keyed charge, as `lineHeartbeat`'s is. Nothing for any other run.
+ */
+const chargeLineRun = async (
+  deps: ApiDeps,
+  dispatch: Dispatch,
+  at: IsoTimestamp,
+): Promise<{ readonly branch: string; readonly message: string } | undefined> => {
+  const program = await requireProgram(deps.stores, dispatch);
+  if (!isLineProgram(program)) return undefined;
+  const branch = dispatch.input.branch;
+  const projectId = dispatch.projectId;
+  const month = calendarMonthOf(at);
+  const capUsd = await lineCapUsd(deps.stores, projectId, branch);
+  const held = await deps.stores.projectSelfStartedUsage.get(projectId, month);
+  let usage = held;
+  const key = dispatchChargeKey(branch, dispatch.runId);
+  const baselineUsd =
+    held !== undefined && held.charged?.[key] !== undefined
+      ? 0
+      : ((await deps.stores.projectSelfStartedUsage.get(projectId, previousMonthOf(month)))
+          ?.charged?.[key] ?? 0);
+  const charge = { month, key, dispatchUsd: dispatch.spend.meteredUsd, baselineUsd };
+  if (
+    dispatchChargeDue(held, charge) ||
+    (held !== undefined && held.meteredUsd >= capUsd && held.reachedAt === undefined)
+  ) {
+    usage = await deps.stores.projectSelfStartedUsage.update(projectId, month, (row) =>
+      chargeDispatchUsage(row, { projectId, capUsd, ...charge }, at),
+    );
+  }
+  if (usage === undefined || usage.month !== month || usage.meteredUsd < capUsd) return undefined;
+  return {
+    branch,
+    message: `the project's self-started spend $${usage.meteredUsd.toFixed(2)} reached the $${capUsd.toFixed(2)} monthly cap for ${month}`,
+  };
+};
+
+/** A batch a line run has held past the composition hour is parked, whole. */
+const parkHeldBatch = async (
+  deps: ApiDeps,
+  dispatch: Dispatch,
+  at: IsoTimestamp,
+): Promise<void> => {
+  if (!isLineProgram(await requireProgram(deps.stores, dispatch))) return;
+  await deps.stores.lines.update(dispatch.projectId, dispatch.input.branch, (row) => {
+    const batch = row?.batch;
+    if (row === undefined || batch === undefined) return undefined;
+    if (Date.parse(at) - Date.parse(batch.takenAt) <= LINE_COMPOSITION_SECONDS * 1000) {
+      return undefined;
+    }
+    const parked = parkBatch(
+      row,
+      {
+        batchId: batch.batchId,
+        ranges: batch.entries.map((entry) => ({ program: entry.program, upTo: entry.upTo })),
+        reason: "composition_hour",
+      },
+      (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp"),
+      at,
+    );
+    return parked.ok ? parked.record : undefined;
+  });
 };
 
 /** The engine's renewed token, when the plane can mint one and the runner should carry on. */

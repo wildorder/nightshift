@@ -1,15 +1,14 @@
 /**
- * The line machine's lifecycle over fakes (Pipkin M1b, J5): provisioning, the
- * reconciler and cleanup, held to the records they leave.
+ * The reconciler's line work over fakes (Pipkin M1b): a line with queued work
+ * and no live run gets a run of its line program, and the publisher is asked
+ * about what a run or a line still owes.
  */
 import { generateKeyPairSync, sign as signWith } from "node:crypto";
-import type { LineDispatch, OrgId, ProjectId } from "@nightshift/contracts";
+import type { OrgId, ProjectId } from "@nightshift/contracts";
 import {
-  calendarMonthOf,
   DEFAULT_COMPUTE_CEILINGS,
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
-  emptyComputeUsage,
 } from "@nightshift/contracts";
 import type {
   Clock,
@@ -19,23 +18,19 @@ import type {
   LaunchRequest,
 } from "@nightshift/core";
 import {
-  BOOT_LEASE_SECONDS,
   createFixtures,
   FIXTURE_COMMIT,
   type Fixtures,
-  firstTokenParameterName,
+  lineProgramId,
   makeDispatch,
-  makeLineDispatch,
   makeLineRecord,
+  makeProgramContract,
   makeProject,
   makeRun,
-  makeWarmCache,
-  meterProjectUsage,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
-import { cleanupLineDispatch } from "./line-cleanup.js";
-import { provisionLineDispatch } from "./provision-line.js";
+import type { ProvisionDeps } from "./provision.js";
 import { type PublisherRequest, reconcile } from "./reconcile.js";
 
 const START = Date.parse("2026-10-15T12:00:00.000Z");
@@ -127,10 +122,12 @@ interface World {
   readonly orgId: OrgId;
   readonly asked: PublisherRequest[];
   readonly lineFixtures: Fixtures[];
-  deps(): Parameters<typeof provisionLineDispatch>[0];
+  /** The runs the line's plane was asked to provision. */
+  readonly provisioned: string[];
+  deps(): ProvisionDeps;
   reconcile(): Promise<Record<string, number>>;
   /** Another project of the same org with a line carrying queued work. */
-  addLine(options?: { work?: boolean; dispatched?: boolean }): Promise<Fixtures>;
+  addLine(options?: { work?: boolean }): Promise<Fixtures>;
 }
 
 const world = async (ceiling?: number): Promise<World> => {
@@ -140,19 +137,27 @@ const world = async (ceiling?: number): Promise<World> => {
   const clock = { at: START, now: () => clock.at };
   const orgId = createFixtures().ids.next("org") as OrgId;
   const asked: PublisherRequest[] = [];
+  const provisioned: string[] = [];
   const lineFixtures: Fixtures[] = [];
-  if (ceiling !== undefined) {
-    await stores.orgConfigs.put({
-      schemaVersion: 1,
-      orgId,
-      routingPolicy: DEFAULT_ROUTING_POLICY,
-      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
-      installations: [],
-      compute: { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: ceiling },
-      version: 1,
-      updatedAt: new Date(START).toISOString(),
-    });
-  }
+  await stores.orgConfigs.put({
+    schemaVersion: 1,
+    orgId,
+    routingPolicy: DEFAULT_ROUTING_POLICY,
+    examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+    installations: [
+      {
+        installationId: 1,
+        account: "wildorder",
+        repositories: ["wildorder/fixture"],
+        recordedAt: new Date(START).toISOString(),
+      },
+    ],
+    ...(ceiling === undefined
+      ? {}
+      : { compute: { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: ceiling } }),
+    version: 1,
+    updatedAt: new Date(START).toISOString(),
+  });
   const deps = () => ({
     stores,
     compute,
@@ -178,12 +183,37 @@ const world = async (ceiling?: number): Promise<World> => {
     asked,
     lineFixtures,
     deps,
+    provisioned,
     reconcile: () =>
-      reconcile({ provision: deps(), ids, askPublisher: async (r) => void asked.push(r) }),
-    addLine: async ({ work = true, dispatched = true } = {}) => {
+      reconcile({
+        provision: deps(),
+        plane: {
+          stores,
+          clock,
+          ids,
+          github: {
+            branchHead: async () => FIXTURE_COMMIT,
+          } as never,
+          dispatcher: {
+            provision: async (scope: { runId: string }) => void provisioned.push(scope.runId),
+          } as never,
+        },
+        askPublisher: async (r) => void asked.push(r),
+      }),
+    addLine: async ({ work = true } = {}) => {
       const f = createFixtures();
       lineFixtures.push(f);
       await stores.projects.put(makeProject(f, { orgId }));
+      await stores.programContracts.put(
+        makeProgramContract(f, {
+          repository: {
+            url: "https://github.com/wildorder/fixture",
+            baseBranch: "main",
+            programBranch: "program/fixture",
+          },
+          line: { branch: BRANCH },
+        }),
+      );
       await stores.lines.update(f.scope.projectId, BRANCH, () =>
         makeLineRecord(f, {
           queue: work
@@ -197,552 +227,47 @@ const world = async (ceiling?: number): Promise<World> => {
             : [],
         }),
       );
-      if (dispatched) {
-        await stores.lineDispatches.start(
-          makeLineDispatch(f, { updatedAt: new Date(START - 10 * 60_000).toISOString() }),
-        );
-      }
       return f;
     },
   };
 };
 
-const lineOf = (f: Fixtures) => ({ projectId: f.scope.projectId, branch: BRANCH });
-const dispatchOf = async (w: World, f: Fixtures) =>
-  (await w.stores.lineDispatches.get(f.scope.projectId, BRANCH)) as LineDispatch;
-
-describe("provisionLineDispatch", () => {
-  it("launches the image with the project's warm snapshot, the line tags and a first token", async () => {
-    const w = await world();
-    const f = await w.addLine();
-    await w.stores.warmCaches.put(makeWarmCache(f));
-    const outcome = await provisionLineDispatch(w.deps(), lineOf(f));
-    expect(outcome.kind).toBe("provisioned");
-    const dispatch = await dispatchOf(w, f);
-    expect(dispatch).toMatchObject({
-      status: "provisioning",
-      instanceId: "i-1",
-      volumeId: "vol-1",
-      amiVersion: "1.0.5",
-      instanceType: "c8id.2xlarge",
-    });
-    expect(dispatch.attempts[0]?.instanceId).toBe("i-1");
-    const launch = w.compute.launches[0];
-    expect(launch).toMatchObject({
-      imageId: "ami-1",
-      volume: { device: "/dev/xvdf", sizeGiB: 100, fromSnapshotId: "snap-fixture" },
-      clientToken: `${dispatch.engineAgentId}-1`,
-      tags: {
-        "nightshift:managed": "true",
-        "nightshift-kind": "line",
-        "nightshift-project": f.scope.projectId,
-        "nightshift-line": BRANCH,
-        "nightshift-agent": dispatch.engineAgentId,
-        "nightshift-generation": "1",
-        "nightshift-stage": "dev",
-        "nightshift-api": "https://api.dev.nightshift.invalid",
-      },
-    });
-    expect(launch?.tags.Name).toContain("line");
-    expect([...w.tokens.parameters.keys()]).toEqual([
-      firstTokenParameterName("dev", dispatch.engineAgentId, 1),
-    ]);
-  });
-
-  it("launches one machine for two concurrent calls; the loser is skipped", async () => {
-    const w = await world();
-    const f = await w.addLine();
-    const outcomes = await Promise.all([
-      provisionLineDispatch(w.deps(), lineOf(f)),
-      provisionLineDispatch(w.deps(), lineOf(f)),
-    ]);
-    expect(outcomes.map((o) => o.kind).sort()).toEqual(["provisioned", "skipped"]);
-    expect(w.compute.launches).toHaveLength(1);
-    expect(w.compute.launches[0]?.clientToken).toMatch(/-1$/);
-    // A later duplicate delivery finds the machine already named.
-    expect((await provisionLineDispatch(w.deps(), lineOf(f))).kind).toBe("skipped");
-    expect(w.compute.launches).toHaveLength(1);
-  });
-
-  it("does not launch when the project's cap was reached while it waited", async () => {
-    const w = await world();
-    const f = await w.addLine();
-    const month = calendarMonthOf(new Date(w.clock.now()).toISOString());
-    await w.stores.projectSelfStartedUsage.update(f.scope.projectId, month, (current) =>
-      meterProjectUsage(
-        current,
-        { projectId: f.scope.projectId, month, deltaUsd: 30, capUsd: 25 },
-        new Date(w.clock.now()).toISOString(),
-      ),
-    );
-    const outcome = await provisionLineDispatch(w.deps(), lineOf(f));
-    expect(outcome.kind).toBe("failed");
-    expect(w.compute.launches).toHaveLength(0);
-    const dispatch = await dispatchOf(w, f);
-    expect(dispatch).toMatchObject({ status: "failed", failure: { code: "line_cap" } });
-    expect(dispatch.cleanup.settledAt).toBeDefined();
-    const line = await w.stores.lines.get(f.scope.projectId, BRANCH);
-    expect(line?.waiting?.reason).toBe("monthly_cap");
-    expect(line?.queue).toHaveLength(1);
-  });
-
-  it("does not launch when the org's month is spent", async () => {
-    const w = await world();
-    const f = await w.addLine();
-    const month = calendarMonthOf(new Date(w.clock.now()).toISOString());
-    await w.stores.computeLedger.put({
-      ...emptyComputeUsage(w.orgId, month, new Date(w.clock.now()).toISOString()),
-      meteredUsd: DEFAULT_COMPUTE_CEILINGS.maxUsdPerMonth,
-    });
-    await provisionLineDispatch(w.deps(), lineOf(f));
-    expect(w.compute.launches).toHaveLength(0);
-    expect(await dispatchOf(w, f)).toMatchObject({
-      status: "failed",
-      failure: { code: "org_month" },
-    });
-    expect((await w.stores.lines.get(f.scope.projectId, BRANCH))?.waiting?.reason).toBe(
-      "org_month_ceiling",
-    );
-  });
-
-  it("stays requested with org_concurrency at the ceiling, and a waiting request holds no slot", async () => {
-    const w = await world(1);
-    const f = await w.addLine();
-    // A live run of the org holds the one slot.
-    const run = createFixtures();
-    await w.stores.projects.put(makeProject(run, { orgId: w.orgId }));
-    await w.stores.runs.put(makeRun(run, { status: "pending", location: "remote" }));
-    await w.stores.dispatches.put(makeDispatch(run, { status: "running" }));
-    const outcome = await provisionLineDispatch(w.deps(), lineOf(f));
-    expect(outcome).toEqual({ kind: "waiting", reason: "org_concurrency" });
-    expect(w.compute.launches).toHaveLength(0);
-    expect((await dispatchOf(w, f)).status).toBe("requested");
-    expect((await w.stores.lines.get(f.scope.projectId, BRANCH))?.waiting?.reason).toBe(
-      "org_concurrency",
-    );
-    // The slot frees: the same request now launches and the waiting is cleared.
-    await w.stores.dispatches.put(makeDispatch(run, { status: "failed" }));
-    expect((await provisionLineDispatch(w.deps(), lineOf(f))).kind).toBe("provisioned");
-    expect((await w.stores.lines.get(f.scope.projectId, BRANCH))?.waiting).toBeUndefined();
-  });
-});
-
-describe("reconcile: line dispatches", () => {
-  const live = (f: Fixtures, over: Partial<LineDispatch> = {}) =>
-    makeLineDispatch(f, {
-      status: "running",
-      instanceId: "i-old",
-      volumeId: "vol-old",
-      engineAgentId: f.ids.next("agent"),
-      leaseExpiresAt: new Date(START - 60_000).toISOString(),
-      attempts: [
-        {
-          generation: 1,
-          reason: "dispatch",
-          startedAt: "2026-10-15T11:00:00.000Z",
-          instanceId: "i-old",
-        },
-      ],
-      ...over,
-    });
-  const install = async (w: World, f: Fixtures, dispatch: LineDispatch) => {
-    await w.stores.lineDispatches.update(f.scope.projectId, BRANCH, () => dispatch);
-    w.compute.instances.set("i-old", {
-      instanceId: "i-old",
-      state: "running",
-      availabilityZone: "us-west-2a",
-    });
-  };
-
-  it("provisions a stale requested dispatch", async () => {
-    const w = await world();
-    const f = await w.addLine();
-    const counts = await w.reconcile();
-    expect(counts["line-provision:provisioned"]).toBe(1);
-    expect((await dispatchOf(w, f)).status).toBe("provisioning");
-    expect(w.compute.launches).toHaveLength(1);
-  });
-
-  it("replaces a machine that never heartbeats once its boot lease has passed", async () => {
-    const w = await world();
-    const f = await w.addLine();
-    await w.reconcile();
-    const launched = await dispatchOf(w, f);
-    expect(launched).toMatchObject({ status: "provisioning", instanceId: "i-1" });
-    expect(launched.leaseExpiresAt).toBe(
-      new Date(w.clock.now() + BOOT_LEASE_SECONDS * 1000).toISOString(),
-    );
-    // Within the boot lease the quiet machine is left to boot.
-    w.clock.at += (BOOT_LEASE_SECONDS - 1) * 1000;
-    await w.reconcile();
-    expect(w.compute.terminated).toEqual([]);
-    // Past it, the machine is lost: it goes, and a replacement takes its place.
-    w.clock.at += 2_000;
-    await w.reconcile();
-    await w.reconcile();
-    expect(w.compute.terminated).toContain("i-1");
-    expect(await dispatchOf(w, f)).toMatchObject({ generation: 2, status: "provisioning" });
-  });
-
-  it("replaces a lost lease with a higher generation", async () => {
-    const w = await world();
-    const f = await w.addLine({ dispatched: false });
-    await w.stores.lineDispatches.start(makeLineDispatch(f));
-    await install(w, f, live(f));
-    // The first pass asks the old machine to go; the next sees it gone.
-    await w.reconcile();
-    const counts = await w.reconcile();
-    expect(counts["line-lease:replacing"]).toBe(1);
-    expect(w.compute.terminated).toContain("i-old");
-    const dispatch = await dispatchOf(w, f);
-    expect(dispatch).toMatchObject({ generation: 2, status: "provisioning" });
-    expect(dispatch.instanceId).not.toBe("i-old");
-    expect(w.compute.launches[0]?.tags["nightshift-generation"]).toBe("2");
-    expect(w.compute.launches[0]?.clientToken).toBe(`${dispatch.engineAgentId}-2`);
-  });
-
-  describe("lost lease: the old machine must be gone before a replacement", () => {
-    const setup = async () => {
-      const w = await world();
-      const f = await w.addLine({ dispatched: false });
-      await w.stores.lineDispatches.start(makeLineDispatch(f));
-      await install(
-        w,
-        f,
-        live(f, {
-          instanceId: "i-still-running",
-          attempts: [
-            {
-              generation: 1,
-              reason: "dispatch",
-              startedAt: "2026-10-15T11:00:00.000Z",
-              instanceId: "i-still-running",
-            },
-          ],
-        }),
-      );
-      w.compute.instances.set("i-still-running", {
-        instanceId: "i-still-running",
-        state: "running",
-        availabilityZone: "us-west-2a",
-      });
-      return { w, f };
-    };
-
-    it("does not replace when terminate throws, and records the failure", async () => {
-      const { w, f } = await setup();
-      w.compute.terminate = async () => {
-        throw new Error("EC2 unavailable");
-      };
-      const counts = await w.reconcile();
-      expect(counts["line-lease:terminating"]).toBe(1);
-      expect(counts["line-lease:replacing"]).toBeUndefined();
-      const after = await dispatchOf(w, f);
-      expect(after).toMatchObject({ generation: 1, status: "running" });
-      expect(after.attempts[0]?.terminationFailed).toBe(true);
-      expect(after.cleanup.failures).toEqual([expect.stringContaining("EC2 unavailable")]);
-      expect(w.compute.launches).toHaveLength(0);
-    });
-
-    it("does not replace when describe throws", async () => {
-      const { w, f } = await setup();
-      w.compute.describe = async () => {
-        throw new Error("throttled");
-      };
-      const counts = await w.reconcile();
-      expect(counts["line-lease:terminating"]).toBe(1);
-      const after = await dispatchOf(w, f);
-      expect(after.generation).toBe(1);
-      expect(after.cleanup.failures).toEqual([expect.stringContaining("describe i-still-running")]);
-      expect(w.compute.terminated).toEqual([]);
-      expect(w.compute.launches).toHaveLength(0);
-    });
-
-    it("terminates first, then launches exactly one replacement once the machine is gone", async () => {
-      const { w, f } = await setup();
-      const first = await w.reconcile();
-      expect(first["line-lease:terminating"]).toBe(1);
-      expect(w.compute.terminated).toEqual(["i-still-running"]);
-      expect(await dispatchOf(w, f)).toMatchObject({ generation: 1, status: "running" });
-      expect(w.compute.launches).toHaveLength(0);
-      // The fake marks it terminated at once: the next pass observes it gone.
-      const second = await w.reconcile();
-      expect(second["line-lease:replacing"]).toBe(1);
-      expect(w.compute.terminated).toEqual(["i-still-running"]);
-      expect(await dispatchOf(w, f)).toMatchObject({ generation: 2 });
-      expect(w.compute.launches).toHaveLength(1);
-      expect((await dispatchOf(w, f)).attempts[0]?.terminatedAt).toBeDefined();
-      await w.reconcile();
-      expect(w.compute.launches).toHaveLength(1);
-    });
-
-    it("replaces at once when the instance is not found", async () => {
-      const { w, f } = await setup();
-      w.compute.instances.delete("i-still-running");
-      const counts = await w.reconcile();
-      expect(counts["line-lease:replacing"]).toBe(1);
-      expect(w.compute.terminated).toEqual([]);
-      expect(await dispatchOf(w, f)).toMatchObject({ generation: 2 });
-      expect(w.compute.launches).toHaveLength(1);
-    });
-  });
-
-  it("ends the dispatch failed once the attempts are exhausted", async () => {
-    const w = await world();
-    const f = await w.addLine({ dispatched: false });
-    await w.stores.lineDispatches.start(makeLineDispatch(f));
-    const attempts = [1, 2, 3].map((generation) => ({
-      generation,
-      reason: generation === 1 ? ("dispatch" as const) : ("lease_lost" as const),
-      startedAt: "2026-10-15T11:00:00.000Z",
-    }));
-    await install(w, f, live(f, { generation: 3, attempts }));
-    // The first pass asks the old machine to go; the next sees it gone.
-    await w.reconcile();
-    const counts = await w.reconcile();
-    expect(counts["line-lease:exhausted"]).toBe(1);
-    expect(await dispatchOf(w, f)).toMatchObject({
-      status: "failed",
-      failure: { code: "recovery_exhausted" },
-    });
-    expect(w.compute.launches).toHaveLength(0);
-  });
-
-  it("does not replace a lost lease once the cap is reached; it ends failed and waits", async () => {
-    const w = await world();
-    const f = await w.addLine({ dispatched: false });
-    await w.stores.lineDispatches.start(makeLineDispatch(f));
-    await install(w, f, live(f));
-    const month = calendarMonthOf(new Date(START).toISOString());
-    await w.stores.projectSelfStartedUsage.update(f.scope.projectId, month, (current) =>
-      meterProjectUsage(
-        current,
-        { projectId: f.scope.projectId, month, deltaUsd: 25, capUsd: 25 },
-        new Date(START).toISOString(),
-      ),
-    );
-    // The first pass asks the old machine to go; the next sees it gone.
-    await w.reconcile();
-    const counts = await w.reconcile();
-    expect(counts["line-lease:refused"]).toBe(1);
-    expect(w.compute.launches).toHaveLength(0);
-    expect(await dispatchOf(w, f)).toMatchObject({
-      status: "failed",
-      generation: 1,
-      failure: { code: "line_cap" },
-    });
-    const line = await w.stores.lines.get(f.scope.projectId, BRANCH);
-    expect(line?.waiting?.reason).toBe("monthly_cap");
-    expect(line?.queue).toHaveLength(1);
-  });
-
-  it("leaves a live dispatch with a held lease alone", async () => {
-    const w = await world();
-    const f = await w.addLine({ dispatched: false });
-    await w.stores.lineDispatches.start(makeLineDispatch(f));
-    await install(w, f, live(f, { leaseExpiresAt: new Date(START + 60_000).toISOString() }));
-    const counts = await w.reconcile();
-    expect(counts["line-lease:alive"]).toBe(1);
-    expect(w.compute.terminated).toEqual([]);
-  });
-
-  it("cleans up a failed dispatch without a snapshot, settles it, then starts exactly one new dispatch", async () => {
-    const w = await world();
-    const f = await w.addLine({ dispatched: false });
-    await w.stores.lineDispatches.start(makeLineDispatch(f));
-    await install(
-      w,
-      f,
-      live(f, { status: "failed", failure: { code: "wall_clock", message: "late" } }),
-    );
-    const started: string[] = [];
-    const cleanupDeps = {
-      stores: w.stores,
-      compute: w.compute,
-      clock: w.clock,
-      ids: createFixtures().ids,
-      startMachine: async (line: { branch: string }) => void started.push(line.branch),
-    };
-    const dispatchNow = () => dispatchOf(w, f);
-    // First pass asks the instance to go (here it is gone at once); the next sees it.
-    await cleanupLineDispatch(cleanupDeps, await dispatchNow());
-    expect(w.compute.terminated).toEqual(["i-old"]);
-    expect((await dispatchNow()).cleanup.settledAt).toBeUndefined();
-    await cleanupLineDispatch(cleanupDeps, await dispatchNow());
-    expect(w.compute.deletedVolumes).toEqual(["vol-old"]);
-    expect(w.compute.snapshots).toEqual([]);
-    const settled = await dispatchNow();
-    // The new dispatch is stored in the same pass once settled and the queue is non-empty.
-    expect(started).toEqual([BRANCH]);
-    expect(settled).toMatchObject({ status: "requested", generation: 2 });
-    // Another pass finds a live dispatch and starts nothing.
-    await cleanupLineDispatch(cleanupDeps, await dispatchNow());
-    expect(started).toEqual([BRANCH]);
-    const previous = await w.stores.lineDispatches.get(f.scope.projectId, BRANCH);
-    expect(previous?.generation).toBe(2);
-  });
-
-  it("settles at once a dispatch that never launched anything", async () => {
-    const w = await world();
-    const f = await w.addLine({ work: false, dispatched: false });
-    await w.stores.lineDispatches.start(makeLineDispatch(f));
-    await w.stores.lineDispatches.update(f.scope.projectId, BRANCH, (d) => ({
-      ...d,
-      status: "failed",
-      failure: { code: "line_cap", message: "capped" },
-    }));
-    await cleanupLineDispatch(
-      {
-        stores: w.stores,
-        compute: w.compute,
-        clock: w.clock,
-        ids: createFixtures().ids,
-        startMachine: async () => undefined,
-      },
-      await dispatchOf(w, f),
-    );
-    expect((await dispatchOf(w, f)).cleanup.settledAt).toBeDefined();
-    expect(w.compute.terminated).toEqual([]);
-    expect(w.compute.deletedVolumes).toEqual([]);
-  });
-
-  describe("when describe fails", () => {
-    const setup = async () => {
-      const w = await world();
-      const f = await w.addLine({ dispatched: false });
-      await w.stores.lineDispatches.start(makeLineDispatch(f));
-      await install(
-        w,
-        f,
-        live(f, {
-          status: "failed",
-          failure: { code: "wall_clock", message: "late" },
-          volumeId: undefined,
-          instanceId: "i-still-running",
-          attempts: [
-            {
-              generation: 1,
-              reason: "dispatch",
-              startedAt: "2026-10-15T11:00:00.000Z",
-              instanceId: "i-still-running",
-            },
-          ],
-        }),
-      );
-      w.compute.instances.set("i-still-running", {
-        instanceId: "i-still-running",
-        state: "running",
-        availabilityZone: "us-west-2a",
-      });
-      const started: string[] = [];
-      let broken = true;
-      const real = w.compute.describe;
-      const compute: ComputeControl = {
-        ...w.compute,
-        describe: async (id) => {
-          if (broken) throw new Error("throttled");
-          return real(id);
-        },
-        terminate: (id) => w.compute.terminate(id),
-      };
-      const cleanupDeps = {
-        stores: w.stores,
-        compute,
-        clock: w.clock,
-        ids: createFixtures().ids,
-        startMachine: async (line: { branch: string }) => void started.push(line.branch),
-      };
-      return {
-        w,
-        f,
-        started,
-        cleanupDeps,
-        recover: () => {
-          broken = false;
-        },
-      };
-    };
-
-    it("records the failure, does not settle and starts no generation", async () => {
-      const { w, f, started, cleanupDeps } = await setup();
-      const step = await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f));
-      expect(step).toBe("waiting");
-      const after = await dispatchOf(w, f);
-      expect(after.generation).toBe(1);
-      expect(after.cleanup.settledAt).toBeUndefined();
-      expect(after.cleanup.failures).toEqual([expect.stringContaining("describe i-still-running")]);
-      expect(w.compute.terminated).toEqual([]);
-      expect(started).toEqual([]);
-    });
-
-    it("terminates once describe recovers, then settles and restarts once the machine is gone", async () => {
-      const { w, f, started, cleanupDeps, recover } = await setup();
-      await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f));
-      recover();
-      expect(await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f))).toBe("terminating");
-      expect(w.compute.terminated).toEqual(["i-still-running"]);
-      expect((await dispatchOf(w, f)).cleanup.settledAt).toBeUndefined();
-      expect(await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f))).toBe("restarted");
-      expect(started).toEqual([BRANCH]);
-      expect(await dispatchOf(w, f)).toMatchObject({ status: "requested", generation: 2 });
-    });
-
-    it("settles and restarts when the instance is not found", async () => {
-      const { w, f, started, cleanupDeps, recover } = await setup();
-      recover();
-      w.compute.instances.delete("i-still-running");
-      expect(await cleanupLineDispatch(cleanupDeps, await dispatchOf(w, f))).toBe("restarted");
-      expect(w.compute.terminated).toEqual([]);
-      expect(started).toEqual([BRANCH]);
-      expect(await dispatchOf(w, f)).toMatchObject({ generation: 2 });
-    });
-  });
-
-  it("launches three waiting lines one at a time under a ceiling of one, with no deadlock", async () => {
-    const w = await world(1);
-    const lines = [await w.addLine(), await w.addLine(), await w.addLine()];
-    const launched = new Set<string>();
-    for (let tick = 0; tick < 12 && launched.size < 3; tick += 1) {
-      await w.reconcile();
-      expect(w.compute.running()).toBeLessThanOrEqual(1);
-      for (const f of lines) {
-        const d = await dispatchOf(w, f);
-        if (d.instanceId === undefined || launched.has(f.scope.projectId)) continue;
-        launched.add(f.scope.projectId);
-        // The owner catches up and exits: the queue empties and the dispatch ends.
-        await w.stores.lines.update(f.scope.projectId, BRANCH, (row) =>
-          row === undefined ? undefined : { ...row, queue: [] },
-        );
-        await w.stores.lineDispatches.update(f.scope.projectId, BRANCH, (row) => ({
-          ...row,
-          status: "stopped",
-        }));
-      }
-    }
-    expect(launched.size).toBe(3);
-    expect(w.compute.launches).toHaveLength(3);
-  });
-});
-
 describe("reconcile: lines with work and the publisher", () => {
-  it("gives a line with queued entries and no dispatch a dispatch", async () => {
+  const lineRunsOf = async (w: World, f: Fixtures) =>
+    (
+      await w.stores.runs.listByProgram({
+        projectId: f.scope.projectId,
+        programId: lineProgramId(f.scope.projectId, BRANCH),
+      })
+    ).items;
+
+  it("gives a line with queued entries and no live run a run of its line program", async () => {
     const w = await world();
-    const f = await w.addLine({ dispatched: false });
-    expect(await w.stores.lineDispatches.get(f.scope.projectId, BRANCH)).toBeUndefined();
+    const f = await w.addLine();
+    expect(await lineRunsOf(w, f)).toHaveLength(0);
     const counts = await w.reconcile();
     expect(counts["line-admit:started"]).toBe(1);
-    expect(await dispatchOf(w, f)).toMatchObject({ generation: 1, status: "provisioning" });
-    expect(w.compute.launches).toHaveLength(1);
+    const runs = await lineRunsOf(w, f);
+    expect(runs).toHaveLength(1);
+    expect(w.provisioned).toEqual([runs[0]?.runId]);
+    const dispatch = await w.stores.dispatches.get({
+      projectId: f.scope.projectId,
+      programId: lineProgramId(f.scope.projectId, BRANCH),
+      runId: runs[0]?.runId as never,
+    });
+    expect(dispatch).toMatchObject({ generation: 1, status: "requested" });
     // The next pass finds it live and starts nothing more.
-    await w.reconcile();
-    expect(w.compute.launches).toHaveLength(1);
+    const again = await w.reconcile();
+    expect(again["line-admit:live"]).toBe(1);
+    expect(await lineRunsOf(w, f)).toHaveLength(1);
+    expect(w.provisioned).toHaveLength(1);
   });
 
-  it("does not admit a line whose queue is empty", async () => {
+  it("does not start a run for a line whose queue is empty", async () => {
     const w = await world();
-    const f = await w.addLine({ work: false, dispatched: false });
+    const f = await w.addLine({ work: false });
     await w.reconcile();
-    expect(await w.stores.lineDispatches.get(f.scope.projectId, BRANCH)).toBeUndefined();
+    expect(await lineRunsOf(w, f)).toHaveLength(0);
   });
 
   it("asks the publisher about a run that owes the line a range, with no pending intent", async () => {
@@ -781,7 +306,7 @@ describe("reconcile: lines with work and the publisher", () => {
 
   it("asks the publisher, with a line event, about a line whose push is pending", async () => {
     const w = await world();
-    const f = await w.addLine({ work: false, dispatched: false });
+    const f = await w.addLine({ work: false });
     await w.stores.lines.update(f.scope.projectId, BRANCH, (row) =>
       row === undefined
         ? undefined

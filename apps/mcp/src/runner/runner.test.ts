@@ -38,6 +38,7 @@ import type { CommandResult, Machine } from "./machine.js";
 import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
 import { placeProviderCredentials, rootEnvironment, tokenFile } from "./root.js";
+import { createRunnerLog } from "./runner-log.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
 import {
   restoreFromSidecar,
@@ -1529,6 +1530,114 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     expect(last.failure?.message).toContain("could not find the workspace volume");
   });
 
+  it("uploads the runner log at the end of a run whose workspace could not be prepared", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "sudo" && args[0] === "mount" ? fail("wrong fs type, bad superblock") : undefined,
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const uploads: string[] = [];
+    const lines: string[] = [];
+    const runnerLog = createRunnerLog({
+      file: "runner.log",
+      log: (line) => lines.push(line),
+      read: async () => new TextEncoder().encode("the log"),
+    });
+    const tokensSeen: string[] = [];
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      runnerLog,
+      runnerLogRecorder: (endpoint, tokens, scope) => async (bytes) => {
+        tokensSeen.push(await tokens.idToken());
+        uploads.push(`${endpoint} ${scope.runId} ${new TextDecoder().decode(bytes)}`);
+      },
+    });
+    expect(code).toBe(1);
+    expect(uploads).toEqual([`https://api.dev.nightshift.invalid ${f.scope.runId} the log`]);
+    expect(tokensSeen).toHaveLength(1);
+  });
+
+  it("never fails the run when the runner log cannot be uploaded", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "sudo" && args[0] === "mount" ? fail("wrong fs type, bad superblock") : undefined,
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      runnerLog: createRunnerLog({
+        file: "runner.log",
+        log: () => undefined,
+        read: async () => new TextEncoder().encode("the log"),
+      }),
+      runnerLogRecorder: () => async () => {
+        throw new Error("the artifact store is down");
+      },
+    });
+    expect(code).toBe(1);
+  });
+
+  it("uploads the runner log periodically while the workspace is being prepared", async () => {
+    const machine = fakeMachine();
+    const base = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const uploads: boolean[] = [];
+    let preparing = true;
+    let uploaded!: () => void;
+    const firstUpload = new Promise<void>((resolve) => {
+      uploaded = resolve;
+    });
+    // The periodic upload's first wait ends at once; the next never does.
+    let waits = 0;
+    const runnerLog = createRunnerLog({
+      file: "runner.log",
+      log: () => undefined,
+      sleep: () => (waits++ === 0 ? Promise.resolve() : new Promise<void>(() => undefined)),
+      read: async () => new TextEncoder().encode("the log"),
+    });
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      // Preparation does not end until the log has been uploaded once, then fails.
+      plane: (endpoint, tokens) => ({
+        ...base.planeFor(endpoint, tokens),
+        dispatch: async () => {
+          await firstUpload;
+          preparing = false;
+          return undefined;
+        },
+      }),
+      runnerLog,
+      runnerLogRecorder: () => async () => {
+        uploads.push(preparing);
+        uploaded();
+      },
+    });
+    expect(code).toBe(1);
+    expect(uploads[0]).toBe(true);
+  });
+
   it("forwards a failure the work ends with as stopped with that failure (P16 D-07)", async () => {
     const machine = gitMachine();
     const plane = fakePlane(program, dispatch, planText, () => ({
@@ -1772,6 +1881,23 @@ describe("placing provider credentials (D-P10-23, D-P10-30)", () => {
 });
 
 describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
+  it("never names a publication base for a line run, so the engine publishes no landing", () => {
+    const env = rootEnvironment({
+      context: {
+        scope: f.scope,
+        program: makeProgramContract(f, { kind: "line" }),
+        dispatch: makeDispatch(f),
+        layout: layoutOf("/workspace", f.scope.runId),
+      } as never,
+      apiEndpoint: "https://api.dev.nightshift.invalid",
+      parentEnv: { PATH: "/usr/bin" },
+    });
+    expect(env).not.toHaveProperty("NIGHTSHIFT_PUBLISH_BASE");
+    expect(env.NIGHTSHIFT_PINNED_RUN).toBe(
+      `${f.scope.projectId}/${f.scope.programId}/${f.scope.runId}`,
+    );
+  });
+
   it("names the plane, the token file, the state directory, the publication base and the pinned run", () => {
     const dispatch = makeDispatch(f, {
       input: { ...makeDispatch(f).input, baseSha: "b".repeat(40) },
@@ -1779,6 +1905,7 @@ describe("the root's environment (T4, D-P10-20, D-P10-22)", () => {
     const env = rootEnvironment({
       context: {
         scope: f.scope,
+        program: makeProgramContract(f),
         dispatch,
         layout: layoutOf("/workspace", f.scope.runId),
       } as never,
@@ -1813,6 +1940,7 @@ describe("the project's secrets on a machine (A-62)", () => {
     const env = rootEnvironment({
       context: {
         scope: f.scope,
+        program: makeProgramContract(f),
         dispatch: makeDispatch(f),
         layout: layoutOf("/workspace", f.scope.runId),
       } as never,
@@ -1836,6 +1964,7 @@ describe("the root's project environment (P16 S-01)", () => {
     const env = rootEnvironment({
       context: {
         scope: f.scope,
+        program: makeProgramContract(f),
         dispatch: makeDispatch(f),
         layout,
         projectEnv,

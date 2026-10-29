@@ -9,31 +9,17 @@
  *
  * - `LineRecord`: the queue of ranges runs published, the batch the owner took,
  *   the compositions it made, what it parked, and the one push in flight.
- * - `LineDispatch`: the owner's machine, shaped like a run `Dispatch` and
- *   fenced by the same generation, which keeps increasing across dispatches.
  * - `ProjectSelfStartedUsage`: what the plane's own starts cost this month, for
  *   the project's cap.
  *
  * The rules are `core`'s (`rules/line.ts`); this is only the records.
  */
 import { z } from "zod";
-import { AgentIdSchema, ProgramIdSchema, VerificationIdSchema } from "../ids.js";
+import { JobContractIdSchema, ProgramIdSchema, RunIdSchema, VerificationIdSchema } from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, projectScoped } from "./common.js";
-import { ComputeTierSchema } from "./compute.js";
 import { CalendarMonthSchema } from "./compute-usage.js";
-import {
-  DispatchAttemptSchema,
-  DispatchCleanupSchema,
-  DispatchProgressSchema,
-  DispatchSpendSchema,
-  DispatchStatusSchema,
-  DispatchWorkspaceSchema,
-  HeartbeatBodySchema,
-  HeartbeatResponseSchema,
-  RunnerStageSchema,
-} from "./dispatch.js";
+import { DispatchStatusSchema } from "./dispatch.js";
 import { EffectivePolicySchema } from "./org-config.js";
-import { RouteTargetSchema } from "./routing-decision.js";
 import {
   outcomeOfCommands,
   VerificationCommandResultSchema,
@@ -48,15 +34,21 @@ export const LineBranchSchema = z.string().min(1);
 /** The most compositions and parked entries a line record keeps, the newest. */
 export const MAX_LINE_COMPOSITIONS = 50;
 export const MAX_LINE_PARKED = 50;
-/** The most resolver decisions a line record keeps, and agent announcements a line dispatch keeps, the newest. */
-export const MAX_LINE_DECISIONS = 50;
-export const MAX_LINE_AGENTS = 50;
+/** The most repairs one lineage of ranges may spend. */
+export const MAX_LINE_REPAIRS = 3;
+/** The most characters of a failed repair's words a held entry keeps. */
+export const MAX_LINE_WORDS_CHARS = 2000;
+/** The repairs a lineage has spent; absent means none. */
+export const LineRepairsSchema = z.int().min(0).max(MAX_LINE_REPAIRS);
 
 /** One range of a program's landed work: `from` (exclusive, absent for its start) up to `upTo`. */
 export const LineRangeSchema = z.strictObject({
   program: ProgramIdSchema,
   from: CommitShaSchema.optional(),
   upTo: CommitShaSchema,
+  repairs: LineRepairsSchema.optional(),
+  /** The commit of the repair that succeeded for this range, kept until its composition is published. */
+  repaired: CommitShaSchema.optional(),
 });
 export type LineRange = z.infer<typeof LineRangeSchema>;
 
@@ -65,6 +57,11 @@ export const LineQueueEntrySchema = z.strictObject({
   program: ProgramIdSchema,
   upTo: CommitShaSchema,
   enqueuedAt: IsoTimestampSchema,
+  repairs: LineRepairsSchema.optional(),
+  /** The successful repair commit for this range, composed first when the range returns. */
+  repaired: CommitShaSchema.optional(),
+  /** The words of the last repair of this range that failed, kept so a replacement owner can say them when the budget is spent. */
+  lastWords: z.string().max(MAX_LINE_WORDS_CHARS).optional(),
 });
 export type LineQueueEntry = z.infer<typeof LineQueueEntrySchema>;
 
@@ -74,6 +71,8 @@ export const LineBatchSchema = z.strictObject({
   entries: z.array(LineQueueEntrySchema).min(1),
   takenAt: IsoTimestampSchema,
   generation: z.int().min(1),
+  /** The run that holds the batch, when a line run owns it; with `generation` it is the owner. */
+  runId: RunIdSchema.optional(),
 });
 export type LineBatch = z.infer<typeof LineBatchSchema>;
 
@@ -109,6 +108,13 @@ export const LineResolverSchema = z.strictObject({
 });
 export type LineResolver = z.infer<typeof LineResolverSchema>;
 
+/** The repair job that ran for a range: the line's run and the job contract that did the repairing. */
+export const LineRepairRefSchema = z.strictObject({
+  runId: RunIdSchema,
+  jobContractId: JobContractIdSchema,
+});
+export type LineRepairRef = z.infer<typeof LineRepairRefSchema>;
+
 export const LineCompositionSchema = z.strictObject({
   compositionId: z.string().min(1),
   commit: CommitShaSchema,
@@ -116,6 +122,7 @@ export const LineCompositionSchema = z.strictObject({
   ranges: z.array(LineRangeSchema).min(1),
   verification: LineVerificationSchema,
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
   composedAt: IsoTimestampSchema,
   /** Set once the publisher has moved the line to this composition's commit. */
   pushed: z.strictObject({ at: IsoTimestampSchema }).optional(),
@@ -129,9 +136,60 @@ export const LineParkedSchema = z.strictObject({
   commit: CommitShaSchema.optional(),
   verification: LineVerificationSchema.optional(),
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
   parkedAt: IsoTimestampSchema,
 });
 export type LineParked = z.infer<typeof LineParkedSchema>;
+
+/** The sha256 hex digest of an entry's canonical JSON, as the line records it. */
+export const LineDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/** `line.composed`: the settled composition as recorded, with its id and content digest. */
+export const LineComposedPayloadSchema = LineCompositionSchema.extend({
+  id: z.string().min(1),
+  digest: LineDigestSchema,
+});
+export type LineComposedPayload = z.infer<typeof LineComposedPayloadSchema>;
+
+/** `line.parked`: one parked entry as recorded, with its id and content digest. */
+export const LineParkedPayloadSchema = LineParkedSchema.extend({
+  id: z.string().min(1),
+  digest: LineDigestSchema,
+});
+export type LineParkedPayload = z.infer<typeof LineParkedPayloadSchema>;
+
+/** `line.entry_chunk`: one ordered piece of an entry's JSON text; the pieces joined hash to `digest`. */
+export const LineEntryChunkPayloadSchema = z.strictObject({
+  kind: z.enum(["composed", "parked"]),
+  id: z.string().min(1),
+  digest: LineDigestSchema,
+  part: z.int().min(0),
+  parts: z.int().min(1),
+  text: z.string(),
+});
+export type LineEntryChunkPayload = z.infer<typeof LineEntryChunkPayloadSchema>;
+
+/** The most entries one `line.settled` event names. */
+export const MAX_LINE_SETTLED_ENTRIES_PER_EVENT = 20;
+
+/** `line.settled`: the commit marker; `digest` is the whole settlement's. */
+export const LineSettledPayloadSchema = z.strictObject({
+  batchId: z.string().min(1),
+  generation: z.int().min(1),
+  digest: LineDigestSchema,
+  part: z.int().min(0),
+  parts: z.int().min(1),
+  entries: z
+    .array(
+      z.strictObject({
+        type: z.enum(["line.composed", "line.parked"]),
+        id: z.string().min(1),
+        digest: LineDigestSchema,
+      }),
+    )
+    .max(MAX_LINE_SETTLED_ENTRIES_PER_EVENT),
+});
+export type LineSettledPayload = z.infer<typeof LineSettledPayloadSchema>;
 
 /** What the resolver's fix was made of: the program's range, or the line's own main. */
 export const LineUnitSchema = z.discriminatedUnion("kind", [
@@ -139,41 +197,6 @@ export const LineUnitSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("range"), range: LineRangeSchema }),
 ]);
 export type LineUnit = z.infer<typeof LineUnitSchema>;
-
-/** The body of a resolver's decision, as the execution's `LineResolverDecision`. */
-export const LineResolverDecisionBodySchema = z.strictObject({
-  authority: z.literal("line"),
-  unit: LineUnitSchema,
-  base: CommitShaSchema,
-  commit: CommitShaSchema,
-  context: z.string(),
-  alternatives: z.array(
-    z.strictObject({ summary: z.string(), rejectedBecause: z.string().optional() }),
-  ),
-  choice: z.string(),
-  rationale: z.string(),
-  reversibility: z.literal("reversible"),
-  resolverModel: z.string(),
-  examinerModel: z.string(),
-  attempts: z.int().min(0),
-  verificationId: VerificationIdSchema,
-  decidedAt: IsoTimestampSchema,
-});
-export type LineResolverDecisionBody = z.infer<typeof LineResolverDecisionBodySchema>;
-
-/** A resolver decision stored on the line record: recorded as a decision for later review (D-03). */
-export const LineDecisionSchema = LineResolverDecisionBodySchema.extend({
-  decisionId: z.string().min(1),
-  /** The owner generation that recorded it. */
-  generation: z.int().min(1),
-});
-export type LineDecision = z.infer<typeof LineDecisionSchema>;
-
-/** `POST …/line/decisions?branch=`. */
-export const LineDecisionBodySchema = LineResolverDecisionBodySchema.extend({
-  generation: z.int().min(1),
-});
-export type LineDecisionBody = z.infer<typeof LineDecisionBodySchema>;
 
 export const LinePushStatusSchema = z.enum([
   "pending",
@@ -213,7 +236,7 @@ export const LineWaitingSchema = z.strictObject({
 });
 export type LineWaiting = z.infer<typeof LineWaitingSchema>;
 
-export const LineRecordSchema = z.strictObject({
+const LineRecordShape = z.strictObject({
   ...projectScoped,
   branch: LineBranchSchema,
   repositoryUrl: z.string().min(1),
@@ -222,6 +245,10 @@ export const LineRecordSchema = z.strictObject({
   /** The line's head at GitHub, as last known. */
   head: CommitShaSchema.optional(),
   queue: z.array(LineQueueEntrySchema),
+  /** Entries the composer holds back behind a repair; never handed out until released. */
+  held: z.array(LineQueueEntrySchema).default([]),
+  /** The owner generation that last held entries back; a newer generation takes them all back. */
+  heldBy: z.int().min(1).optional(),
   batch: LineBatchSchema.optional(),
   /** Newest `MAX_LINE_COMPOSITIONS` kept. */
   compositions: z.array(LineCompositionSchema),
@@ -229,11 +256,34 @@ export const LineRecordSchema = z.strictObject({
   parked: z.array(LineParkedSchema),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
-  /** Newest `MAX_LINE_DECISIONS` kept. Records from before decisions have none. */
-  decisions: z.array(LineDecisionSchema).optional(),
+  /**
+   * The settlement that last committed: its batch, the digest of the whole
+   * settle body, who made it and when. A settle that arrives again for this
+   * batch with the same digest has already committed, so it is recovered (its
+   * events and marker re-appended) rather than refused as stale.
+   */
+  lastSettled: z
+    .strictObject({
+      batchId: z.string().min(1),
+      digest: LineDigestSchema,
+      runId: RunIdSchema.optional(),
+      generation: z.int().min(1),
+      at: IsoTimestampSchema,
+    })
+    .optional(),
   updatedAt: IsoTimestampSchema,
 });
-export type LineRecord = z.infer<typeof LineRecordSchema>;
+
+/**
+ * A stored record may still carry `decisions` or `agents` from before the line
+ * became a run of the line program; they are dropped on read.
+ */
+export const LineRecordSchema = z.preprocess((value) => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const { decisions: _decisions, agents: _agents, ...rest } = value as Record<string, unknown>;
+  return rest;
+}, LineRecordShape);
+export type LineRecord = z.infer<typeof LineRecordShape>;
 
 /** What the plane's own starts have metered this month for one project, against its cap. */
 export const ProjectSelfStartedUsageSchema = z.strictObject({
@@ -255,99 +305,11 @@ export const ProjectSelfStartedUsageSchema = z.strictObject({
 });
 export type ProjectSelfStartedUsage = z.infer<typeof ProjectSelfStartedUsageSchema>;
 
-export const LineDispatchFailureCodeSchema = z.enum([
-  "provisioning_failed",
-  "recovery_exhausted",
-  "wall_clock",
-  "run_cap",
-  "line_cap",
-  "org_month",
-  "cancelled",
-  "setup_failed",
-  "environment_fault",
-  "routes_limited",
-]);
-export type LineDispatchFailureCode = z.infer<typeof LineDispatchFailureCodeSchema>;
-
-export const LineDispatchFailureSchema = z.strictObject({
-  code: LineDispatchFailureCodeSchema,
-  message: z.string().min(1),
-});
-export type LineDispatchFailure = z.infer<typeof LineDispatchFailureSchema>;
-
-/**
- * The cleanup of a line dispatch: a run's, and `settledAt` once the instance is
- * terminated and the volume deleted, or nothing was ever launched. A new
- * dispatch of the line is stored only after the last one settled.
- */
-export const LineDispatchCleanupSchema = DispatchCleanupSchema.extend({
-  settledAt: IsoTimestampSchema.optional(),
-});
-export type LineDispatchCleanup = z.infer<typeof LineDispatchCleanupSchema>;
-
-/** An agent the line owner announced before running it (A-04: nothing executes without a recorded identity). */
-export const LineAgentSchema = z.strictObject({
-  agentId: AgentIdSchema,
-  generation: z.int().min(1),
-  role: z.enum(["line_resolver", "line_examiner"]),
-  model: RouteTargetSchema,
-  announcedAt: IsoTimestampSchema,
-});
-export type LineAgent = z.infer<typeof LineAgentSchema>;
-
-export const LineDispatchSchema = z.strictObject({
-  ...projectScoped,
-  branch: LineBranchSchema,
-  /** Compare-and-swap version. */
-  version: z.int().min(1),
-  status: DispatchStatusSchema,
-  tier: ComputeTierSchema,
-  instanceType: z.string().min(1),
-  usdPerHour: z.number().positive(),
-  workspace: DispatchWorkspaceSchema.optional(),
-  amiVersion: z.string().min(1),
-  availabilityZone: z.string().min(1).optional(),
-  instanceId: z.string().min(1).optional(),
-  volumeId: z.string().min(1).optional(),
-  /** The fence. Keeps increasing across successive dispatches of one line. */
-  generation: z.int().min(1),
-  leaseExpiresAt: IsoTimestampSchema.optional(),
-  /** The identity the line owner's token is minted for. */
-  engineAgentId: AgentIdSchema,
-  attempts: z.array(DispatchAttemptSchema).min(1),
-  spend: DispatchSpendSchema,
-  cleanup: LineDispatchCleanupSchema,
-  failure: LineDispatchFailureSchema.optional(),
-  /** Newest `MAX_LINE_AGENTS` kept. Dispatches from before announcements have none. */
-  agents: z.array(LineAgentSchema).optional(),
-  progress: DispatchProgressSchema.optional(),
-  stages: z
-    .array(
-      z.strictObject({
-        generation: z.int().min(1),
-        stage: RunnerStageSchema,
-        startedAt: IsoTimestampSchema,
-      }),
-    )
-    .max(64)
-    .optional(),
-  priceBasis: z
-    .strictObject({
-      usdPerHour: z.number().min(0),
-      volumeUsdPerHour: z.number().min(0),
-      source: z.string().max(200),
-      asOf: z.string().max(40),
-      region: z.string().max(40),
-    })
-    .optional(),
-  requestedAt: IsoTimestampSchema,
-  updatedAt: IsoTimestampSchema,
-});
-export type LineDispatch = z.infer<typeof LineDispatchSchema>;
-
 /** `POST …/line/batch?branch=`. */
 export const TakeLineBatchBodySchema = z.strictObject({
   generation: z.int().min(1),
+  /** Held entries to return to the queue front before taking. */
+  release: z.array(z.strictObject({ program: ProgramIdSchema, upTo: CommitShaSchema })).optional(),
 });
 export type TakeLineBatchBody = z.infer<typeof TakeLineBatchBodySchema>;
 
@@ -355,13 +317,6 @@ export const TakeLineBatchResponseSchema = z.strictObject({
   batch: LineBatchSchema.optional(),
 });
 export type TakeLineBatchResponse = z.infer<typeof TakeLineBatchResponseSchema>;
-
-/** `POST …/line/agents?branch=`. */
-export const LineAgentBodySchema = z.strictObject({
-  generation: z.int().min(1),
-  agent: LineAgentSchema.omit({ generation: true }),
-});
-export type LineAgentBody = z.infer<typeof LineAgentBodySchema>;
 
 /** `POST …/line/compositions?branch=`. */
 export const LineCompositionBodySchema = z.strictObject({
@@ -371,6 +326,7 @@ export const LineCompositionBodySchema = z.strictObject({
   ranges: z.array(LineRangeSchema).min(1),
   verification: LineVerificationSchema,
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
 });
 export type LineCompositionBody = z.infer<typeof LineCompositionBodySchema>;
 
@@ -382,8 +338,23 @@ export const LineParkBodySchema = z.strictObject({
   commit: CommitShaSchema.optional(),
   verification: LineVerificationSchema.optional(),
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
 });
 export type LineParkBody = z.infer<typeof LineParkBodySchema>;
+
+/**
+ * `POST …/line/attempt?branch=`: a repair attempt the owner has consumed (and the
+ * words of the one that failed before it), written to the held entry of the range
+ * before the paid repair is launched, so a replacement owner cannot spend it again.
+ */
+export const LineAttemptBodySchema = z.strictObject({
+  generation: z.int().min(1),
+  program: ProgramIdSchema,
+  upTo: CommitShaSchema,
+  repairs: z.int().min(1).max(MAX_LINE_REPAIRS),
+  lastWords: z.string().max(MAX_LINE_WORDS_CHARS).optional(),
+});
+export type LineAttemptBody = z.infer<typeof LineAttemptBodySchema>;
 
 /**
  * `POST …/line/settle?branch=`: one batch settled with what the composition
@@ -405,6 +376,8 @@ export const LineSettleBodySchema = z
     /** The publication of the composition, recorded with it so a dead owner cannot lose it. */
     push: LinePushBodySchema.optional(),
     parked: z.array(LineParkBodySchema.omit({ batchId: true })),
+    /** Entries of the settled batch the composer holds behind a repair. */
+    held: z.array(LineQueueEntrySchema).optional(),
   })
   .superRefine((body, ctx) => {
     const { composition, push } = body;
@@ -450,16 +423,16 @@ export const LineBundleUploadUrlBodySchema = z.strictObject({
 });
 export type LineBundleUploadUrlBody = z.infer<typeof LineBundleUploadUrlBodySchema>;
 
-/** `POST …/line/heartbeat?branch=`: a run's heartbeat, where it fits. */
-export const LineHeartbeatBodySchema = HeartbeatBodySchema;
-export type LineHeartbeatBody = z.infer<typeof LineHeartbeatBodySchema>;
-export const LineHeartbeatResponseSchema = HeartbeatResponseSchema;
-export type LineHeartbeatResponse = z.infer<typeof LineHeartbeatResponseSchema>;
-
 /** `GET …/line?branch=`. */
 export const LineViewSchema = z.strictObject({
   record: LineRecordSchema,
-  dispatch: LineDispatchSchema.optional(),
+  /** The line's program, whose runs are the line's owner sessions. */
+  programId: ProgramIdSchema,
+  /** The line program's latest run, with its dispatch's status, generation and metered spend; absent while the line has had none. */
+  runId: RunIdSchema.optional(),
+  dispatchStatus: DispatchStatusSchema.optional(),
+  generation: z.int().min(1).optional(),
+  meteredUsd: z.number().min(0).optional(),
   usage: ProjectSelfStartedUsageSchema.optional(),
   /** The policy the line's agents route under; absent while the org has no config. */
   policy: EffectivePolicySchema.optional(),

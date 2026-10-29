@@ -10,6 +10,7 @@ import {
   emptyConversation,
   type Fixtures,
   keepMessages,
+  lineProgramId,
   makeDispatch,
   makeMembership,
   makeNode,
@@ -764,4 +765,50 @@ describe("prerequisites (D-P7-05, D-P7-10)", () => {
       }
     },
   );
+});
+
+describe("the line program", () => {
+  const LINE = { branch: "nightshift/develop" };
+  const lineProgramsOf = async (w: World) =>
+    (await w.deps.stores.programContracts.listByProject(w.f.scope.projectId)).items.filter(
+      (c) => c.kind === "line",
+    );
+
+  it("is made when a PUT first names a line, once, with nothing published or dispatched", async () => {
+    const w = await setup();
+    const contract = makeProgramContract(w.f, { line: LINE });
+    expect((await call(w, "PUT", w.paths.program, contract)).status).toBe(201);
+    const made = await lineProgramsOf(w);
+    expect(made).toHaveLength(1);
+    expect(made[0]?.repository.programBranch).toBe(LINE.branch);
+    expect(made[0]?.programId).toBe(lineProgramId(w.f.scope.projectId, LINE.branch));
+    expect(await w.deps.stores.lines.get(w.f.scope.projectId, LINE.branch)).toBeUndefined();
+    expect((await call(w, "PUT", w.paths.program, contract)).status).toBe(200);
+    expect(await lineProgramsOf(w)).toHaveLength(1);
+  });
+
+  it("is made when a planned program that names a line is ratified, and not twice on a retry", async () => {
+    const w = await setup();
+    const contract = planned(w, { line: LINE });
+    await ratify(w, contract);
+    expect(await lineProgramsOf(w)).toHaveLength(1);
+    await ratify(w, contract);
+    expect(await lineProgramsOf(w)).toHaveLength(1);
+  });
+
+  it("refuses a client's contract of kind line", async () => {
+    const w = await setup();
+    const contract = makeProgramContract(w.f, { line: LINE, kind: "line" });
+    const put = await call(w, "PUT", w.paths.program, contract);
+    expect(put.status).toBe(400);
+    expect(errorCode(put)).toBe("validation_failed");
+    const posted = await call(
+      w,
+      "POST",
+      `${w.paths.program}/ratifications`,
+      ratification(w, planned(w, { kind: "line" })),
+    );
+    expect(posted.status).toBe(400);
+    expect(await lineProgramsOf(w)).toHaveLength(0);
+  });
 });
