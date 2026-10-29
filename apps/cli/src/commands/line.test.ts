@@ -73,7 +73,7 @@ describe("describeLine", () => {
     const out = text(describeLine(view({ head: sha("a") })));
     expect(out).toContain("line nightshift/develop  head aaaaaaa");
     expect(out).toContain("last push: none");
-    expect(out).toContain("runs: none");
+    expect(out).toContain("runs: none yet (the line's program is made when");
     expect(out).toContain("queue: empty");
     expect(out).toContain("compositions: none");
     expect(out).not.toContain("parked");
