@@ -367,6 +367,9 @@ const ownLine = async (
       const record = (await plane.line()).record;
       let newest: { at: number; upTo: CommitSha } | undefined;
       for (const composition of record.compositions) {
+        // Only a composition that reached the line counts: a rejected or never-pushed one
+        // is requeued, and its upTo as `from` would leave the range empty.
+        if (composition.pushed === undefined) continue;
         for (const range of composition.ranges) {
           const at = Date.parse(composition.composedAt);
           if (range.program === program && (newest === undefined || at >= newest.at)) {

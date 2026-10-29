@@ -115,7 +115,6 @@ const setup = async (
       lastComposed: async (program) => composed[program],
       settle: async (s) => {
         h.settled.push(s);
-        for (const range of s.composition?.ranges ?? []) composed[range.program] = range.upTo;
         h.held.push(...(s.held ?? []));
       },
     },
@@ -139,6 +138,10 @@ const setup = async (
           return { status: "rejected", detail: "the line moved" };
         }
         await git(nodeGitRunner, ["update-ref", "refs/heads/line", head], { cwd: lr.repo });
+        // Only a published composition counts as composed, as the plane's record has it.
+        for (const range of h.settled.at(-1)?.composition?.ranges ?? []) {
+          composed[range.program] = range.upTo;
+        }
         return { status: "published" };
       },
     },
@@ -258,6 +261,28 @@ describe("the line composer", () => {
     expect(await parentsOf(lr, request.base)).toEqual([await lr.tip("line"), p1]);
   });
 
+  it("recomposes a rejected range from the last published upTo, not its own", async () => {
+    const h = await setup();
+    const { lr } = h;
+    await lr.commit("line", { "base.txt": "line\n" });
+    const a1 = await lr.commit("p1", { "a.txt": "a1\n" });
+    h.queue.push(entry(P1, a1, 1));
+    const first = await h.composer.step();
+    expect(first.outcome?.published?.status).toBe("published");
+    const a2 = await lr.commit("p1", { "a.txt": "a2\n" });
+    h.queue.push(entry(P1, a2, 2));
+    h.reject = 1;
+    const rejected = await h.composer.step();
+    expect(rejected.outcome?.published?.status).toBe("rejected");
+    const again = await h.composer.step();
+    expect(again.outcome?.published?.status).toBe("published");
+    const range = h.settled.at(-1)?.composition?.ranges[0];
+    expect(range?.from).toBe(a1);
+    expect(range?.upTo).toBe(a2);
+    expect(await lr.readFileAtCommit(await lr.tip("line"), "a.txt")).toBe("a2\n");
+    assertSchemas(h);
+  });
+
   it("parks a lineage after three failed repairs with the cause and the agent's words", async () => {
     const h = await setup({ repair: () => ({ kind: "failed", words: "I could not decide" }) });
     const { lr } = h;
@@ -372,10 +397,8 @@ describe("the line composer", () => {
     expect(again.outcome?.parked).toEqual([]);
     expect(h.repairs).toHaveLength(3);
     const composition = h.settled.at(-1)?.composition;
-    // The plane's newest composition of the program is the rejected one, so `from` is its upTo.
-    expect(composition?.ranges).toEqual([
-      { program: P1, from: p1, upTo: p1, repairs: 3, repaired: fixed },
-    ]);
+    // Nothing of the program was ever published, so there is no `from`: the rejected one does not count.
+    expect(composition?.ranges).toEqual([{ program: P1, upTo: p1, repairs: 3, repaired: fixed }]);
     expect(composition?.repair).toEqual(REF);
     expect(await h.lr.readFileAtCommit(await h.lr.tip("line"), "shared.txt")).toBe("resolved\n");
     expect(h.settled.flatMap((s) => s.parked)).toEqual([]);
