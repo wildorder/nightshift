@@ -258,6 +258,41 @@ const run = async (machine: Machine, file: string, args: readonly string[], what
   return result;
 };
 
+/**
+ * Every local branch the mirror also has is moved to the mirror's, except the
+ * one checked out (the program branch, reset by its caller). A warm checkout's
+ * branches were made by its first clone and never moved again, so a worker's
+ * `main` was three weeks behind GitHub's (2026-10-29: a job restored `infra/**`
+ * to it and undid a month of work); `git diff main` and `git checkout main --`
+ * must read what GitHub has. Branches of the mirror's own are the only ones
+ * moved: a run's `nightshift/…` branches are the engine's.
+ */
+const followMirror = async (machine: Machine, checkout: string, current: string) => {
+  const refs = async (prefix: string): Promise<string[]> =>
+    (
+      await run(
+        machine,
+        "git",
+        ["-C", checkout, "for-each-ref", "--format=%(refname:short)", prefix],
+        `list ${prefix}`,
+      )
+    ).stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+  const locals = await refs("refs/heads/");
+  const remotes = new Set(await refs("refs/remotes/origin/"));
+  for (const branch of locals) {
+    if (branch === current || !remotes.has(`origin/${branch}`)) continue;
+    await run(
+      machine,
+      "git",
+      ["-C", checkout, "branch", "-f", branch, `origin/${branch}`],
+      `move ${branch} to the mirror's`,
+    );
+  }
+};
+
 const writeAtomically = async (machine: Machine, path: string, value: string): Promise<void> => {
   const temporary = `${path}.next`;
   await machine.writeFile(temporary, value);
@@ -652,6 +687,7 @@ export const prepareCheckout = async (machine: Machine, input: PrepareInput): Pr
     ["-C", layout.checkout, "checkout", "-q", "-B", program.repository.programBranch, startSha],
     `check out ${startSha.slice(0, 12)}`,
   );
+  await followMirror(machine, layout.checkout, program.repository.programBranch);
   // The push target is GitHub, through the publisher; the checkout's origin
   // stays the mirror so nothing on the machine can push (D-P10-22).
 
