@@ -128,6 +128,12 @@ export interface LineSettlement {
 
 export interface LineQueuePort {
   takeBatch(release?: TakeLineBatchBody["release"]): Promise<LineBatch | undefined>;
+  /**
+   * The entries the plane holds back (the line record's `held`). A fresh composer
+   * reads them once, before its first take, and releases those it holds no
+   * reservation for. Absent: nothing is recovered beyond what the plane returns itself.
+   */
+  heldEntries?(): Promise<LineQueueEntry[]>;
   /** The `upTo` of that program's newest composed range. */
   lastComposed(program: ProgramId): Promise<CommitSha | undefined>;
   settle(settlement: LineSettlement): Promise<void>;

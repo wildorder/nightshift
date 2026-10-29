@@ -37,11 +37,32 @@ const messageOf = (error: unknown): string =>
 const TIME_LIMIT_REASON = "the composition's time limit passed before this range could be composed";
 const RECENT_REPAIRS = 5;
 
+interface Grouped {
+  range: LineRange;
+  entries: LineQueueEntry[];
+}
+
+interface Unit {
+  program: ProgramId;
+  entries: LineQueueEntry[];
+  repairs: number;
+  /** Set for a released range: it is its own range and never joins queued entries. */
+  released?: HeldItem;
+  first: number;
+}
+
+/**
+ * The batch's ranges. A released (repaired) range stands alone, and so does any
+ * entry that already carries repairs; only plain queued entries of one program
+ * are combined. Within a program the ranges chain: each starts where the one
+ * before it ended, so a later range never absorbs an earlier one.
+ */
 const groupRanges = async (
   ports: LineComposerPorts,
   lineHead: CommitSha,
   batch: LineBatch,
-): Promise<LineRange[]> => {
+  released: HeldItem[],
+): Promise<Grouped[]> => {
   const entries = batch.entries
     .map((entry, index) => ({ entry, index }))
     .sort(
@@ -49,38 +70,89 @@ const groupRanges = async (
         Date.parse(a.entry.enqueuedAt) - Date.parse(b.entry.enqueuedAt) || a.index - b.index,
     )
     .map((item) => item.entry);
-  // Programs keep the order of their earliest entry.
-  const byProgram = new Map<ProgramId, { commits: CommitSha[]; repairs: number }>();
-  for (const entry of entries) {
-    const group = byProgram.get(entry.program) ?? { commits: [], repairs: 0 };
-    group.commits.push(entry.upTo);
-    group.repairs = Math.max(group.repairs, entry.repairs ?? 0);
-    byProgram.set(entry.program, group);
+  const keyOf = (entry: { program: ProgramId; upTo: CommitSha }) =>
+    `${entry.program}:${entry.upTo}`;
+  const taken = new Set<LineQueueEntry>();
+  const units: Unit[] = [];
+  const position = (entry: LineQueueEntry) => entries.indexOf(entry);
+  for (const item of released) {
+    const keys = new Set(item.entries.map(keyOf));
+    const mine = entries.filter((entry) => keys.has(keyOf(entry)) && !taken.has(entry));
+    if (mine.length === 0) continue;
+    for (const entry of mine) taken.add(entry);
+    units.push({
+      program: item.range.program,
+      entries: mine,
+      repairs: Math.max(0, ...mine.map((entry) => entry.repairs ?? 0)),
+      released: item,
+      first: Math.min(...mine.map(position)),
+    });
   }
-  const ranges: LineRange[] = [];
-  for (const [program, { commits, repairs }] of byProgram) {
-    // The head is the entry that descends from every other; only diverged
-    // history falls back to the newest by enqueue time.
-    let last: CommitSha | undefined;
-    for (const candidate of commits) {
-      let holdsAll = true;
-      for (const other of commits) {
-        if (other !== candidate && !(await ports.checkout.isAncestor(other, candidate))) {
-          holdsAll = false;
+  const plain = new Map<ProgramId, Unit>();
+  for (const entry of entries) {
+    if (taken.has(entry)) continue;
+    if ((entry.repairs ?? 0) > 0) {
+      units.push({
+        program: entry.program,
+        entries: [entry],
+        repairs: entry.repairs ?? 0,
+        first: position(entry),
+      });
+      continue;
+    }
+    const unit = plain.get(entry.program) ?? {
+      program: entry.program,
+      entries: [],
+      repairs: 0,
+      first: position(entry),
+    };
+    unit.entries.push(entry);
+    plain.set(entry.program, unit);
+    if (!units.includes(unit)) units.push(unit);
+  }
+  units.sort((a, b) => a.first - b.first);
+
+  const chain = new Map<ProgramId, CommitSha | undefined>();
+  const grouped: Grouped[] = [];
+  for (const unit of units) {
+    let upTo: CommitSha;
+    if (unit.released) {
+      upTo = unit.released.range.upTo;
+    } else {
+      const commits = unit.entries.map((entry) => entry.upTo);
+      // The head is the entry that descends from every other; only diverged
+      // history falls back to the newest by enqueue time.
+      let last: CommitSha | undefined;
+      for (const candidate of commits) {
+        let holdsAll = true;
+        for (const other of commits) {
+          if (other !== candidate && !(await ports.checkout.isAncestor(other, candidate))) {
+            holdsAll = false;
+            break;
+          }
+        }
+        if (holdsAll) {
+          last = candidate;
           break;
         }
       }
-      if (holdsAll) {
-        last = candidate;
-        break;
-      }
+      upTo = last ?? (commits.at(-1) as CommitSha);
     }
-    const upTo = last ?? (commits.at(-1) as CommitSha);
+    const from = chain.has(unit.program)
+      ? chain.get(unit.program)
+      : await ports.queue.lastComposed(unit.program);
+    // A parked (spent) range is not on the line, so the next one does not follow it.
+    if (unit.released?.owner.state !== "spent") chain.set(unit.program, upTo);
     if (await ports.checkout.isAncestor(upTo, lineHead)) continue;
-    const from = await ports.queue.lastComposed(program);
-    ranges.push(withRepairs({ program, ...(from === undefined ? {} : { from }), upTo }, repairs));
+    grouped.push({
+      range: withRepairs(
+        { program: unit.program, ...(from === undefined ? {} : { from }), upTo },
+        unit.repairs,
+      ),
+      entries: unit.entries,
+    });
   }
-  return ranges;
+  return grouped;
 };
 
 /** One range's chain of repairs: the range, any repair of its repair, and the paths they reserve. */
@@ -122,8 +194,19 @@ export interface LineComposer {
   step(): Promise<LineStep>;
   /** Steps until there is no batch to take; a rejected push ends it early. Does not wait for a repair. */
   drain(): Promise<LineBatchOutcome[]>;
-  /** No repair in flight, none waiting to start, nothing held. */
+  /**
+   * No repair in flight, none waiting to start, nothing held, and recovery done.
+   * False on a fresh composer until its first take (see `needsRecovery`).
+   */
   idle(): boolean;
+  /**
+   * True until the first take: a fresh composer (a restart in the same
+   * generation, or a new owner) may find held work on the plane. The host calls
+   * `drain()` or `step()` at least once while this is true; the first take
+   * releases every held entry the composer holds no reservation for (read through
+   * `queue.heldEntries`), so they are composed afresh, with their `repairs` kept.
+   */
+  needsRecovery(): boolean;
   /** Resolves when the repair in flight (if any) has answered. */
   repairSettled(): Promise<void>;
 }
@@ -143,8 +226,14 @@ export const createLineComposer = (
   /** Held items released to the queue, until the batch that carries them settles. */
   const pendingRelease: HeldItem[] = [];
 
+  let recovered = false;
+
   const idle = (): boolean =>
-    running === undefined && done.length === 0 && lineages.length === 0 && held.length === 0;
+    recovered &&
+    running === undefined &&
+    done.length === 0 &&
+    lineages.length === 0 &&
+    held.length === 0;
 
   const dropLineage = (lineage: Lineage): void => {
     const at = lineages.indexOf(lineage);
@@ -280,10 +369,11 @@ export const createLineComposer = (
       parkedParts.push({ ranges: [range], reason, ...extra });
       outcome.parked.push({ ranges: [range], reason });
     };
-    const entriesOf = (program: ProgramId, repairs: number): LineQueueEntry[] =>
-      batch.entries
-        .filter((entry) => entry.program === program)
-        .map(({ repairs: _old, ...entry }) => (repairs > 0 ? { ...entry, repairs } : entry));
+    const entriesByRange = new Map<LineRange, LineQueueEntry[]>();
+    const entriesOf = (range: LineRange, repairs: number): LineQueueEntry[] =>
+      (entriesByRange.get(range) ?? []).map(({ repairs: _old, ...entry }) =>
+        repairs > 0 ? { ...entry, repairs } : entry,
+      );
 
     const finish = async (settlement: Omit<LineSettlement, "batchId" | "parked" | "held">) => {
       const heldEntries = newHeld.flatMap((item) => item.entries);
@@ -302,7 +392,9 @@ export const createLineComposer = (
       }
     };
 
-    const ranges = await groupRanges(ports, lineHead, batch);
+    const grouped = await groupRanges(ports, lineHead, batch, [...pendingRelease]);
+    const ranges = grouped.map((item) => item.range);
+    for (const item of grouped) entriesByRange.set(item.range, item.entries);
     if (ranges.length === 0) {
       await finish({});
       return outcome;
@@ -312,6 +404,7 @@ export const createLineComposer = (
       lineages.find(
         (lineage) =>
           lineage.range.program === range.program &&
+          lineage.range.upTo === range.upTo &&
           (lineage.state === "repaired" || lineage.state === "spent"),
       );
 
@@ -329,16 +422,24 @@ export const createLineComposer = (
     /** The lineage whose reservation `range` touches, if any (its own excluded). */
     const reservedBy = async (range: LineRange, at: CommitSha): Promise<Lineage | undefined> => {
       const others = lineages.filter(
-        (lineage) =>
-          lineage.range.program !== range.program &&
-          (lineage.state === "queued" || lineage.state === "running"),
+        (lineage) => lineage.state === "queued" || lineage.state === "running",
       );
       if (others.length === 0) return undefined;
+      // A descendant of a range under repair would bring in its unrepaired content.
+      for (const lineage of others) {
+        if (
+          lineage.range.program === range.program &&
+          lineage.range.upTo !== range.upTo &&
+          (await checkout.isAncestor(lineage.range.upTo, range.upTo))
+        ) {
+          return lineage;
+        }
+      }
       const paths = await pathsOf(range, at);
       return others.find((lineage) => paths.some((path) => lineage.paths.has(path)));
     };
     const holdBehind = (range: LineRange, owner: Lineage) => {
-      newHeld.push({ range, entries: entriesOf(range.program, range.repairs ?? 0), owner });
+      newHeld.push({ range, entries: entriesOf(range, range.repairs ?? 0), owner });
     };
 
     const settleComposed = async (
@@ -589,7 +690,7 @@ export const createLineComposer = (
         for (const path of [...rangePaths, ...causePaths]) lineage.paths.add(path);
         newHeld.push({
           range: withRepairs(range, lineage.repairs),
-          entries: entriesOf(range.program, lineage.repairs),
+          entries: entriesOf(range, lineage.repairs),
           owner: lineage,
         });
         await reopen(head);
@@ -617,7 +718,21 @@ export const createLineComposer = (
 
   const step = async (): Promise<LineStep> => {
     const release = await processDone();
+    if (!recovered) {
+      const key = (entry: { program: ProgramId; upTo: CommitSha }) =>
+        `${entry.program}:${entry.upTo}`;
+      const reserved = new Set(
+        [...held, ...pendingRelease].flatMap((item) => item.entries).map(key),
+      );
+      for (const entry of release) reserved.add(key(entry));
+      for (const entry of (await queue.heldEntries?.()) ?? []) {
+        if (reserved.has(key(entry))) continue;
+        reserved.add(key(entry));
+        release.push({ program: entry.program, upTo: entry.upTo });
+      }
+    }
     const batch = await queue.takeBatch(release.length > 0 ? release : undefined);
+    recovered = true;
     if (batch === undefined) {
       // Nothing came back for what was released: those lineages are over.
       for (const item of pendingRelease.splice(0)) dropLineage(item.owner);
@@ -631,6 +746,7 @@ export const createLineComposer = (
   return {
     step,
     idle,
+    needsRecovery: () => !recovered,
     repairSettled: async () => {
       await inflight;
     },

@@ -106,6 +106,7 @@ const setup = async (
           generation: 1,
         } satisfies LineBatch;
       },
+      heldEntries: async () => [...h.held],
       lastComposed: async (program) => composed[program],
       settle: async (s) => {
         h.settled.push(s);
@@ -278,5 +279,61 @@ describe("the line composer", () => {
     expect(out[0]?.parked).toHaveLength(1);
     expect(out[0]?.parked[0]?.reason).toContain("3 repairs");
     expect(h.composer.idle()).toBe(true);
+  });
+
+  it("composes a repaired range alone, then a later range of the same program on top of it", async () => {
+    const h = await setup();
+    const { lr } = h;
+    const line0 = await lr.commit("line", { "shared.txt": "line\n" });
+    const a = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.queue.push(entry(P1, a, 1));
+    await h.composer.step();
+    const request = h.repairs[0]?.request as LineRepairRequest;
+    expect(request.lineHead).toBe(line0);
+
+    // B descends from A and adds a file the repair does not touch.
+    const b = await lr.commit("p1", { "extra.txt": "extra\n" });
+    h.queue.push(entry(P1, b, 2));
+    await h.composer.step();
+    expect(h.settled[1]?.composition).toBeUndefined();
+    expect(h.settled[1]?.held?.map((e) => e.upTo)).toEqual([b]);
+
+    await git(nodeGitRunner, ["branch", "repair", request.base], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "resolved\n" });
+    h.repairs[0]?.resolve({ kind: "repaired", commit: fixed, repair: REF });
+    await h.composer.repairSettled();
+
+    const out = await h.composer.step();
+    expect(out.outcome?.composed).toEqual([
+      { program: P1, upTo: a, repairs: 1 },
+      { program: P1, from: a, upTo: b },
+    ]);
+    const head = await lr.tip("line");
+    expect(await lr.readFileAtCommit(head, "shared.txt")).toBe("resolved\n");
+    expect(await lr.readFileAtCommit(head, "extra.txt")).toBe("extra\n");
+    expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
+  });
+
+  it("is not idle on a fresh composer until it has released the held entries it finds", async () => {
+    const h = await setup();
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const clean = await lr.commit("p2", { "other.txt": "o\n" });
+    const clashing = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.held.push(entry(P2, clean, 1, 1), entry(P1, clashing, 2, 1));
+    expect(h.composer.needsRecovery()).toBe(true);
+    expect(h.composer.idle()).toBe(false);
+
+    const out = await h.composer.step();
+    expect(h.released).toHaveLength(1);
+    expect(h.released[0]?.map((r) => r.program).sort()).toEqual([P1, P2].sort());
+    expect(out.outcome?.composed).toEqual([{ program: P2, upTo: clean, repairs: 1 }]);
+    expect(h.composer.needsRecovery()).toBe(false);
+    // The clashing one went into a repair, with its count kept and spent one more.
+    expect(h.repairs).toHaveLength(1);
+    expect(h.repairs[0]?.request.attempt).toBe(2);
+    expect(h.composer.idle()).toBe(false);
+    assertSchemas(h);
   });
 });
