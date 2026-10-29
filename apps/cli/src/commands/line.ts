@@ -106,7 +106,11 @@ export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = [])
   }
 
   if (runs.length === 0) {
-    lines.push("runs: none");
+    // The plane makes the line's program at the first ratification or
+    // published range that names the line; until then there is nothing to list.
+    lines.push(
+      "runs: none yet (the line's program is made when a program is next ratified or a range is published)",
+    );
   } else {
     lines.push(`runs: ${runs.length}`);
     for (const entry of runs) lines.push(describeRun(entry));
@@ -170,15 +174,18 @@ export const lineStatus = async (
   );
   const program = { projectId: config.projectId, programId: view.programId };
   const runs: Run[] = [];
+  // The view names the line's latest run once the line's program exists; the
+  // program routes answer 404 before the plane has made it (2026-10-29).
   let cursor: string | undefined;
-  do {
+  while (view.runId !== undefined) {
     const page = await session.stores.runs.listByProgram(
       program,
       cursor === undefined ? {} : { cursor },
     );
     runs.push(...page.items);
     cursor = page.cursor;
-  } while (cursor !== undefined);
+    if (cursor === undefined) break;
+  }
   runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   const entries: LineRunEntry[] = [];
   for (const run of runs) {
