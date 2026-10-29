@@ -488,7 +488,6 @@ const own = (
     readonly asProject?: boolean;
     /** The line run's runtime, when the test looks at what it recorded. */
     readonly runtime?: Runtime;
-    readonly runnerLog?: Parameters<typeof runLineOwner>[1]["runnerLog"];
   } = {},
 ) =>
   runRunner({
@@ -524,7 +523,6 @@ const own = (
         pollMs: 500,
         repairPollMs: 5,
         makeRuntime: async () => options.runtime ?? (await lineRuntime()).runtime,
-        ...(options.runnerLog === undefined ? {} : { runnerLog: options.runnerLog }),
         ...(options.asProject !== true
           ? {}
           : {
@@ -783,16 +781,12 @@ describe("idling and stopping", () => {
     const machine = lineMachine();
     const plane = makePlane(world, machine);
     const { stores, runtime } = await lineRuntime();
-    const attached: ((bytes: Uint8Array) => Promise<void>)[] = [];
     expect(
       await own(machine, plane, {
         idleSeconds: 4,
         runtime,
-        runnerLog: { attach: (record) => attached.push(record) },
       }),
     ).toBe(0);
-    // The runner's log has a recorder over the line run's own runtime.
-    expect(attached).toHaveLength(1);
     const beat = lastBeat(plane);
     expect(beat?.body.report).toBe("stopped");
     expect(beat?.body.failure).toBeUndefined();
@@ -876,6 +870,41 @@ describe("a replacement generation", () => {
     expect(plane.settles[0]?.body.batchId).toBe("comp_held");
     expect(plane.settles[0]?.body.composition?.ranges[0]?.upTo).toBe(aHead);
     expect(git(world.origin, "show", `${world.head(LINE)}:a.txt`)).toBe("a");
+  });
+});
+
+describe("a replacement generation over held ranges only", () => {
+  it("releases what the previous owner held, composes it, and ends idle", async () => {
+    const machine = lineMachine();
+    const aHead = world.head(world.branches.a);
+    const plane = makePlane(world, machine, {
+      record: {
+        held: [{ program: world.programs.a, upTo: aHead, enqueuedAt: "2026-10-01T11:00:00.000Z" }],
+        heldBy: GENERATION - 1,
+      },
+    });
+
+    expect(await own(machine, plane, { idleSeconds: 4 })).toBe(0);
+
+    expect(plane.events).toContain("takeBatch");
+    expect(plane.settles[0]?.body.composition?.ranges[0]?.upTo).toBe(aHead);
+    expect(plane.record.held).toEqual([]);
+    expect(lastBeat(plane)?.body.report).toBe("stopped");
+  });
+
+  it("ends idle when held ranges do not come back", async () => {
+    const machine = lineMachine();
+    const aHead = world.head(world.branches.a);
+    // Held by this very generation, with no composer holding them: takeBatch gives nothing back.
+    const plane = makePlane(world, machine, {
+      record: {
+        held: [{ program: world.programs.a, upTo: aHead, enqueuedAt: "2026-10-01T11:00:00.000Z" }],
+        heldBy: GENERATION,
+      },
+    });
+
+    expect(await own(machine, plane, { idleSeconds: 4 })).toBe(0);
+    expect(lastBeat(plane)?.body.report).toBe("stopped");
   });
 });
 

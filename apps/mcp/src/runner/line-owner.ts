@@ -60,7 +60,6 @@ import { createLineRepair } from "./line-repair.js";
 import { createLineSession } from "./line-session.js";
 import { awaitGithubToken, type LineRunnerContext, type RunnerWorkEnd } from "./main.js";
 import { awaitProviderCredentials } from "./root.js";
-import { type RunnerLog, runnerLogRecorder } from "./runner-log.js";
 import { gitWithToken, prepareProject } from "./workspace.js";
 
 /** How often the owner reads the line while it waits for work or for a push to resolve. */
@@ -106,8 +105,6 @@ export interface LineOwnerOptions {
   ) => Promise<Readonly<Record<string, string>>>;
   /** Makes the line run's runtime; `createRuntime` over the engine's token unless a test supplies one. */
   readonly makeRuntime?: (env: Record<string, string>) => Promise<Runtime>;
-  /** The runner's log, which is recorded under the line run's root node once the run exists. */
-  readonly runnerLog?: Pick<RunnerLog, "attach">;
   /** How often a repair's node is read while waiting; the repair's own default unless a test shortens it. */
   readonly repairPollMs?: number;
 }
@@ -352,7 +349,6 @@ const ownLine = async (
       ...(options.makeRuntime === undefined ? {} : { makeRuntime: options.makeRuntime }),
     },
   );
-  options.runnerLog?.attach(runnerLogRecorder(async () => line.runtime, context.scope));
   log(`the composer sits in run ${context.scope.runId} as agent ${line.composerAgentId}`);
 
   // --- S-03's ports -------------------------------------------------------------------
@@ -476,10 +472,20 @@ const ownLine = async (
   const composer = createLineComposer(ports, heads);
   const pendingPush = (record: LineRecord) =>
     record.push?.status === "pending" ? record.push : undefined;
+  // Ranges the plane holds that this composer holds nothing for were left by an
+  // earlier owner: only a drain's takeBatch gives them back. The first drain of a
+  // fresh composer is always run, and a few more may follow while held ranges
+  // remain; held ranges that do not come back are then no work, so the owner can end.
+  const MAX_STRANDED_DRAINS = 3;
+  let started = false;
+  let strandedDrains = 0;
+  const stranded = (record: LineRecord): boolean =>
+    record.held.length > 0 && composer.idle() && strandedDrains < MAX_STRANDED_DRAINS;
   const hasWork = (record: LineRecord): boolean =>
     record.queue.length > 0 ||
     record.batch !== undefined ||
-    record.held.length > 0 ||
+    !started ||
+    stranded(record) ||
     !composer.idle() ||
     !line.engine.idle() ||
     pendingPush(record) !== undefined;
@@ -499,8 +505,20 @@ const ownLine = async (
       continue;
     }
 
-    if (record.queue.length > 0 || record.batch !== undefined || !composer.idle()) {
+    if (!composer.idle() || record.held.length === 0) strandedDrains = 0;
+    if (
+      record.queue.length > 0 ||
+      record.batch !== undefined ||
+      !composer.idle() ||
+      !started ||
+      stranded(record)
+    ) {
       idleSince = undefined;
+      if (composer.idle() && record.queue.length === 0 && record.batch === undefined) {
+        if (record.held.length > 0) strandedDrains += 1;
+        say("taking back the ranges an earlier owner left held");
+      }
+      started = true;
       say(record.batch === undefined ? "composing the queue" : "composing the held batch");
       const outcomes = await composer.drain();
       for (const outcome of outcomes) {

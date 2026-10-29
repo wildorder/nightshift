@@ -12,6 +12,7 @@ import { createEventOutbox, nodeGitRunner, recordArtifact } from "@nightshift/ex
 import {
   createLineRunnerPlane,
   createLineScratchPaths,
+  createRunnerLogRuntime,
   createRunnerPlane,
   createRuntime,
 } from "../compose.js";
@@ -69,6 +70,11 @@ const runnerLog = createRunnerLog({
 });
 
 runRunner({
+  runnerLog,
+  runnerLogRecorder: (endpoint, tokens, scope) => {
+    const runtime = createRunnerLogRuntime(endpoint, tokens);
+    return runnerLogRecorder(async () => runtime, scope);
+  },
   machine: nodeMachine,
   log: say,
   plane: createRunnerPlane,
@@ -85,13 +91,11 @@ runRunner({
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => {
     teeTo(scope.runId);
-    runnerLog.start();
     return installTokenFile(scope.runId, token);
   },
   // The line owner's token, where a run's is: the machine's layout is the same.
   onLineToken: (token, identity) => {
     teeTo(identity.scope.runId);
-    runnerLog.start();
     return installTokenFile(identity.scope.runId, token);
   },
   readCachedToken: async (scope) => {
@@ -115,8 +119,6 @@ runRunner({
       clock: systemClock,
       paths: createLineScratchPaths(process.env),
       parentEnv: process.env,
-      // The line's run records the runner's log under its root node once it exists.
-      runnerLog,
       placeCredentials: async (credentials) => {
         const providerKeys = await placeProviderCredentials(context.scope.runId, credentials, {
           ...(user === undefined ? {} : { user }),
@@ -200,7 +202,6 @@ runRunner({
     const secretNames = Object.keys(context.heartbeat.last?.secrets ?? {});
     if (secretNames.length > 0) say(`project secrets received: ${secretNames.join(", ")}`);
     const runtime = await createRuntime(env, "orchestrator");
-    runnerLog.attach(runnerLogRecorder(async () => runtime, context.scope));
     // Start intelligence before project setup; the root can inspect, repair and retry it.
     say(`root starting in ${context.layout.checkout}`);
     const result = await runHeadless(runtime, env, {
@@ -264,13 +265,11 @@ runRunner({
   },
 }).then(
   async (code) => {
-    // Normal stop, failure and told-to-stop all return here.
-    await runnerLog.finish();
+    // Normal stop, failure and told-to-stop all return here; `runRunner` has uploaded the log.
     process.exit(code);
   },
   async (error: unknown) => {
     say(error instanceof Error ? error.message : String(error));
-    await runnerLog.finish();
     process.exit(2);
   },
 );

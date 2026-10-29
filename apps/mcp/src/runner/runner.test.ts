@@ -38,6 +38,7 @@ import type { CommandResult, Machine } from "./machine.js";
 import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
 import { placeProviderCredentials, rootEnvironment, tokenFile } from "./root.js";
+import { createRunnerLog } from "./runner-log.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
 import {
   restoreFromSidecar,
@@ -1527,6 +1528,114 @@ describe("the runner end to end over fakes (T2, T3)", () => {
     const last = plane.heartbeats.at(-1) as { report?: string; failure?: { message: string } };
     expect(last).toMatchObject({ report: "stopped", failure: { code: "setup_failed" } });
     expect(last.failure?.message).toContain("could not find the workspace volume");
+  });
+
+  it("uploads the runner log at the end of a run whose workspace could not be prepared", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "sudo" && args[0] === "mount" ? fail("wrong fs type, bad superblock") : undefined,
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const uploads: string[] = [];
+    const lines: string[] = [];
+    const runnerLog = createRunnerLog({
+      file: "runner.log",
+      log: (line) => lines.push(line),
+      read: async () => new TextEncoder().encode("the log"),
+    });
+    const tokensSeen: string[] = [];
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      runnerLog,
+      runnerLogRecorder: (endpoint, tokens, scope) => async (bytes) => {
+        tokensSeen.push(await tokens.idToken());
+        uploads.push(`${endpoint} ${scope.runId} ${new TextDecoder().decode(bytes)}`);
+      },
+    });
+    expect(code).toBe(1);
+    expect(uploads).toEqual([`https://api.dev.nightshift.invalid ${f.scope.runId} the log`]);
+    expect(tokensSeen).toHaveLength(1);
+  });
+
+  it("never fails the run when the runner log cannot be uploaded", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "sudo" && args[0] === "mount" ? fail("wrong fs type, bad superblock") : undefined,
+    });
+    const plane = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      plane: plane.planeFor,
+      runnerLog: createRunnerLog({
+        file: "runner.log",
+        log: () => undefined,
+        read: async () => new TextEncoder().encode("the log"),
+      }),
+      runnerLogRecorder: () => async () => {
+        throw new Error("the artifact store is down");
+      },
+    });
+    expect(code).toBe(1);
+  });
+
+  it("uploads the runner log periodically while the workspace is being prepared", async () => {
+    const machine = fakeMachine();
+    const base = fakePlane(program, dispatch, planText, () => ({
+      status: "provisioning",
+      stop: false,
+    }));
+    const uploads: boolean[] = [];
+    let preparing = true;
+    let uploaded!: () => void;
+    const firstUpload = new Promise<void>((resolve) => {
+      uploaded = resolve;
+    });
+    // The periodic upload's first wait ends at once; the next never does.
+    let waits = 0;
+    const runnerLog = createRunnerLog({
+      file: "runner.log",
+      log: () => undefined,
+      sleep: () => (waits++ === 0 ? Promise.resolve() : new Promise<void>(() => undefined)),
+      read: async () => new TextEncoder().encode("the log"),
+    });
+    const code = await runRunner({
+      machine,
+      log: () => undefined,
+      workspace: "/workspace",
+      device: "/dev/xvdf",
+      engineUser: "engine",
+      // Preparation does not end until the log has been uploaded once, then fails.
+      plane: (endpoint, tokens) => ({
+        ...base.planeFor(endpoint, tokens),
+        dispatch: async () => {
+          await firstUpload;
+          preparing = false;
+          return undefined;
+        },
+      }),
+      runnerLog,
+      runnerLogRecorder: () => async () => {
+        uploads.push(preparing);
+        uploaded();
+      },
+    });
+    expect(code).toBe(1);
+    expect(uploads[0]).toBe(true);
   });
 
   it("forwards a failure the work ends with as stopped with that failure (P16 D-07)", async () => {

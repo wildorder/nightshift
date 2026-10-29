@@ -100,7 +100,7 @@ import {
 } from "./role.js";
 import { createProjectUser, createReclaim } from "./run-as.js";
 import { nodeMachine } from "./runner/machine.js";
-import type { LinePlaneFactory, PlaneFactory } from "./runner/plane.js";
+import type { EngineTokens, LinePlaneFactory, PlaneFactory } from "./runner/plane.js";
 import {
   createProjectSetup,
   type ProjectSetup,
@@ -128,6 +128,24 @@ export const createRunnerPlane: PlaneFactory = (endpoint, tokens) => {
       ),
     nodes: (scope) => everyPage((page) => stores.executionNodes.listByRun(scope, page)),
     jobs: (scope) => everyPage((page) => stores.jobContracts.listByRun(scope, page)),
+  };
+};
+
+/**
+ * What the runner's log needs to record itself as an artifact: the standard
+ * HTTP stores and artifact body store under the engine token, with no agent,
+ * session or work runtime behind them.
+ */
+export const createRunnerLogRuntime = (
+  endpoint: string,
+  tokens: EngineTokens,
+): Pick<Runtime, "stores" | "bodies" | "clock" | "ids"> => {
+  const transport = createFetchTransport({ endpoint, tokens });
+  return {
+    stores: createHttpStores({ transport }),
+    bodies: createHttpArtifactBodyStore({ transport }),
+    clock: systemClock,
+    ids: createUlidIdGenerator(),
   };
 };
 

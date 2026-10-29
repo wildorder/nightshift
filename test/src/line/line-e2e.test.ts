@@ -92,6 +92,7 @@ import {
   type Machine,
   type Runtime,
   runLineOwner,
+  runnerLogRecorder,
   runRunner,
 } from "@nightshift/mcp";
 import {
@@ -882,10 +883,10 @@ const ownerFor = async (
         pollMs: 500,
         repairPollMs: 10,
         makeRuntime: async () => runtime,
-        runnerLog,
       }),
-  }).finally(async () => {
-    await runnerLog.finish();
+    // Attached once the token and identity are known, before checkout; the ending uploads.
+    runnerLog,
+    runnerLogRecorder: (_endpoint, _tokens, scope) => runnerLogRecorder(async () => runtime, scope),
   });
   await cp.close();
   return { code, linePlane, machine, repairs };
