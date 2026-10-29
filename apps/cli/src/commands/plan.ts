@@ -330,7 +330,21 @@ const readScratch = async (
   }
   const states = (authored as { projectId?: unknown } | null)?.projectId !== undefined;
   const config = states ? undefined : await configAt(environment, options.repo);
-  const merged = mergeProgramFiles(authored, config);
+  // `--project` names the project the draft belongs to, over the configuration
+  // the directory happens to hold (2026-10-29: a scratch put from another
+  // repository's directory went to that repository's project, and said nothing).
+  const project =
+    options.project === undefined ? undefined : ProjectIdSchema.parse(options.project);
+  const merged = {
+    ...(mergeProgramFiles(authored, config) as Record<string, unknown>),
+    ...(project === undefined ? {} : { projectId: project }),
+  };
+  const stated = (authored as { projectId?: unknown } | null)?.projectId;
+  if (project !== undefined && stated !== undefined && stated !== project) {
+    throw new UsageError(
+      `the scratch's contract is for project \`${String(stated)}\`, not \`${project}\``,
+    );
+  }
   const contract = ProgramContractSchema.parse(merged);
   const conversationText = keepsConversation(contract)
     ? await readText(join(directory, CONVERSATION_FILE))
@@ -425,7 +439,7 @@ export const planPut = async (
   }
   await writeMarker(scratch.directory, written.version.version);
   environment.out(
-    `put version ${written.version.version} of ${options.id} (plan ${written.version.planHash?.slice(0, 12) ?? "unhashed"}) by ${principalOf(written.version.author)}`,
+    `put version ${written.version.version} of ${options.id} in project ${scope.projectId} (plan ${written.version.planHash?.slice(0, 12) ?? "unhashed"}) by ${principalOf(written.version.author)}`,
   );
   environment.out(
     written.check.ready
