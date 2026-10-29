@@ -137,6 +137,56 @@ export const LineParkedSchema = z.strictObject({
 });
 export type LineParked = z.infer<typeof LineParkedSchema>;
 
+/** The sha256 hex digest of an entry's canonical JSON, as the line records it. */
+export const LineDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/** `line.composed`: the settled composition as recorded, with its id and content digest. */
+export const LineComposedPayloadSchema = LineCompositionSchema.extend({
+  id: z.string().min(1),
+  digest: LineDigestSchema,
+});
+export type LineComposedPayload = z.infer<typeof LineComposedPayloadSchema>;
+
+/** `line.parked`: one parked entry as recorded, with its id and content digest. */
+export const LineParkedPayloadSchema = LineParkedSchema.extend({
+  id: z.string().min(1),
+  digest: LineDigestSchema,
+});
+export type LineParkedPayload = z.infer<typeof LineParkedPayloadSchema>;
+
+/** `line.entry_chunk`: one ordered piece of an entry's JSON text; the pieces joined hash to `digest`. */
+export const LineEntryChunkPayloadSchema = z.strictObject({
+  kind: z.enum(["composed", "parked"]),
+  id: z.string().min(1),
+  digest: LineDigestSchema,
+  part: z.int().min(0),
+  parts: z.int().min(1),
+  text: z.string(),
+});
+export type LineEntryChunkPayload = z.infer<typeof LineEntryChunkPayloadSchema>;
+
+/** The most entries one `line.settled` event names. */
+export const MAX_LINE_SETTLED_ENTRIES_PER_EVENT = 20;
+
+/** `line.settled`: the commit marker; `digest` is the whole settlement's. */
+export const LineSettledPayloadSchema = z.strictObject({
+  batchId: z.string().min(1),
+  generation: z.int().min(1),
+  digest: LineDigestSchema,
+  part: z.int().min(0),
+  parts: z.int().min(1),
+  entries: z
+    .array(
+      z.strictObject({
+        type: z.enum(["line.composed", "line.parked"]),
+        id: z.string().min(1),
+        digest: LineDigestSchema,
+      }),
+    )
+    .max(MAX_LINE_SETTLED_ENTRIES_PER_EVENT),
+});
+export type LineSettledPayload = z.infer<typeof LineSettledPayloadSchema>;
+
 /** What the resolver's fix was made of: the program's range, or the line's own main. */
 export const LineUnitSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("main"), commit: CommitShaSchema }),
@@ -202,6 +252,21 @@ const LineRecordShape = z.strictObject({
   parked: z.array(LineParkedSchema),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
+  /**
+   * The settlement that last committed: its batch, the digest of the whole
+   * settle body, who made it and when. A settle that arrives again for this
+   * batch with the same digest has already committed, so it is recovered (its
+   * events and marker re-appended) rather than refused as stale.
+   */
+  lastSettled: z
+    .strictObject({
+      batchId: z.string().min(1),
+      digest: LineDigestSchema,
+      runId: RunIdSchema.optional(),
+      generation: z.int().min(1),
+      at: IsoTimestampSchema,
+    })
+    .optional(),
   updatedAt: IsoTimestampSchema,
 });
 

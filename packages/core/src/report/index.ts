@@ -32,6 +32,7 @@ export {
   gatherMemberFigures,
   gatherReport,
   type JobReport,
+  type LineRunReport,
   type RepairReport,
   type RulingReport,
   type RunReport,

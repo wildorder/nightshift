@@ -29,6 +29,7 @@ import type {
   RunId,
 } from "@nightshift/contracts";
 import { MAX_LINE_COMPOSITIONS, MAX_LINE_PARKED } from "@nightshift/contracts";
+import { composedEntryOf, parkedEntryOf, settlementDigest } from "../line/settlement.js";
 
 /** What the plane's own starts may spend on one project's line per month, unless the config says. */
 export const DEFAULT_LINE_MONTHLY_USD = 25;
@@ -310,6 +311,14 @@ export const parkBatch = (
   };
 };
 
+/** The ids a settlement records: the same batch always yields the same ones. */
+export const settleIds = (
+  body: Pick<LineSettleBody, "batchId" | "composition" | "parked">,
+): { readonly compositionId?: string; readonly parkedIds: readonly string[] } => ({
+  ...(body.composition === undefined ? {} : { compositionId: `${body.batchId}-c` }),
+  parkedIds: body.parked.map((_, index) => `${body.batchId}-p${index}`),
+});
+
 /**
  * Settles a batch with a composition and/or parked entries in one change. The
  * refusals are `composeBatch`'s and `parkBatch`'s: a stale batch, and a
@@ -362,18 +371,7 @@ export const settleBatch = (
         composition === undefined
           ? record.compositions
           : newest(
-              [
-                ...record.compositions,
-                {
-                  compositionId: ids.compositionId ?? "",
-                  commit: composition.commit,
-                  parent: composition.parent,
-                  ranges: composition.ranges,
-                  verification: composition.verification,
-                  ...(composition.resolver === undefined ? {} : { resolver: composition.resolver }),
-                  composedAt: at,
-                },
-              ],
+              [...record.compositions, composedEntryOf(composition, ids.compositionId ?? "", at)],
               MAX_LINE_COMPOSITIONS,
             ),
       ...(body.push === undefined
@@ -395,18 +393,19 @@ export const settleBatch = (
           : newest(
               [
                 ...record.parked,
-                ...body.parked.map((entry, index) => ({
-                  compositionId: ids.parkedIds[index] ?? "",
-                  ranges: entry.ranges,
-                  reason: entry.reason,
-                  ...(entry.commit === undefined ? {} : { commit: entry.commit }),
-                  ...(entry.verification === undefined ? {} : { verification: entry.verification }),
-                  ...(entry.resolver === undefined ? {} : { resolver: entry.resolver }),
-                  parkedAt: at,
-                })),
+                ...body.parked.map((entry, index) =>
+                  parkedEntryOf(entry, ids.parkedIds[index] ?? "", at),
+                ),
               ],
               MAX_LINE_PARKED,
             ),
+      lastSettled: {
+        batchId: body.batchId,
+        digest: settlementDigest(body),
+        ...(typeof owner === "number" ? {} : { runId: owner.runId }),
+        generation,
+        at,
+      },
       updatedAt: at,
     },
   };

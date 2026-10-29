@@ -1,4 +1,6 @@
 import {
+  makeLineRecord,
+  makeLineVerification,
   makePlanDraft,
   makePlanDraftVersion,
   makeProgramContract,
@@ -252,5 +254,89 @@ describe("the project page", () => {
       "drafts down",
     );
     expect(screen.getByRole("heading", { name: "keyart" })).toBeTruthy();
+  });
+
+  const seedLine = async (
+    stores: Parameters<Parameters<typeof mountStudio>[0]>[0],
+    f: Parameters<Parameters<typeof mountStudio>[0]>[1],
+    orgId: Parameters<Parameters<typeof mountStudio>[0]>[2],
+    withLine: boolean,
+  ) => {
+    await stores.projects.put(makeProject(f, { orgId, projectId: PROJECT_ID, name: "keyart" }));
+    const plan = makeProgramContract(f, { projectId: PROJECT_ID, objective: "The plan program" });
+    await stores.programContracts.put(plan);
+    if (!withLine) return;
+    const lineProgram = makeProgramContract(f, {
+      projectId: PROJECT_ID,
+      programId: f.ids.next("prog"),
+      objective: "The line program",
+      kind: "line",
+      line: { branch: "nightshift/develop" },
+    });
+    await stores.programContracts.put(lineProgram);
+    const run = makeRun(f, {
+      projectId: PROJECT_ID,
+      programId: lineProgram.programId,
+      runId: f.ids.next("run"),
+      status: "running",
+      startedAt: "2026-09-27T12:00:00.000Z",
+    });
+    await stores.runs.put(run);
+    const range = (upTo: string) => ({ program: plan.programId, upTo });
+    const composition = (commit: string, id: string) => ({
+      compositionId: id,
+      commit,
+      parent: "9".repeat(40),
+      ranges: [range(commit)],
+      verification: makeLineVerification(f),
+      composedAt: "2026-09-27T11:00:00.000Z",
+    });
+    await stores.lines.update(PROJECT_ID as never, "nightshift/develop", () =>
+      makeLineRecord(f, {
+        head: "abcdef1234".padEnd(40, "0"),
+        compositions: [
+          composition("1".repeat(40), "c1"),
+          composition("2234567890".padEnd(40, "0"), "c2"),
+        ],
+        parked: [
+          {
+            compositionId: "p1",
+            ranges: [range("3".repeat(40))],
+            reason: "repair budget spent",
+            parkedAt: "2026-09-27T11:30:00.000Z",
+          },
+        ],
+      }),
+    );
+    return { plan, run };
+  };
+
+  it("lists the line program in its own Line section, apart from the plan programs", async () => {
+    await mountStudio(
+      (stores, f, orgId) => seedLine(stores, f, orgId, true).then(() => undefined),
+      `/projects/${PROJECT_ID}`,
+    );
+    const line = within(await screen.findByRole("list", { name: "Line" }));
+    expect(line.getByText("nightshift/develop")).toBeTruthy();
+    await waitFor(() => expect(line.getByText("abcdef12")).toBeTruthy());
+    expect(line.getByTestId("line-composition").textContent).toContain("22345678");
+    const parked = line.getByTestId("line-parked");
+    expect(parked.textContent).toContain("repair budget spent");
+    const link = line.getByRole("link", { name: /live run/ });
+    expect(link.getAttribute("href")).toMatch(/\/projects\/.+\/programs\/.+\/runs\/.+/);
+    const programs = within(screen.getByRole("list", { name: "Programs" }));
+    expect(programs.getAllByTestId("program-row")).toHaveLength(1);
+    expect(programs.getByText("The plan program")).toBeTruthy();
+    expect(programs.queryByText("The line program")).toBeNull();
+  });
+
+  it("renders no Line section for a project with no line program", async () => {
+    await mountStudio(
+      (stores, f, orgId) => seedLine(stores, f, orgId, false).then(() => undefined),
+      `/projects/${PROJECT_ID}`,
+    );
+    await screen.findByRole("list", { name: "Programs" });
+    expect(screen.queryByRole("list", { name: "Line" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Line" })).toBeNull();
   });
 });

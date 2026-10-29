@@ -10,7 +10,10 @@ import {
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
   type LineRecord,
+  MAX_INLINE_PAYLOAD_BYTES,
   type OrgId,
+  type ProgramId,
+  type ProjectId,
   type ProjectSelfStartedUsage,
   type RunId,
 } from "@nightshift/contracts";
@@ -18,6 +21,7 @@ import {
   createFixedClock,
   createFixtures,
   type Fixtures,
+  gatherReport,
   lineBundleObjectKey,
   lineProgramId,
   makeDispatch,
@@ -26,6 +30,7 @@ import {
   makeMembership,
   makeProgramContract,
   makeProject,
+  makeRootNode,
   makeRun,
   nextUserId,
 } from "@nightshift/core";
@@ -148,7 +153,13 @@ const startRun = async (w: World, programId = lineProgramId(w.f.scope.projectId,
   const runId = w.f.ids.next("run");
   await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "pending" }));
   await w.stores.dispatches.put(
-    makeDispatch(w.f, { programId, runId, generation: 1, status: "running", instanceId: "i-1" }),
+    makeDispatch(w.f, {
+      programId,
+      runId,
+      generation: 1,
+      status: "running",
+      instanceId: "i-1",
+    }),
   );
   await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "running" }));
   return runId;
@@ -262,7 +273,11 @@ describe("every principal against every line route", () => {
   }
 
   const CASES: readonly Case[] = [
-    { name: "a user of the owning org", reach: "read", principal: (w) => w.user },
+    {
+      name: "a user of the owning org",
+      reach: "read",
+      principal: (w) => w.user,
+    },
     {
       name: "a user of another org",
       reach: "none",
@@ -503,7 +518,10 @@ describe("batch, settle and push", () => {
       url,
       {
         ...body,
-        composition: { ...body.composition, resolver: { decision: "none", attempts: 4 } },
+        composition: {
+          ...body.composition,
+          resolver: { decision: "none", attempts: 4 },
+        },
       },
       me,
     );
@@ -521,8 +539,317 @@ describe("batch, settle and push", () => {
       status: "pending",
       generation: 1,
     });
-    // Settled: the same batch again is stale.
-    expect((await call(w, "POST", url, body, me)).status).toBe(409);
+    // Settled: the same body again is a recovery; another body for the batch is stale.
+    expect((await call(w, "POST", url, body, me)).status).toBe(200);
+    expect((await call(w, "POST", url, { ...body, parked: [] }, me)).status).toBe(409);
+  });
+
+  describe("settle appends the entries to the holding run as events", () => {
+    const settled = async () => {
+      const w = await setup();
+      const { me, runId } = await seedLine(w, {
+        queue: [entry(w), entry(w, SHA_B)],
+      });
+      const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
+      const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
+      const program = w.f.scope.programId;
+      const body = {
+        batchId,
+        composition: {
+          commit: SHA_B,
+          parent: SHA,
+          ranges: [{ program, upTo: SHA }],
+          verification: makeLineVerification(w.f),
+        },
+        push: { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" },
+        parked: [
+          { ranges: [{ program, upTo: SHA_B }], reason: "conflict" },
+          { ranges: [{ program, upTo: SHA_B }], reason: "budget" },
+        ],
+      };
+      const scope = {
+        projectId: w.f.scope.projectId,
+        programId: lineProgramId(w.f.scope.projectId, BRANCH),
+        runId,
+      };
+      return { w, me, body, scope };
+    };
+
+    it("appends one event per entry and a commit marker, and a repeated settle adds none", async () => {
+      const { w, me, body, scope } = await settled();
+      const url = lineUrl(w, BRANCH, "/settle");
+      expect((await call(w, "POST", url, body, me)).status).toBe(200);
+      const events = (await w.stores.events.listByRun(scope)).items;
+      expect(events.map((e) => e.type).sort()).toEqual([
+        "line.composed",
+        "line.parked",
+        "line.parked",
+        "line.settled",
+      ]);
+      const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      const entryKeys = events
+        .filter((e) => e.type !== "line.settled")
+        .map((e) => e.idempotencyKey)
+        .sort();
+      expect(entryKeys).toEqual(
+        [
+          `line.composed:${record?.compositions[0]?.compositionId}`,
+          ...(record?.parked ?? []).map((p) => `line.parked:${p.compositionId}`),
+        ]
+          .sort()
+          .map((prefix, i) => {
+            expect(entryKeys[i]?.startsWith(`${prefix}:`)).toBe(true);
+            return entryKeys[i];
+          }),
+      );
+      for (const key of entryKeys) expect(key?.length).toBeLessThanOrEqual(256);
+      expect(record?.lastSettled?.batchId).toBe(body.batchId);
+      // The same body again is a recovery of a committed settle: 200, nothing new.
+      expect((await call(w, "POST", url, body, me)).status).toBe(200);
+      expect((await w.stores.events.listByRun(scope)).items).toHaveLength(4);
+      // A different body for the settled batch stays a refusal.
+      const other = await call(w, "POST", url, { ...body, parked: [] }, me);
+      expect(other.status).toBe(409);
+      expect(code(other)).toBe("stale_batch");
+    });
+
+    it("derives the ids from the batch, so a retry yields the same ones", async () => {
+      const { w, me, body } = await settled();
+      expect((await call(w, "POST", lineUrl(w, BRANCH, "/settle"), body, me)).status).toBe(200);
+      const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      expect(record?.compositions[0]?.compositionId).toBe(`${body.batchId}-c`);
+      expect(record?.parked.map((p) => p.compositionId)).toEqual([
+        `${body.batchId}-p0`,
+        `${body.batchId}-p1`,
+      ]);
+    });
+
+    const reportOf = async (
+      w: World,
+      scope: { projectId: ProjectId; programId: ProgramId; runId: RunId },
+    ) => {
+      await w.stores.executionNodes.put(makeRootNode(w.f, scope));
+      return (await gatherReport(w.stores, scope)).line;
+    };
+    const evict = (w: World) =>
+      w.stores.lines.update(w.f.scope.projectId, BRANCH, (cur) =>
+        cur === undefined ? undefined : { ...cur, compositions: [], parked: [] },
+      );
+
+    it("a failure on the second entry append fails the settle, leaves the record, and reports none; a retry reports each entry once", async () => {
+      const { w, me, body, scope } = await settled();
+      const before = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      const append = w.stores.events.append.bind(w.stores.events);
+      let calls = 0;
+      vi.spyOn(w.stores.events, "append").mockImplementation((event) => {
+        calls += 1;
+        // The second entry's append fails, once: the first is already stored.
+        if (calls === 2) return Promise.reject(new Error("store down"));
+        return append(event);
+      });
+      const url = lineUrl(w, BRANCH, "/settle");
+      const failed = await call(w, "POST", url, body, me);
+      expect(failed.status).toBeGreaterThanOrEqual(500);
+      expect(await w.stores.lines.get(w.f.scope.projectId, BRANCH)).toEqual(before);
+      expect((await w.stores.events.listByRun(scope)).items).toHaveLength(1);
+      const none = await reportOf(w, scope);
+      expect(none?.compositions).toEqual([]);
+      expect(none?.parked).toEqual([]);
+      const retried = await call(w, "POST", url, body, me);
+      expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+      await evict(w);
+      const line = await reportOf(w, scope);
+      expect(line?.compositions.map((c) => c.compositionId)).toEqual([`${body.batchId}-c`]);
+      expect(line?.parked.map((p) => p.reason).sort()).toEqual(["budget", "conflict"]);
+      vi.restoreAllMocks();
+    });
+
+    it("a takeover between the dry-run and the update refuses the settle and reports nothing", async () => {
+      const { w, me, body, scope } = await settled();
+      const append = w.stores.events.append.bind(w.stores.events);
+      let calls = 0;
+      vi.spyOn(w.stores.events, "append").mockImplementation(async (event) => {
+        const stored = await append(event);
+        calls += 1;
+        // After the last entry is appended, another owner takes the batch.
+        if (calls === 3) {
+          await w.stores.lines.update(w.f.scope.projectId, BRANCH, (cur) =>
+            cur?.batch === undefined
+              ? undefined
+              : { ...cur, batch: { ...cur.batch, generation: 2 } },
+          );
+        }
+        return stored;
+      });
+      const refused = await call(w, "POST", lineUrl(w, BRANCH, "/settle"), body, me);
+      expect(refused.status).toBe(409);
+      expect(code(refused)).toBe("stale_generation");
+      expect((await w.stores.events.listByRun(scope)).items).toHaveLength(3);
+      const line = await reportOf(w, scope);
+      expect(line?.compositions).toEqual([]);
+      expect(line?.parked).toEqual([]);
+      vi.restoreAllMocks();
+    });
+
+    it("a replacement owner settling the same batch differently is reported as itself, not the partial first attempt", async () => {
+      const { w, me, body, scope } = await settled();
+      const append = w.stores.events.append.bind(w.stores.events);
+      let calls = 0;
+      const spy = vi.spyOn(w.stores.events, "append").mockImplementation((event) => {
+        calls += 1;
+        if (calls === 3) return Promise.reject(new Error("store down"));
+        return append(event);
+      });
+      const url = lineUrl(w, BRANCH, "/settle");
+      expect((await call(w, "POST", url, body, me)).status).toBeGreaterThanOrEqual(500);
+      spy.mockRestore();
+      // The run is replaced: same run, generation 2, holding the same batch.
+      const dispatch = await w.stores.dispatches.get({ ...scope });
+      if (dispatch === undefined) throw new Error("no dispatch");
+      await w.stores.dispatches.put({ ...dispatch, generation: 2 });
+      const second = engineOf(w, scope.runId, { generation: 2 });
+      const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 2 }, second);
+      expect((taken.body as { batch: { batchId: string } }).batch.batchId).toBe(body.batchId);
+      const program = w.f.scope.programId;
+      const replacement = {
+        ...body,
+        composition: { ...body.composition, commit: "c".repeat(40) },
+        push: { ...body.push, head: "c".repeat(40) },
+        parked: [{ ranges: [{ program, upTo: SHA_B }], reason: "moved main: different reason" }],
+      };
+      const settledAgain = await call(w, "POST", url, replacement, second);
+      expect(settledAgain.status, JSON.stringify(settledAgain.body)).toBe(200);
+      await evict(w);
+      const line = await reportOf(w, scope);
+      expect(line?.compositions.map((c) => c.commit)).toEqual(["c".repeat(40)]);
+      expect(line?.parked.map((p) => p.reason)).toEqual(["moved main: different reason"]);
+    });
+
+    it("a marker append failing after the commit is a 5xx; the retry of the same body recovers and the entries outlive the record window", async () => {
+      const { w, me, body, scope } = await settled();
+      const append = w.stores.events.append.bind(w.stores.events);
+      const spy = vi
+        .spyOn(w.stores.events, "append")
+        .mockImplementation((event) =>
+          event.type === "line.settled" ? Promise.reject(new Error("store down")) : append(event),
+        );
+      const url = lineUrl(w, BRANCH, "/settle");
+      const failed = await call(w, "POST", url, body, me);
+      expect(failed.status).toBeGreaterThanOrEqual(500);
+      const committed = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      expect(committed?.compositions).toHaveLength(1);
+      spy.mockRestore();
+      const retried = await call(w, "POST", url, body, me);
+      expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+      const events = (await w.stores.events.listByRun(scope)).items;
+      expect(events.filter((e) => e.type === "line.settled")).toHaveLength(1);
+      expect(events).toHaveLength(4);
+      await evict(w);
+      const line = await reportOf(w, scope);
+      expect(line?.compositions).toHaveLength(1);
+      expect(line?.parked.map((p) => p.reason).sort()).toEqual(["budget", "conflict"]);
+    });
+
+    it("settles a parked entry with a ~13 KB reason (250 conflict paths and a 1500-char tail) and reports it whole after eviction", async () => {
+      const { w, me, body, scope } = await settled();
+      const program = w.f.scope.programId;
+      const paths = Array.from(
+        { length: 250 },
+        (_, i) => `packages/area-${i}/src/deep/module-${i}.ts`,
+      );
+      const tail = `…${"E".repeat(1499)}`;
+      const reason = `the merge conflicted in ${paths.join(", ")}; the resolver's attempt limit (3) was spent; last failure: ${tail}`;
+      expect(new TextEncoder().encode(reason).length).toBeGreaterThan(MAX_INLINE_PAYLOAD_BYTES);
+      const big = { ...body, parked: [{ ranges: [{ program, upTo: SHA_B }], reason }] };
+      const response = await call(w, "POST", lineUrl(w, BRANCH, "/settle"), big, me);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const events = (await w.stores.events.listByRun(scope)).items;
+      expect(events.some((e) => e.type === "line.entry_chunk")).toBe(true);
+      await evict(w);
+      const line = await reportOf(w, scope);
+      expect(line?.parked.map((p) => p.reason)).toEqual([reason]);
+    });
+
+    it("appends no events for a refused settle", async () => {
+      const { w, me, body, scope } = await settled();
+      const url = lineUrl(w, BRANCH, "/settle");
+      const stale = await call(w, "POST", url, { ...body, batchId: "nope" }, me);
+      expect(stale.status).toBe(409);
+      const notHolder = await call(
+        w,
+        "POST",
+        url,
+        body,
+        engineOf(w, scope.runId, { generation: 2 }),
+      );
+      expect(notHolder.status).toBeGreaterThanOrEqual(400);
+      expect((await w.stores.events.listByRun(scope)).items).toHaveLength(0);
+    });
+
+    it("keeps all 51 parked entries and their reasons as events, and the report lists them", async () => {
+      const { w, me, body, scope } = await settled();
+      const program = w.f.scope.programId;
+      // A record already full, so the window truncates the settlement.
+      await w.stores.lines.update(w.f.scope.projectId, BRANCH, (cur) =>
+        cur === undefined
+          ? undefined
+          : {
+              ...cur,
+              parked: Array.from({ length: 50 }, (_, i) => ({
+                compositionId: `old-${i}`,
+                ranges: [{ program, upTo: SHA }],
+                reason: "old",
+                parkedAt: NOW,
+              })),
+            },
+      );
+      const many = {
+        ...body,
+        parked: Array.from({ length: 51 }, (_, i) => ({
+          ranges: [{ program, upTo: SHA_B }],
+          reason: `reason-${i}`,
+        })),
+      };
+      expect((await call(w, "POST", lineUrl(w, BRANCH, "/settle"), many, me)).status).toBe(200);
+      const events = (await w.stores.events.listByRun(scope)).items.filter(
+        (e) => e.type === "line.parked",
+      );
+      expect(events).toHaveLength(51);
+      expect(events.map((e) => (e.payload as { reason: string }).reason).sort()).toEqual(
+        many.parked.map((p) => p.reason).sort(),
+      );
+      const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      expect(record?.parked).toHaveLength(50);
+      await w.stores.executionNodes.put(makeRootNode(w.f, scope));
+      const report = await gatherReport(w.stores, scope);
+      const reasons = (report.line?.parked ?? []).map((p) => p.reason);
+      for (const p of many.parked) expect(reasons).toContain(p.reason);
+    });
+
+    it("chunks an oversized composition whole, command results included", async () => {
+      const { w, me, body, scope } = await settled();
+      const commands = Array.from({ length: 200 }, (_, i) => ({
+        stepId: `step-${i}`,
+        command: `npm run step-${i} -- ${"x".repeat(60)}`,
+        exitCode: i === 7 ? 1 : 0,
+        durationMs: 1,
+      }));
+      const big = {
+        ...body,
+        composition: {
+          ...body.composition,
+          verification: makeLineVerification(w.f, { commands, outcome: "failed" }),
+        },
+      };
+      expect((await call(w, "POST", lineUrl(w, BRANCH, "/settle"), big, me)).status).toBe(200);
+      await w.stores.executionNodes.put(makeRootNode(w.f, scope));
+      await w.stores.lines.update(w.f.scope.projectId, BRANCH, (cur) =>
+        cur === undefined ? undefined : { ...cur, compositions: [], parked: [] },
+      );
+      const line = (await gatherReport(w.stores, scope)).line;
+      const verification = line?.compositions[0]?.verification;
+      expect(verification?.commands).toHaveLength(200);
+    });
   });
 
   describe("settle asks the publisher", () => {
