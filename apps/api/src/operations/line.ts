@@ -42,6 +42,7 @@ import {
   requestPush,
   requireEffectivePolicy,
   settleBatch,
+  settleIds,
   takeBatch,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
@@ -283,16 +284,19 @@ const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> =>
 
 /**
  * The settled entries as events of the run that held the batch: the run's own
- * history, beyond what the line record's window keeps. The record write has
- * already happened, so a failed append is logged, never thrown. An entry whose
- * payload would not fit inline keeps everything but its verification's command
- * results, which a summary replaces.
+ * history, beyond what the line record's window keeps. Written FIRST, before the
+ * record changes, from the untruncated body and with ids derived from the batch,
+ * so a failed append fails the settle with the record untouched and the
+ * composer's retry rewrites the same keys (an already-stored key returns the
+ * stored event) and then completes. An entry whose payload would not fit inline
+ * keeps everything but its verification's command results, which a summary
+ * replaces.
  */
 const appendSettledEvents = async (
   deps: ApiDeps,
   principal: Extract<Principal, { kind: "execution" }>,
-  record: LineRecord,
-  settled: readonly string[],
+  body: LineSettleBody,
+  settleIds: { readonly compositionId?: string; readonly parkedIds: readonly string[] },
   at: string,
 ): Promise<void> => {
   const scope: RunScope = {
@@ -300,73 +304,74 @@ const appendSettledEvents = async (
     programId: principal.programId,
     runId: principal.runId,
   };
-  try {
-    const nodes = await deps.stores.executionNodes.listByRun(scope);
-    const executionNodeId =
-      nodes.items.find((n) => n.parentNodeId === null)?.executionNodeId ?? null;
-    const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
-    const entries: {
-      type: EventType;
-      id: string;
-      payload: Record<string, unknown>;
-    }[] = [];
-    for (const composition of record.compositions) {
-      if (!settled.includes(composition.compositionId)) continue;
-      const payload: LineComposedPayload = composition;
-      entries.push({
-        type: "line.composed",
-        id: composition.compositionId,
+  const nodes = await deps.stores.executionNodes.listByRun(scope);
+  const executionNodeId = nodes.items.find((n) => n.parentNodeId === null)?.executionNodeId ?? null;
+  const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
+  const entries: { type: EventType; id: string; payload: Record<string, unknown> }[] = [];
+  const composition = body.composition;
+  if (composition !== undefined) {
+    const id = settleIds.compositionId ?? "";
+    const payload: LineComposedPayload = {
+      compositionId: id,
+      commit: composition.commit,
+      parent: composition.parent,
+      ranges: composition.ranges,
+      verification: composition.verification,
+      ...(composition.resolver === undefined ? {} : { resolver: composition.resolver }),
+      ...(composition.repair === undefined ? {} : { repair: composition.repair }),
+      composedAt: at,
+    };
+    entries.push({ type: "line.composed", id, payload });
+  }
+  body.parked.forEach((entry, index) => {
+    const id = settleIds.parkedIds[index] ?? "";
+    const payload: LineParkedPayload = {
+      compositionId: id,
+      ranges: entry.ranges,
+      reason: entry.reason,
+      ...(entry.commit === undefined ? {} : { commit: entry.commit }),
+      ...(entry.verification === undefined ? {} : { verification: entry.verification }),
+      ...(entry.resolver === undefined ? {} : { resolver: entry.resolver }),
+      ...(entry.repair === undefined ? {} : { repair: entry.repair }),
+      parkedAt: at,
+    };
+    entries.push({ type: "line.parked", id, payload });
+  });
+  for (const entry of entries) {
+    let payload = entry.payload;
+    if (inlinePayloadBytes(payload) > MAX_INLINE_PAYLOAD_BYTES) {
+      const verification = payload.verification as
+        | Parameters<typeof summariseLineVerification>[0]
+        | undefined;
+      if (verification !== undefined && "commands" in verification) {
+        payload = { ...payload, verification: summariseLineVerification(verification) };
+      }
+    }
+    await deps.stores.events.append(
+      EventSchema.parse({
+        schemaVersion: 1,
+        ...scope,
+        eventId: ids.next("evt"),
+        idempotencyKey: `${entry.type}:${entry.id}`,
+        sequence: null,
+        type: entry.type,
+        source: "control-plane",
+        executionNodeId,
+        agentId: null,
         payload,
-      });
-    }
-    for (const parked of record.parked) {
-      if (!settled.includes(parked.compositionId)) continue;
-      const payload: LineParkedPayload = parked;
-      entries.push({ type: "line.parked", id: parked.compositionId, payload });
-    }
-    for (const entry of entries) {
-      let payload = entry.payload;
-      if (inlinePayloadBytes(payload) > MAX_INLINE_PAYLOAD_BYTES) {
-        const verification = payload.verification as
-          | Parameters<typeof summariseLineVerification>[0]
-          | undefined;
-        if (verification !== undefined && "commands" in verification) {
-          payload = {
-            ...payload,
-            verification: summariseLineVerification(verification),
-          };
-        }
-      }
-      try {
-        await deps.stores.events.append(
-          EventSchema.parse({
-            schemaVersion: 1,
-            ...scope,
-            eventId: ids.next("evt"),
-            idempotencyKey: `${entry.type}:${entry.id}`,
-            sequence: null,
-            type: entry.type,
-            source: "control-plane",
-            executionNodeId,
-            agentId: null,
-            payload,
-            occurredAt: at,
-            recordedAt: at,
-          }),
-        );
-      } catch (error) {
-        console.error(
-          `line ${scope.runId}: could not append ${entry.type} for ${entry.id} (the settle stands)`,
-          error,
-        );
-      }
-    }
-  } catch (error) {
-    console.error(`line ${scope.runId}: could not append the settled entries' events`, error);
+        occurredAt: at,
+        recordedAt: at,
+      }),
+    );
   }
 };
 
-/** `POST …/line/settle?branch=` — the batch settled with a composition and/or parked entries. */
+/**
+ * `POST …/line/settle?branch=` — the batch settled with a composition and/or
+ * parked entries. Events first: the rule is dry-run against the current record
+ * (a refusal writes nothing), the entries are appended as events under ids
+ * derived from the batch, and only then is the record changed.
+ */
 export const postLineSettle: Handler = async (context) => {
   const { deps, request, params } = context;
   const target = targetOf(params);
@@ -376,28 +381,16 @@ export const postLineSettle: Handler = async (context) => {
   if (Array.isArray(raw?.parked)) for (const entry of raw.parked) refuseResolverOver(entry);
   const body: LineSettleBody = parseBody(LineSettleBodySchema, request.body);
   const at = nowIso(deps.clock);
-  const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
-  const compositionId = body.composition === undefined ? undefined : ids.next("comp");
-  const parkedIds = body.parked.map(() => ids.next("comp"));
+  const settled = settleIds(body);
   const owner = await ownerOf(context, undefined);
-  const record = await applyLineChange(deps, target, (current) =>
-    settleBatch(
-      current,
-      body,
-      { ...(compositionId === undefined ? {} : { compositionId }), parkedIds },
-      owner,
-      at,
-    ),
-  );
+  const dryRun = settleBatch(await requireLine(deps, target), body, settled, owner, at);
+  if (!dryRun.ok) throw refusalStatus(dryRun);
   if (context.principal.kind === "execution") {
-    await appendSettledEvents(
-      deps,
-      context.principal,
-      record,
-      [...(compositionId === undefined ? [] : [compositionId]), ...parkedIds],
-      at,
-    );
+    await appendSettledEvents(deps, context.principal, body, settled, at);
   }
+  const record = await applyLineChange(deps, target, (current) =>
+    settleBatch(current, body, settled, owner, at),
+  );
   if (
     body.push !== undefined &&
     record.push?.head === body.push.head &&

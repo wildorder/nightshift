@@ -256,6 +256,14 @@ export const parkBatch = (
   };
 };
 
+/** The ids a settlement records: the same batch always yields the same ones. */
+export const settleIds = (
+  body: Pick<LineSettleBody, "batchId" | "composition" | "parked">,
+): { readonly compositionId?: string; readonly parkedIds: readonly string[] } => ({
+  ...(body.composition === undefined ? {} : { compositionId: `${body.batchId}-c` }),
+  parkedIds: body.parked.map((_, index) => `${body.batchId}-p${index}`),
+});
+
 /**
  * Settles a batch with a composition and/or parked entries in one change. The
  * refusals are `composeBatch`'s and `parkBatch`'s: a stale batch, and a
@@ -304,6 +312,7 @@ export const settleBatch = (
                   ranges: composition.ranges,
                   verification: composition.verification,
                   ...(composition.resolver === undefined ? {} : { resolver: composition.resolver }),
+                  ...(composition.repair === undefined ? {} : { repair: composition.repair }),
                   composedAt: at,
                 },
               ],
@@ -335,6 +344,7 @@ export const settleBatch = (
                   ...(entry.commit === undefined ? {} : { commit: entry.commit }),
                   ...(entry.verification === undefined ? {} : { verification: entry.verification }),
                   ...(entry.resolver === undefined ? {} : { resolver: entry.resolver }),
+                  ...(entry.repair === undefined ? {} : { repair: entry.repair }),
                   parkedAt: at,
                 })),
               ],
