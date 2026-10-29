@@ -837,9 +837,7 @@ describe("held entries", () => {
     });
   });
 
-  // Skipped until the program head merges: its composedEntryOf/parkedEntryOf (line/settlement.ts)
-  // copy `repair` in settleBatch; re-enable then.
-  it.skip("stores the repair ref from a composition and from parked bodies", () => {
+  it("stores the repair ref from a composition and from parked bodies", () => {
     const repair = { runId: f.ids.next("run"), jobContractId: f.ids.next("job") };
     const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
     const { batchId: _id, ...composition } = compositionBody("b", { repair });
