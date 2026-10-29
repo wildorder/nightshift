@@ -103,20 +103,6 @@ export const claudeToolPolicy = (): ClaudeToolPolicy => ({
   denied: gitWriteDenials(),
 });
 
-/** The tools that change a file, which the line examiner is denied. */
-export const FILE_EDIT_TOOLS: readonly string[] = ["Edit", "MultiEdit", "NotebookEdit", "Write"];
-
-/**
- * A line agent's policy (strand S-04): a worker's, and for the examiner also no
- * file edits. The git write denials are unconditional.
- */
-export const claudeLineToolPolicy = (
-  role: "line_resolver" | "line_examiner",
-): ClaudeToolPolicy => ({
-  permissionMode: "bypassPermissions",
-  denied: role === "line_examiner" ? [...gitWriteDenials(), ...FILE_EDIT_TOOLS] : gitWriteDenials(),
-});
-
 /**
  * How a Nightshift MCP tool is named to the model.
  *

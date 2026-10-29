@@ -50,7 +50,6 @@ export {
   type MachineAuditRuntime,
   nodeOnMachine,
 } from "./runner/gates.js";
-export { createLineAgents, type LineAgentsOptions } from "./runner/line-agents.js";
 export { type LineOwnerOptions, runLineOwner } from "./runner/line-owner.js";
 export type { CommandResult, Machine } from "./runner/machine.js";
 export { runRunner } from "./runner/main.js";

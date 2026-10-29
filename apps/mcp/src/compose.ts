@@ -494,40 +494,10 @@ export const createRoutedHarness = (construct: (harness: string) => Harness): Ha
       owners.set(handle, adapter);
       return handle;
     },
-    startLine: async (input) => {
-      const adapter = adapterFor(input.model.harness);
-      if (adapter.startLine === undefined) {
-        throw new Error(`the ${input.model.harness} harness cannot launch a line agent`);
-      }
-      const handle = await adapter.startLine(input);
-      owners.set(handle, adapter);
-      return handle;
-    },
     cancel: async (handle, grace) => {
       await owners.get(handle)?.cancel(handle, grace);
     },
     status: async (handle) => (await owners.get(handle)?.status(handle)) ?? "created",
-  };
-};
-
-/**
- * The harnesses a line owner's agents launch through, by `RouteTarget.harness`
- * (Pipkin M1b, S-04): built on a machine, on first use, over the environment
- * the agents run in.
- */
-export const createLineHarnesses = (env: Env): { get(harness: string): Harness | undefined } => {
-  const adapters = new Map<string, Harness | undefined>();
-  return {
-    get: (harness) => {
-      if (!adapters.has(harness)) {
-        try {
-          adapters.set(harness, constructAdapter(harness, env, true));
-        } catch {
-          adapters.set(harness, undefined);
-        }
-      }
-      return adapters.get(harness);
-    },
   };
 };
 
