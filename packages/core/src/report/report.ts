@@ -33,8 +33,10 @@ import {
   type GateHealthVerdict,
   type IsoTimestamp,
   type JobContract,
-  type LineComposition,
-  type LineParked,
+  type LineComposedPayload,
+  LineComposedPayloadSchema,
+  type LineParkedPayload,
+  LineParkedPayloadSchema,
   type LineRange,
   type LineRepairRef,
   lifecycleObservationsOf,
@@ -180,7 +182,10 @@ export interface StrandReport {
    * rather than build it again (`Run.carriedStrands`): which run, and what it
    * landed, all of it on the branch this run started from.
    */
-  readonly carriedFrom?: { readonly runId: string; readonly landed: readonly string[] };
+  readonly carriedFrom?: {
+    readonly runId: string;
+    readonly landed: readonly string[];
+  };
 }
 
 export interface UsageRow {
@@ -283,8 +288,10 @@ export interface LineRunReport {
   readonly branch: string;
   /** The line's head at GitHub as last known; absent when no line record exists. */
   readonly head?: string;
-  readonly compositions: readonly LineComposition[];
-  readonly parked: readonly LineParked[];
+  /** From the run's `line.composed` events, with in-window entries still on the line record; a verification may be summarised. */
+  readonly compositions: readonly LineComposedPayload[];
+  /** From the run's `line.parked` events, with in-window entries still on the line record. */
+  readonly parked: readonly LineParkedPayload[];
   /** The run's repair jobs; each composition's or parked entry's `repair` names one of them. */
   readonly repairs: readonly RepairReport[];
 }
@@ -393,7 +400,10 @@ interface Records {
   /** Node id → the prerequisites its deferred checks wait on. */
   readonly waitingOf: ReadonlyMap<string, readonly string[]>;
   /** Every attempt at every strand, oldest first. */
-  readonly strandNodes: readonly { readonly strandId: string; readonly node: ExecutionNode }[];
+  readonly strandNodes: readonly {
+    readonly strandId: string;
+    readonly node: ExecutionNode;
+  }[];
   readonly outcomes: StrandOutcomes;
   /** What the run carried over from an earlier run of the same plan. */
   readonly carried: readonly CarriedStrand[];
@@ -952,7 +962,7 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
   const gateHealth = await gatherGateHealth(stores, scope, records, nodes, verifications);
   const line =
     program.kind === "line"
-      ? await gatherLine(stores, scope, program, run, gateHealth.repairs)
+      ? await gatherLine(stores, scope, program, run, gateHealth.repairs, records.events)
       : undefined;
 
   const p20 = p20Of(records, run, nodes, verifications, line === undefined ? [] : lineStamps(line));
@@ -1060,7 +1070,11 @@ const nodeRecordsOf = async (
   stores: ProjectStores,
   scope: RunScope,
   nodes: readonly ExecutionNode[] | undefined,
-): Promise<{ agents?: Agent[]; routes?: RoutingDecision[]; failure?: string }> => {
+): Promise<{
+  agents?: Agent[];
+  routes?: RoutingDecision[];
+  failure?: string;
+}> => {
   if (nodes === undefined) return {};
   const agents: Agent[] = [];
   const routes: RoutingDecision[] = [];
@@ -1205,7 +1219,9 @@ const memberFiguresOf = async (
     ...(evidenceFailure === undefined ? {} : { evidenceUnavailable: evidenceFailure }),
     ...(routes === undefined || measurements === undefined
       ? {}
-      : { resources: resourcesOfRoutes(routes, measurements, rootIdsOf(nodes ?? [])) }),
+      : {
+          resources: resourcesOfRoutes(routes, measurements, rootIdsOf(nodes ?? [])),
+        }),
     ...(infrastructure === undefined ? {} : { infrastructure }),
     ...(failures.length === 0 ? {} : { unavailable: failures.join("; ") }),
   };
@@ -1262,7 +1278,13 @@ export const gatherMemberFigures = async (
     }
     if (figures.unavailable !== undefined) unavailable.set(key, figures.unavailable);
   }
-  return { resources, infrastructure, evidence, evidenceUnavailable, unavailable };
+  return {
+    resources,
+    infrastructure,
+    evidence,
+    evidenceUnavailable,
+    unavailable,
+  };
 };
 
 /**
@@ -1344,9 +1366,12 @@ const inRunWindow = (run: Run, at: string, repair: LineRepairRef | undefined): b
     (run.endedAt === undefined || Date.parse(at) <= Date.parse(run.endedAt)));
 
 /**
- * A line run's part of the report: the line record's entries that belong to the
- * run (by repair ref, or by time within the run's window; a live run has no
- * upper bound). A missing line record yields none, not a throw.
+ * A line run's part of the report: the run's own `line.composed` and
+ * `line.parked` events, uncapped, unioned with the line record's entries that
+ * belong to the run (by repair ref, or by time within the run's window; a live
+ * run has no upper bound), so runs from before the events existed still show
+ * what the record holds. Deduped by compositionId, the event first. A missing
+ * line record yields none, not a throw.
  */
 const gatherLine = async (
   stores: ProjectStores,
@@ -1354,16 +1379,55 @@ const gatherLine = async (
   program: ProgramContract,
   run: Run,
   repairs: readonly RepairReport[],
+  events: readonly Event[],
 ): Promise<LineRunReport> => {
   const branch = program.line?.branch ?? "";
   const record = await stores.lines.get(scope.projectId, branch);
+  const union = <T extends { readonly compositionId: string }>(
+    fromEvents: readonly T[],
+    fromRecord: readonly T[],
+    stamp: (entry: T) => string,
+  ): T[] => {
+    const held = new Map(fromRecord.map((entry) => [entry.compositionId, entry]));
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const entry of fromEvents) {
+      if (seen.has(entry.compositionId)) continue;
+      seen.add(entry.compositionId);
+      // The record's copy may have moved on since the event (a push lands on it).
+      out.push({ ...entry, ...(held.get(entry.compositionId) ?? {}) });
+    }
+    for (const entry of fromRecord) {
+      if (seen.has(entry.compositionId)) continue;
+      seen.add(entry.compositionId);
+      out.push(entry);
+    }
+    return out.sort((a, b) => Date.parse(stamp(a)) - Date.parse(stamp(b)));
+  };
+  const composedEvents: LineComposedPayload[] = [];
+  const parkedEvents: LineParkedPayload[] = [];
+  for (const event of events) {
+    if (event.type === "line.composed") {
+      const parsed = LineComposedPayloadSchema.safeParse(event.payload);
+      if (parsed.success) composedEvents.push(parsed.data);
+    } else if (event.type === "line.parked") {
+      const parsed = LineParkedPayloadSchema.safeParse(event.payload);
+      if (parsed.success) parkedEvents.push(parsed.data);
+    }
+  }
   return {
     branch,
     ...(record?.head === undefined ? {} : { head: record.head }),
-    compositions: (record?.compositions ?? []).filter((c) =>
-      inRunWindow(run, c.composedAt, c.repair),
+    compositions: union(
+      composedEvents,
+      (record?.compositions ?? []).filter((c) => inRunWindow(run, c.composedAt, c.repair)),
+      (c) => c.composedAt,
     ),
-    parked: (record?.parked ?? []).filter((p) => inRunWindow(run, p.parkedAt, p.repair)),
+    parked: union(
+      parkedEvents,
+      (record?.parked ?? []).filter((p) => inRunWindow(run, p.parkedAt, p.repair)),
+      (p) => p.parkedAt,
+    ),
     repairs,
   };
 };
@@ -1472,7 +1536,13 @@ const publicationOf = (
   const unlanded = (dispatch.publication.strands ?? []).filter(
     (strand) => !landed.has(strand.head),
   );
-  return { publication: { branch, state: publicationStateOf(dispatch.publication), unlanded } };
+  return {
+    publication: {
+      branch,
+      state: publicationStateOf(dispatch.publication),
+      unlanded,
+    },
+  };
 };
 
 /** A-60: where the work of strands that did not land is kept. */

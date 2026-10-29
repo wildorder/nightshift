@@ -147,6 +147,18 @@ export const EventTypeSchema = z.enum([
    */
   "gate.repaired",
   /**
+   * Added with the line run's durable history. A line batch settled with a
+   * composition: one event per composition, on the run that held the batch.
+   * The line record keeps only the newest entries; these events are the run's
+   * own history of what it composed. Payload: `LineComposedPayload`.
+   */
+  "line.composed",
+  /**
+   * A line batch settled with a parked entry: one event per entry, on the run
+   * that held the batch. Payload: `LineParkedPayload`.
+   */
+  "line.parked",
+  /**
    * Added in P16 (D-07). Gates green in the reference audit (the laptop's) are
    * red on the run's machine: the machine is at fault, not the project, so the
    * run is cancelled before the root starts and nothing is repaired. Recorded
@@ -273,6 +285,9 @@ export const EnvironmentFaultPayloadSchema = z
     (value) =>
       (value.part === undefined) === (value.parts === undefined) &&
       (value.part === undefined || value.parts === undefined || value.part <= value.parts),
-    { message: "part and parts come together, and part is at most parts", path: ["part"] },
+    {
+      message: "part and parts come together, and part is at most parts",
+      path: ["part"],
+    },
   );
 export type EnvironmentFaultPayload = z.infer<typeof EnvironmentFaultPayloadSchema>;

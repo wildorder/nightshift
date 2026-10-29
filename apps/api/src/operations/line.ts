@@ -11,15 +11,22 @@
  */
 import {
   calendarMonthOf,
+  EventSchema,
+  type EventType,
+  inlinePayloadBytes,
   LineBundleUploadUrlBodySchema,
+  type LineComposedPayload,
+  type LineParkedPayload,
   LinePushBodySchema,
   type LineRecord,
   type LineSettleBody,
   LineSettleBodySchema,
   type LineView,
   LineViewSchema,
+  MAX_INLINE_PAYLOAD_BYTES,
   type Principal,
   type ProjectId,
+  summariseLineVerification,
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
@@ -31,6 +38,7 @@ import {
   lineBundleObjectKey,
   lineProgramId,
   nowIso,
+  type RunScope,
   requestPush,
   requireEffectivePolicy,
   settleBatch,
@@ -273,6 +281,91 @@ const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> =>
   });
 };
 
+/**
+ * The settled entries as events of the run that held the batch: the run's own
+ * history, beyond what the line record's window keeps. The record write has
+ * already happened, so a failed append is logged, never thrown. An entry whose
+ * payload would not fit inline keeps everything but its verification's command
+ * results, which a summary replaces.
+ */
+const appendSettledEvents = async (
+  deps: ApiDeps,
+  principal: Extract<Principal, { kind: "execution" }>,
+  record: LineRecord,
+  settled: readonly string[],
+  at: string,
+): Promise<void> => {
+  const scope: RunScope = {
+    projectId: principal.projectId,
+    programId: principal.programId,
+    runId: principal.runId,
+  };
+  try {
+    const nodes = await deps.stores.executionNodes.listByRun(scope);
+    const executionNodeId =
+      nodes.items.find((n) => n.parentNodeId === null)?.executionNodeId ?? null;
+    const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
+    const entries: {
+      type: EventType;
+      id: string;
+      payload: Record<string, unknown>;
+    }[] = [];
+    for (const composition of record.compositions) {
+      if (!settled.includes(composition.compositionId)) continue;
+      const payload: LineComposedPayload = composition;
+      entries.push({
+        type: "line.composed",
+        id: composition.compositionId,
+        payload,
+      });
+    }
+    for (const parked of record.parked) {
+      if (!settled.includes(parked.compositionId)) continue;
+      const payload: LineParkedPayload = parked;
+      entries.push({ type: "line.parked", id: parked.compositionId, payload });
+    }
+    for (const entry of entries) {
+      let payload = entry.payload;
+      if (inlinePayloadBytes(payload) > MAX_INLINE_PAYLOAD_BYTES) {
+        const verification = payload.verification as
+          | Parameters<typeof summariseLineVerification>[0]
+          | undefined;
+        if (verification !== undefined && "commands" in verification) {
+          payload = {
+            ...payload,
+            verification: summariseLineVerification(verification),
+          };
+        }
+      }
+      try {
+        await deps.stores.events.append(
+          EventSchema.parse({
+            schemaVersion: 1,
+            ...scope,
+            eventId: ids.next("evt"),
+            idempotencyKey: `${entry.type}:${entry.id}`,
+            sequence: null,
+            type: entry.type,
+            source: "control-plane",
+            executionNodeId,
+            agentId: null,
+            payload,
+            occurredAt: at,
+            recordedAt: at,
+          }),
+        );
+      } catch (error) {
+        console.error(
+          `line ${scope.runId}: could not append ${entry.type} for ${entry.id} (the settle stands)`,
+          error,
+        );
+      }
+    }
+  } catch (error) {
+    console.error(`line ${scope.runId}: could not append the settled entries' events`, error);
+  }
+};
+
 /** `POST …/line/settle?branch=` — the batch settled with a composition and/or parked entries. */
 export const postLineSettle: Handler = async (context) => {
   const { deps, request, params } = context;
@@ -296,6 +389,15 @@ export const postLineSettle: Handler = async (context) => {
       at,
     ),
   );
+  if (context.principal.kind === "execution") {
+    await appendSettledEvents(
+      deps,
+      context.principal,
+      record,
+      [...(compositionId === undefined ? [] : [compositionId]), ...parkedIds],
+      at,
+    );
+  }
   if (
     body.push !== undefined &&
     record.push?.head === body.push.head &&

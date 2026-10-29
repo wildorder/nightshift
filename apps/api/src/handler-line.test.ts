@@ -147,7 +147,13 @@ const startRun = async (w: World, programId = lineProgramId(w.f.scope.projectId,
   const runId = w.f.ids.next("run");
   await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "pending" }));
   await w.stores.dispatches.put(
-    makeDispatch(w.f, { programId, runId, generation: 1, status: "running", instanceId: "i-1" }),
+    makeDispatch(w.f, {
+      programId,
+      runId,
+      generation: 1,
+      status: "running",
+      instanceId: "i-1",
+    }),
   );
   await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "running" }));
   return runId;
@@ -260,7 +266,11 @@ describe("every principal against every line route", () => {
   }
 
   const CASES: readonly Case[] = [
-    { name: "a user of the owning org", reach: "read", principal: (w) => w.user },
+    {
+      name: "a user of the owning org",
+      reach: "read",
+      principal: (w) => w.user,
+    },
     {
       name: "a user of another org",
       reach: "none",
@@ -469,7 +479,10 @@ describe("batch, settle and push", () => {
       url,
       {
         ...body,
-        composition: { ...body.composition, resolver: { decision: "none", attempts: 4 } },
+        composition: {
+          ...body.composition,
+          resolver: { decision: "none", attempts: 4 },
+        },
       },
       me,
     );
@@ -489,6 +502,71 @@ describe("batch, settle and push", () => {
     });
     // Settled: the same batch again is stale.
     expect((await call(w, "POST", url, body, me)).status).toBe(409);
+  });
+
+  describe("settle appends the entries to the holding run as events", () => {
+    const settled = async () => {
+      const w = await setup();
+      const { me, runId } = await seedLine(w, {
+        queue: [entry(w), entry(w, SHA_B)],
+      });
+      const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
+      const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
+      const program = w.f.scope.programId;
+      const body = {
+        batchId,
+        composition: {
+          commit: SHA_B,
+          parent: SHA,
+          ranges: [{ program, upTo: SHA }],
+          verification: makeLineVerification(w.f),
+        },
+        push: { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" },
+        parked: [
+          { ranges: [{ program, upTo: SHA_B }], reason: "conflict" },
+          { ranges: [{ program, upTo: SHA_B }], reason: "budget" },
+        ],
+      };
+      const scope = {
+        projectId: w.f.scope.projectId,
+        programId: lineProgramId(w.f.scope.projectId, BRANCH),
+        runId,
+      };
+      return { w, me, body, scope };
+    };
+
+    it("appends one event per entry, and a repeated settle adds none", async () => {
+      const { w, me, body, scope } = await settled();
+      const url = lineUrl(w, BRANCH, "/settle");
+      expect((await call(w, "POST", url, body, me)).status).toBe(200);
+      const events = (await w.stores.events.listByRun(scope)).items;
+      expect(events.map((e) => e.type).sort()).toEqual([
+        "line.composed",
+        "line.parked",
+        "line.parked",
+      ]);
+      const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      expect(events.map((e) => e.idempotencyKey).sort()).toEqual(
+        [
+          `line.composed:${record?.compositions[0]?.compositionId}`,
+          ...(record?.parked ?? []).map((p) => `line.parked:${p.compositionId}`),
+        ].sort(),
+      );
+      expect((await call(w, "POST", url, body, me)).status).toBe(409);
+      expect((await w.stores.events.listByRun(scope)).items).toHaveLength(3);
+    });
+
+    it("does not fail the settle when an append fails", async () => {
+      const { w, me, body, scope } = await settled();
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      vi.spyOn(w.stores.events, "append").mockRejectedValue(new Error("store down"));
+      const ok = await call(w, "POST", lineUrl(w, BRANCH, "/settle"), body, me);
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.compositions).toHaveLength(1);
+      expect((await w.stores.events.listByRun(scope)).items).toHaveLength(0);
+      expect(error).toHaveBeenCalled();
+      vi.restoreAllMocks();
+    });
   });
 
   describe("settle asks the publisher", () => {

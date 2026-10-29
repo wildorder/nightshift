@@ -126,6 +126,53 @@ export const LineParkedSchema = z.strictObject({
 });
 export type LineParked = z.infer<typeof LineParkedSchema>;
 
+/**
+ * A line verification with its command results dropped, for an event payload
+ * that would exceed the inline bound with them.
+ */
+export const LineVerificationSummarySchema = z.strictObject({
+  verificationId: VerificationIdSchema,
+  phase: z.literal("line"),
+  commitSha: CommitShaSchema,
+  baseSha: CommitShaSchema,
+  outcome: VerificationOutcomeSchema,
+  startedAt: IsoTimestampSchema,
+  endedAt: IsoTimestampSchema,
+  commandCount: z.int().min(0),
+  /** The ids of the steps that ran and exited non-zero. */
+  failedStepIds: z.array(z.string()),
+});
+export type LineVerificationSummary = z.infer<typeof LineVerificationSummarySchema>;
+
+/** `line.composed`: the settled composition as recorded; its verification may be summarised when it would not fit inline. */
+export const LineComposedPayloadSchema = LineCompositionSchema.extend({
+  verification: z.union([LineVerificationSchema, LineVerificationSummarySchema]),
+});
+export type LineComposedPayload = z.infer<typeof LineComposedPayloadSchema>;
+
+/** `line.parked`: one parked entry as recorded; its verification may be summarised likewise. */
+export const LineParkedPayloadSchema = LineParkedSchema.extend({
+  verification: z.union([LineVerificationSchema, LineVerificationSummarySchema]).optional(),
+});
+export type LineParkedPayload = z.infer<typeof LineParkedPayloadSchema>;
+
+/** The summary of a verification: everything but its command results. */
+export const summariseLineVerification = (
+  verification: LineVerification,
+): LineVerificationSummary => ({
+  verificationId: verification.verificationId,
+  phase: verification.phase,
+  commitSha: verification.commitSha,
+  baseSha: verification.baseSha,
+  outcome: verification.outcome,
+  startedAt: verification.startedAt,
+  endedAt: verification.endedAt,
+  commandCount: verification.commands.length,
+  failedStepIds: verification.commands
+    .filter((c) => c.deferred === undefined && c.skipped === undefined && c.exitCode !== 0)
+    .map((c) => c.stepId),
+});
+
 /** What the resolver's fix was made of: the program's range, or the line's own main. */
 export const LineUnitSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("main"), commit: CommitShaSchema }),

@@ -22,7 +22,12 @@ const at = (ms: number): IsoTimestamp =>
 const page = <T>(items: readonly T[]) => Promise.resolve({ items });
 const sha = (c: string) => c.repeat(40);
 
-const setup = (f: Fixtures, ended: Run, jobs: readonly unknown[] = []) => {
+const setup = (
+  f: Fixtures,
+  ended: Run,
+  jobs: readonly unknown[] = [],
+  events: readonly unknown[] = [],
+) => {
   const composition = (id: string, composedAt: IsoTimestamp, repair?: LineRepairRef) => ({
     compositionId: id,
     commit: sha("a"),
@@ -43,7 +48,10 @@ const setup = (f: Fixtures, ended: Run, jobs: readonly unknown[] = []) => {
       programContracts: {
         get: () =>
           Promise.resolve(
-            makeProgramContract(f, { kind: "line", line: { branch: "nightshift/develop" } }),
+            makeProgramContract(f, {
+              kind: "line",
+              line: { branch: "nightshift/develop" },
+            }),
           ),
         listByProject: () => page([]),
       },
@@ -53,8 +61,11 @@ const setup = (f: Fixtures, ended: Run, jobs: readonly unknown[] = []) => {
       },
       executionNodes: { listByRun: () => page([makeRootNode(f)]) },
       jobContracts: { listByRun: () => page(jobs) },
-      decisions: { listByRun: () => page([]), get: () => Promise.resolve(undefined) },
-      events: { listByRun: () => page([]) },
+      decisions: {
+        listByRun: () => page([]),
+        get: () => Promise.resolve(undefined),
+      },
+      events: { listByRun: () => page(events) },
       measurements: { listByRun: () => page([]) },
       dispatches: { get: () => Promise.resolve(undefined) },
       computeUtilizations: { get: () => Promise.resolve(undefined) },
@@ -71,10 +82,18 @@ const setup = (f: Fixtures, ended: Run, jobs: readonly unknown[] = []) => {
 describe("a line run's report", () => {
   it("leads with Composed, Parked and Repairs, only in-window, and omits plan sections", async () => {
     const f = createFixtures();
-    const ended = makeRun(f, { status: "succeeded", startedAt: at(1000), endedAt: at(9000) });
+    const ended = makeRun(f, {
+      status: "succeeded",
+      startedAt: at(1000),
+      endedAt: at(9000),
+    });
     const repairJob = makeJobContract(f, {
       objective: "Resolve the conflict.",
-      repair: { cause: "line_conflict", gates: ["test"], decisionId: f.ids.next("dec") as never },
+      repair: {
+        cause: "line_conflict",
+        gates: ["test"],
+        decisionId: f.ids.next("dec") as never,
+      },
     });
     const { composition, parkedEntry, stores } = setup(f, ended, [repairJob]);
     const line = makeLineRecord(f, {
@@ -134,7 +153,11 @@ describe("a line run's report", () => {
 
   it("yields empty entries when the line record is missing, and no line for a plan", async () => {
     const f = createFixtures();
-    const ended = makeRun(f, { status: "succeeded", startedAt: at(0), endedAt: at(10) });
+    const ended = makeRun(f, {
+      status: "succeeded",
+      startedAt: at(0),
+      endedAt: at(10),
+    });
     const { stores } = setup(f, ended);
     const gathered = await gatherReport(stores(undefined), f.scope);
     expect(gathered.line).toMatchObject({ compositions: [], parked: [] });
@@ -147,5 +170,73 @@ describe("a line run's report", () => {
       },
     } as unknown as ProjectStores;
     expect((await gatherReport(planStores, f.scope)).line).toBeUndefined();
+  });
+
+  const eventOf = (
+    f: Fixtures,
+    type: string,
+    payload: unknown,
+    seq: number,
+    occurredAt: string,
+  ) => ({
+    schemaVersion: 1,
+    ...f.scope,
+    eventId: f.ids.next("evt"),
+    idempotencyKey: `${type}:${seq}`,
+    sequence: seq,
+    type,
+    source: "control-plane",
+    executionNodeId: null,
+    agentId: null,
+    payload,
+    occurredAt,
+    recordedAt: occurredAt,
+  });
+
+  it("reports entries the line record has evicted, from the run's events, with reasons", async () => {
+    const f = createFixtures();
+    const ended = makeRun(f, {
+      status: "succeeded",
+      startedAt: at(1000),
+      endedAt: at(9000),
+    });
+    const base = setup(f, ended);
+    const events = [
+      eventOf(f, "line.composed", base.composition("comp_gone", at(2000)), 0, at(2000)),
+      eventOf(f, "line.parked", base.parkedEntry(at(3000)), 1, at(3000)),
+      eventOf(f, "line.composed", base.composition("comp_both", at(4000)), 2, at(4000)),
+    ];
+    const { stores } = setup(f, ended, [], events);
+    const line = makeLineRecord(f, {
+      compositions: [
+        base.composition("comp_both", at(4000)),
+        base.composition("comp_old", at(5000)),
+      ],
+    });
+    const gathered = await gatherReport(stores(line), f.scope);
+    expect(gathered.line?.compositions.map((c) => c.compositionId)).toEqual([
+      "comp_gone",
+      "comp_both",
+      "comp_old",
+    ]);
+    expect(gathered.line?.parked.map((p) => p.reason)).toEqual(["repair budget exhausted"]);
+    expect(renderReport(gathered)).toContain("Reason: repair budget exhausted");
+    expect(Date.parse(gathered.asOf)).toBeGreaterThanOrEqual(Date.parse(at(5000)));
+  });
+
+  it("reports every composition of a run past the record's 50", async () => {
+    const f = createFixtures();
+    const ended = makeRun(f, {
+      status: "succeeded",
+      startedAt: at(1000),
+      endedAt: at(900_000),
+    });
+    const base = setup(f, ended);
+    const events = Array.from({ length: 75 }, (_, i) =>
+      eventOf(f, "line.composed", base.composition(`comp_${i}`, at(2000 + i)), i, at(2000 + i)),
+    );
+    const { stores } = setup(f, ended, [], events);
+    const gathered = await gatherReport(stores(makeLineRecord(f, {})), f.scope);
+    expect(gathered.line?.compositions).toHaveLength(75);
   });
 });
