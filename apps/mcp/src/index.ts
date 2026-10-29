@@ -51,6 +51,7 @@ export {
   nodeOnMachine,
 } from "./runner/gates.js";
 export { type LineOwnerOptions, runLineOwner } from "./runner/line-owner.js";
+export { createLineRepair, lineRepairBrief } from "./runner/line-repair.js";
 export type { CommandResult, Machine } from "./runner/machine.js";
 export { runRunner } from "./runner/main.js";
 export type { LineRunnerPlane } from "./runner/plane.js";
