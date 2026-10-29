@@ -307,9 +307,15 @@ const makePlane = (
       };
     },
     dispatch: async () => makeDispatch(f, { generation: GENERATION }),
-    takeBatch: async () => {
+    takeBatch: async (release) => {
       plane.events.push("takeBatch");
-      const taken = takeBatch(plane.record, GENERATION, { batchId: ids.next("comp") }, iso());
+      const taken = takeBatch(
+        plane.record,
+        GENERATION,
+        { batchId: ids.next("comp") },
+        iso(),
+        release,
+      );
       plane.record = taken.record;
       return taken.batch;
     },
@@ -656,9 +662,12 @@ describe("a range that conflicts", () => {
     expect(plane.events.filter((event) => /^(launch|announce):/.test(event))).toEqual([]);
     const settle = plane.settles[0]?.body;
     expect(settle?.composition?.ranges.map((range) => range.program)).toEqual([world.programs.c]);
-    expect(settle?.parked).toHaveLength(1);
-    expect(settle?.parked[0]?.ranges.map((range) => range.program)).toEqual([world.programs.d]);
-    expect(settle?.parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
+    // The conflicting range is held behind a repair; the stub repair fails, so it is parked after its budget.
+    expect(settle?.held?.map((entry) => entry.program)).toEqual([world.programs.d]);
+    const parked = plane.settles.flatMap((entry) => entry.body.parked);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]?.ranges.map((range) => range.program)).toEqual([world.programs.d]);
+    expect(parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
     expect(plane.record.parked).toHaveLength(1);
     expect(git(world.origin, "show", `${world.head(LINE)}:shared.txt`)).toBe("from c");
   });

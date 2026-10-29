@@ -152,3 +152,27 @@ describe("makeFakeVerifier", () => {
     await checkout.close(wt);
   });
 });
+
+describe("changedPaths and conflictCandidate", () => {
+  it("lists the paths changed from..upTo, and from the merge-base when from is absent", async () => {
+    const { lr, checkout } = await setup();
+    const a = await lr.commit("p1", { "a.txt": "a\n" });
+    const b = await lr.commit("p1", { "dir/b.txt": "b\n", "a.txt": "a2\n" });
+    expect(await checkout.changedPaths(a, b)).toEqual(["a.txt", "dir/b.txt"]);
+    const line = await lr.commit("line", { "l.txt": "l\n" });
+    expect(await checkout.changedPaths(undefined, b, line)).toEqual(["a.txt", "dir/b.txt"]);
+  });
+
+  it("commits a conflicting merge with the markers and the non-conflicting changes", async () => {
+    const { lr, checkout } = await setup();
+    const line = await lr.commit("line", { "s.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "s.txt": "p1\n", "new.txt": "n\n" });
+    const wt = await checkout.open(line);
+    const candidate = await checkout.conflictCandidate(wt, p1, "candidate");
+    expect(await checkout.head(wt)).toBe(line);
+    expect(await parents(lr, candidate)).toEqual([line, p1]);
+    expect(await lr.readFileAtCommit(candidate, "s.txt")).toContain("<<<<<<<");
+    expect(await lr.readFileAtCommit(candidate, "new.txt")).toBe("n\n");
+    await checkout.close(wt);
+  });
+});

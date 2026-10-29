@@ -1,9 +1,8 @@
 /**
  * The seams of the line composition engine.
  *
- * Everything the composer, the resolver and the verifier touch arrives through
- * these ports: git, the queue, the publisher, the agents, the decision store,
- * the clock. Nothing here imports from `apps/` or the plane's stores. Agents
+ * Everything the composer and the verifier touch arrives through
+ * these ports: git, the queue, the publisher, the repair, the clock. Nothing here imports from `apps/` or the plane's stores. Agents
  * never write git state; Nightshift owns every commit, which is why a merge is
  * started by `startMerge` and finished by the engine's `commitMerge`.
  */
@@ -12,10 +11,12 @@ import type {
   LineBatch,
   LineCompositionBody,
   LineParkBody,
+  LineQueueEntry,
   LineRange,
-  LineResolver,
+  LineRepairRef,
   LineVerification,
   ProgramId,
+  TakeLineBatchBody,
 } from "@nightshift/contracts";
 import type { Clock } from "@nightshift/core";
 
@@ -51,6 +52,22 @@ export interface LineCheckoutPort {
    * merge is in progress or conflict markers are left unresolved in the index.
    */
   commitMerge(wt: LineWorktree, message: string): Promise<CommitSha>;
+  /**
+   * The candidate of a conflicting merge: `commit` merged onto the worktree's
+   * head with every non-conflicting change applied and the conflict markers
+   * left in the conflicting paths, committed as they are (parents: the head,
+   * `commit`). The worktree is returned to its previous head.
+   */
+  conflictCandidate(wt: LineWorktree, commit: CommitSha, message: string): Promise<CommitSha>;
+  /**
+   * `git diff --name-only from..upTo`; with `from` absent, from the merge-base of
+   * `upTo` and `lineHead` (the initial commit's empty tree when there is none).
+   */
+  changedPaths(
+    from: CommitSha | undefined,
+    upTo: CommitSha,
+    lineHead?: CommitSha,
+  ): Promise<string[]>;
   head(wt: LineWorktree): Promise<CommitSha>;
   isAncestor(ancestor: CommitSha, descendant: CommitSha): Promise<boolean>;
   sameTree(a: CommitSha, b: CommitSha): Promise<boolean>;
@@ -103,12 +120,14 @@ export interface LineSettlement {
   batchId: string;
   composition?: Omit<LineCompositionBody, "batchId">;
   parked: Omit<LineParkBody, "batchId">[];
+  /** Entries of the batch held back behind a repair, with their lineage's `repairs`. */
+  held?: LineQueueEntry[];
   /** Present exactly when `composition` is: head = composition.commit, expectedPredecessor = composition.parent. */
   push?: { head: CommitSha; expectedPredecessor: CommitSha; bundleKey: string };
 }
 
 export interface LineQueuePort {
-  takeBatch(): Promise<LineBatch | undefined>;
+  takeBatch(release?: TakeLineBatchBody["release"]): Promise<LineBatch | undefined>;
   /** The `upTo` of that program's newest composed range. */
   lastComposed(program: ProgramId): Promise<CommitSha | undefined>;
   settle(settlement: LineSettlement): Promise<void>;
@@ -123,105 +142,47 @@ export interface LinePublisherPort {
   }): Promise<{ status: "published" } | { status: "rejected"; detail: string }>;
 }
 
-export type LineUnit = { kind: "main"; commit: CommitSha } | { kind: "range"; range: LineRange };
+export type LineRepairCause = "line_conflict" | "line_red";
 
-export interface LineFailure {
-  unit: LineUnit;
-  /** The head the unit was merged onto. */
+/** What a repair agent is asked to do; it starts from `base`, the candidate, and only resolves or fixes. */
+export interface LineRepairRequest {
+  cause: LineRepairCause;
+  range: LineRange;
+  /** The candidate commit: parents (line head, range.upTo). */
   base: CommitSha;
-  /** ISO timestamp: the composition's single deadline. */
-  deadline: string;
-  /** Resolver attempts left in the composition's budget; 0 parks without an agent call. */
-  attemptsLeft: number;
-  cause:
-    | { kind: "conflict"; paths: string[]; detail: string }
-    | {
-        kind: "red";
-        candidate: CommitSha;
-        verification: LineVerification;
-        logs: LineCommandLog[];
-      };
+  lineHead: CommitSha;
+  /** The conflicting paths, or the range's changed paths for a red check. */
+  paths: string[];
+  /** Ranges held back behind reserved paths. */
+  held: LineRange[];
+  /** The failing check output; red only. */
+  checks: LineCommandLog[];
+  /** Ranges composed on the line since this lineage's first failure. */
+  landedSince: LineRange[];
+  recentRepairs: {
+    range: LineRange;
+    cause: string;
+    outcome: "repaired" | "failed";
+    words?: string;
+  }[];
+  /** 1..3 within the lineage. */
+  attempt: number;
 }
 
-/** Project scoped, not the run-scoped `Decision`. */
-export interface LineResolverDecision {
-  authority: "line";
-  unit: LineUnit;
-  base: CommitSha;
-  commit: CommitSha;
-  context: string;
-  alternatives: { summary: string; rejectedBecause?: string }[];
-  choice: string;
-  rationale: string;
-  reversibility: "reversible";
-  resolverModel: string;
-  examinerModel: string;
-  attempts: number;
-  verificationId: LineVerification["verificationId"];
-  decidedAt: string;
-}
-
-export type LineResolution =
-  | {
-      kind: "resolved";
-      commit: CommitSha;
-      verification: LineVerification;
-      resolver: LineResolver;
-      decision: LineResolverDecision;
-    }
-  | {
-      kind: "parked";
-      reason: string;
-      resolver: LineResolver;
-      commit?: CommitSha;
-      verification?: LineVerification;
-    };
-
-export interface LineResolverAgentPort {
-  /** The agent edits files in the worktree only, never git. */
-  resolve(input: { brief: string; worktree: LineWorktree; deadline: string }): Promise<{
-    model: string;
-    status: "finished" | "failed";
-    summary?: string;
-  }>;
-  examine(input: {
-    brief: string;
-    worktree: LineWorktree;
-    commit: CommitSha;
-    base: CommitSha;
-    verification: LineVerification;
-    avoidModel: string;
-    deadline: string;
-  }): Promise<{
-    model: string;
-    verdict: "approved" | "rejected";
-    findings: string[];
-  }>;
-}
-
-export interface LineDecisionPort {
-  record(decision: LineResolverDecision): Promise<void>;
-}
-
-export interface LineResolverPorts {
-  checkout: LineCheckoutPort;
-  verifier: LineVerifierPort;
-  agents: LineResolverAgentPort;
-  decisions: LineDecisionPort;
-  clock: Clock;
-  /** `attempts` defaults to core's `LINE_RESOLVER_ATTEMPTS`; the deadline comes from `failure.deadline`. */
-  limits?: { attempts?: number };
-}
+export type RepairOutcome =
+  | { kind: "repaired"; commit: CommitSha; repair: LineRepairRef }
+  | { kind: "failed"; words: string; repair?: LineRepairRef };
 
 export interface LineComposerPorts {
   queue: LineQueuePort;
   checkout: LineCheckoutPort;
   verifier: LineVerifierPort;
   publisher: LinePublisherPort;
-  resolve: (failure: LineFailure) => Promise<LineResolution>;
+  /** Started without being awaited; the composer keeps composing while it runs. */
+  repair: (request: LineRepairRequest) => Promise<RepairOutcome>;
   clock: Clock;
   /** `seconds` defaults to core's `LINE_COMPOSITION_SECONDS`; one deadline per batch. */
-  limits?: { seconds?: number; attempts?: number };
+  limits?: { seconds?: number };
 }
 
 export interface LineBatchOutcome {
@@ -230,6 +191,5 @@ export interface LineBatchOutcome {
   head: CommitSha;
   composed: LineRange[];
   parked: { ranges: LineRange[]; reason: string }[];
-  resolutions: LineResolution[];
   published?: { status: string; detail?: string };
 }

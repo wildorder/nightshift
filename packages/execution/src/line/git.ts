@@ -106,6 +106,38 @@ export const createLineCheckout = (options: LineCheckoutOptions): LineCheckoutPo
       return made;
     },
 
+    async conflictCandidate(wt, commit, message) {
+      const previous = await head(wt);
+      const started = await attempt(wt, ["merge", "--no-commit", "--no-ff", commit]);
+      if (!(await mergeInProgress(wt))) {
+        throw new Error(
+          `git merge ${commit} did not start: ${(started.stderr || started.stdout).trim()}`,
+        );
+      }
+      try {
+        // The markers stay in the conflicting paths: they are committed as they are.
+        await run(wt, ["add", "-A"]);
+        await run(wt, ["commit", "--no-verify", "-m", message]);
+        return await head(wt);
+      } finally {
+        await run(wt, ["reset", "--hard", previous]);
+        await run(wt, ["clean", "-fd"]);
+      }
+    },
+
+    async changedPaths(from, upTo, lineHead) {
+      let base = from;
+      if (base === undefined && lineHead !== undefined) {
+        const found = await tryGit(runner, ["merge-base", lineHead, upTo], { cwd: repo });
+        if (found.exitCode === 0) base = found.stdout.trim();
+      }
+      const args =
+        base === undefined
+          ? ["diff-tree", "-r", "--root", "--no-commit-id", "--name-only", upTo]
+          : ["diff", "--name-only", `${base}..${upTo}`];
+      return lines(await git(runner, args, { cwd: repo }));
+    },
+
     head,
     isAncestor,
 

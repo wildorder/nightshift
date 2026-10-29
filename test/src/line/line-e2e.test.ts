@@ -444,8 +444,10 @@ const planeFor = (
     settles,
     line: async () => LineViewSchema.parse(await line("GET", "")),
     dispatch: () => plane.stores.dispatches.get(scope),
-    takeBatch: async () =>
-      TakeLineBatchResponseSchema.parse(await line("POST", "/batch", { generation })).batch,
+    takeBatch: async (release) =>
+      TakeLineBatchResponseSchema.parse(
+        await line("POST", "/batch", { generation, ...(release === undefined ? {} : { release }) }),
+      ).batch,
     settle: async (body) => {
       await line("POST", "/settle", body);
       settles.push({ batchId: body.batchId, generation });
@@ -687,7 +689,7 @@ describe("the project line, end to end", () => {
     expect(record.compositions[0]?.resolver).toBeUndefined();
     expect(record.parked).toHaveLength(1);
     expect(record.parked[0]?.ranges).toEqual([
-      { program: plane.programs.a.scope.programId, upTo: commits.a2, from: commits.a1 },
+      { program: plane.programs.a.scope.programId, upTo: commits.a2, from: commits.a1, repairs: 3 },
     ]);
     expect(record.parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
 

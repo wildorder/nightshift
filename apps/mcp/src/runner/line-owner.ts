@@ -8,7 +8,7 @@
  * wait out a push left pending (an earlier generation's), take the whole queue
  * as one batch, fetch every head it names, compose and publish it
  * (`drainLine`), and compose again when a push was rejected. A range that
- * conflicts or is red is parked with its reason: the owner launches no agent. When the queue has
+ * conflicts or is red is held behind a repair, which the owner does not yet run, so it is parked with its reason. When the queue has
  * been empty with no push pending for `LINE_IDLE_SECONDS` it ends, and the
  * runner's last heartbeat is `stopped` with no failure; the plane's own stop and
  * cleanup take the machine away.
@@ -28,8 +28,8 @@ import {
 import { type Clock, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
 import {
   createLineCheckout,
+  createLineComposer,
   createLineVerifier,
-  drainLine,
   type GateDefinitions,
   type GitRunner,
   git,
@@ -78,7 +78,7 @@ export interface LineOwnerOptions {
   /** How often the line is read while waiting; `LINE_POLL_MS` by default. */
   readonly pollMs?: number;
   /** The composition's own limits, which a test may shorten. */
-  readonly limits?: { readonly seconds?: number; readonly attempts?: number };
+  readonly limits?: { readonly seconds?: number };
   /** Takes a granted path back for the engine, when worktrees are handed to the project user. */
   readonly reclaim?: (dir: string) => Promise<void>;
 }
@@ -318,7 +318,7 @@ const ownLine = async (
   };
 
   const queue: LineQueuePort = {
-    takeBatch: () => plane.takeBatch(),
+    takeBatch: (release) => plane.takeBatch(release),
     lastComposed: async (program) => {
       const record = (await plane.line()).record;
       let newest: { at: number; upTo: CommitSha } | undefined;
@@ -338,6 +338,7 @@ const ownLine = async (
         ...(settlement.composition === undefined ? {} : { composition: settlement.composition }),
         ...(settlement.push === undefined ? {} : { push: settlement.push }),
         parked: settlement.parked,
+        ...(settlement.held === undefined ? {} : { held: settlement.held }),
       });
     },
   };
@@ -401,27 +402,31 @@ const ownLine = async (
         }),
   });
 
-  // The line owner launches no agent: an agent without a recorded identity is
-  // not allowed to run (A-04), and a line has none to record. A range that
-  // conflicts or is red is parked with its reason.
-  const resolve: LineComposerPorts["resolve"] = async (failure) => parkLineFailure(failure);
+  // The line owner launches no agent yet: a repair answers `failed` with the
+  // cause, so the lineage spends its budget and the range is parked with it.
+  const repair: LineComposerPorts["repair"] = async (request) => parkLineFailure(request);
 
   const ports: LineComposerPorts = {
     queue,
     checkout,
     verifier,
     publisher,
-    resolve,
+    repair,
     clock: options.clock,
     ...(options.limits === undefined ? {} : { limits: options.limits }),
   };
 
   // --- The loop -----------------------------------------------------------------------
 
+  const composer = createLineComposer(ports, heads);
   const pendingPush = (record: LineRecord) =>
     record.push?.status === "pending" ? record.push : undefined;
   const hasWork = (record: LineRecord): boolean =>
-    record.queue.length > 0 || record.batch !== undefined || pendingPush(record) !== undefined;
+    record.queue.length > 0 ||
+    record.batch !== undefined ||
+    record.held.length > 0 ||
+    !composer.idle() ||
+    pendingPush(record) !== undefined;
 
   let idleSince: number | undefined;
   for (;;) {
@@ -438,10 +443,10 @@ const ownLine = async (
       continue;
     }
 
-    if (record.queue.length > 0 || record.batch !== undefined) {
+    if (record.queue.length > 0 || record.batch !== undefined || !composer.idle()) {
       idleSince = undefined;
       say(record.batch === undefined ? "composing the queue" : "composing the held batch");
-      const outcomes = await drainLine(ports, heads);
+      const outcomes = await composer.drain();
       for (const outcome of outcomes) {
         log(
           `batch ${outcome.batchId}: composed ${outcome.composed.length}, parked ${outcome.parked.length}` +
@@ -449,7 +454,9 @@ const ownLine = async (
         );
       }
       // A rejected push ends the drain: the line is read again and the ranges
-      // the plane gave back are composed onto its new head.
+      // the plane gave back are composed onto its new head. A repair still in
+      // flight, or held ranges waiting on one, are waited for.
+      if (outcomes.length === 0) await wait(pollMs);
       continue;
     }
 
