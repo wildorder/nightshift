@@ -32,6 +32,7 @@ import {
   LineViewSchema,
   type OrgId,
   PROVIDERS,
+  type Principal,
   type Project,
   type ProjectId,
   type Provider,
@@ -53,6 +54,7 @@ import {
   LINE_COMPOSITION_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
   type LineChange,
+  type LineOwnerArg,
   type LineRefusal,
   leaseExpiryFrom,
   lineBundleObjectKey,
@@ -129,6 +131,49 @@ const requireGeneration = async (
     );
   }
   return dispatch;
+};
+
+/** Humans read the line and stop its dispatch; every other line write is the owner's. */
+const refuseUser = (principal: Principal, what: string): void => {
+  if (principal.kind === "user") {
+    throw new HttpError(403, "execution_forbidden_operation", `a user may not ${what}`);
+  }
+};
+
+/**
+ * The owner a line write acts as, fenced as its principal is. The line principal
+ * keeps the line dispatch's fence on the generation it claims (or the
+ * dispatch's, where the body names none). A line run's engine is fenced on its
+ * own run's dispatch, and the batch is held as (runId, generation).
+ */
+const ownerOf = async (
+  { deps, principal }: Pick<RouteContext, "deps" | "principal">,
+  target: LineTarget,
+  claimed: number | undefined,
+): Promise<LineOwnerArg> => {
+  if (principal.kind === "execution") {
+    const dispatch = await deps.stores.dispatches.get({
+      projectId: principal.projectId,
+      programId: principal.programId,
+      runId: principal.runId,
+    });
+    if (
+      dispatch === undefined ||
+      dispatch.generation !== principal.generation ||
+      (claimed !== undefined && claimed !== dispatch.generation)
+    ) {
+      throw new HttpError(
+        409,
+        "stale_generation",
+        `this call is from generation ${String(claimed ?? principal.generation)}; the run's dispatch is at ${String(dispatch?.generation)}`,
+      );
+    }
+    return { runId: principal.runId, generation: dispatch.generation };
+  }
+  refuseUser(principal, "write to the line");
+  return claimed === undefined
+    ? (await requireLineDispatch(deps, target)).generation
+    : (await requireGeneration(deps, target, claimed)).generation;
 };
 
 const refusalStatus = (refusal: LineRefusal): HttpError =>
@@ -233,16 +278,17 @@ export const getLine: Handler = async ({ deps, params }) => {
 };
 
 /** `POST …/line/batch?branch=` — the whole queue as one batch, or none. */
-export const takeLineBatch: Handler = async ({ deps, request, params }) => {
+export const takeLineBatch: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
   const body = parseBody(TakeLineBatchBodySchema, request.body);
-  await requireGeneration(deps, target, body.generation);
+  const owner = await ownerOf(context, target, body.generation);
   const at = nowIso(deps.clock);
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
   let taken: ReturnType<typeof takeBatch> | undefined;
   const stored = await deps.stores.lines.update(target.projectId, target.branch, (current) => {
     if (current === undefined) return undefined;
-    taken = takeBatch(current, body.generation, { batchId: ids.next("comp") }, at);
+    taken = takeBatch(current, owner, { batchId: ids.next("comp") }, at);
     return taken.record === current ? undefined : taken.record;
   });
   if (stored === undefined || taken === undefined) {
@@ -253,7 +299,10 @@ export const takeLineBatch: Handler = async ({ deps, request, params }) => {
     );
   }
   // The record holds the batch just taken, or the one already held.
-  return { status: 200, body: stored.batch === undefined ? {} : { batch: stored.batch } };
+  return {
+    status: 200,
+    body: stored.batch === undefined ? {} : { batch: stored.batch },
+  };
 };
 
 /**
@@ -272,7 +321,8 @@ const refuseResolverOver = (body: unknown): void => {
 };
 
 /** `POST …/line/compositions?branch=`. */
-export const postLineComposition: Handler = async ({ deps, request, params }) => {
+export const postLineComposition: Handler = async ({ deps, request, params, principal }) => {
+  refuseUser(principal, "write to the line");
   const target = targetOf(params);
   refuseResolverOver(request.body);
   const body: LineCompositionBody = parseBody(LineCompositionBodySchema, request.body);
@@ -285,7 +335,8 @@ export const postLineComposition: Handler = async ({ deps, request, params }) =>
 };
 
 /** `POST …/line/decisions?branch=` — a resolver's decision, recorded for later review. */
-export const postLineDecision: Handler = async ({ deps, request, params }) => {
+export const postLineDecision: Handler = async ({ deps, request, params, principal }) => {
+  refuseUser(principal, "write to the line");
   const target = targetOf(params);
   const body = parseBody(LineDecisionBodySchema, request.body);
   const dispatch = await requireGeneration(deps, target, body.generation);
@@ -298,7 +349,8 @@ export const postLineDecision: Handler = async ({ deps, request, params }) => {
 };
 
 /** `POST …/line/agents?branch=` — an agent announced before it runs (A-04). */
-export const postLineAgent: Handler = async ({ deps, request, params }) => {
+export const postLineAgent: Handler = async ({ deps, request, params, principal }) => {
+  refuseUser(principal, "write to the line");
   const target = targetOf(params);
   const body = parseBody(LineAgentBodySchema, request.body);
   await requireGeneration(deps, target, body.generation);
@@ -321,7 +373,8 @@ export const postLineAgent: Handler = async ({ deps, request, params }) => {
 };
 
 /** `POST …/line/parked?branch=`. */
-export const postLineParked: Handler = async ({ deps, request, params }) => {
+export const postLineParked: Handler = async ({ deps, request, params, principal }) => {
+  refuseUser(principal, "write to the line");
   const target = targetOf(params);
   refuseResolverOver(request.body);
   const body: LineParkBody = parseBody(LineParkBodySchema, request.body);
@@ -345,8 +398,10 @@ const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> =>
 };
 
 /** `POST …/line/settle?branch=` — the batch settled with a composition and/or parked entries. */
-export const postLineSettle: Handler = async ({ deps, request, params }) => {
+export const postLineSettle: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
   const raw = request.body as { composition?: unknown; parked?: unknown } | null | undefined;
   refuseResolverOver(raw?.composition);
   if (Array.isArray(raw?.parked)) for (const entry of raw.parked) refuseResolverOver(entry);
@@ -355,13 +410,13 @@ export const postLineSettle: Handler = async ({ deps, request, params }) => {
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
   const compositionId = body.composition === undefined ? undefined : ids.next("comp");
   const parkedIds = body.parked.map(() => ids.next("comp"));
-  const dispatch = await requireLineDispatch(deps, target);
+  const owner = await ownerOf(context, target, undefined);
   const record = await applyLineChange(deps, target, (current) =>
     settleBatch(
       current,
       body,
       { ...(compositionId === undefined ? {} : { compositionId }), parkedIds },
-      dispatch.generation,
+      owner,
       at,
     ),
   );
@@ -375,13 +430,15 @@ export const postLineSettle: Handler = async ({ deps, request, params }) => {
 };
 
 /** `POST …/line/push?branch=` — recorded pending, then the publisher is asked. */
-export const postLinePush: Handler = async ({ deps, request, params }) => {
+export const postLinePush: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
   const body = parseBody(LinePushBodySchema, request.body);
-  const dispatch = await requireLineDispatch(deps, target);
+  const owner = await ownerOf(context, target, undefined);
   const at = nowIso(deps.clock);
   const record = await applyLineChange(deps, target, (current) =>
-    requestPush(current, body, dispatch.generation, at),
+    requestPush(current, body, owner, at),
   );
   await askPublisher(deps, target);
   return { status: 200, body: record };
@@ -391,13 +448,15 @@ export const postLinePush: Handler = async ({ deps, request, params }) => {
 const BUNDLE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** `POST …/line/bundle-upload-url?branch=` — a presigned PUT for one bundle. */
-export const createLineBundleUploadUrl: Handler = async ({ deps, request, params }) => {
+export const createLineBundleUploadUrl: Handler = async (context) => {
+  const { deps, request, params } = context;
   const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
   const body = parseBody(LineBundleUploadUrlBodySchema, request.body);
   if (!BUNDLE_ID.test(body.id)) {
     throw new HttpError(400, "validation_failed", "id must be 1-64 letters, digits, - or _");
   }
-  await requireGeneration(deps, target, body.generation);
+  await ownerOf(context, target, body.generation);
   const signKey = deps.uploads?.signKey?.bind(deps.uploads);
   if (signKey === undefined) {
     throw new HttpError(
@@ -437,7 +496,10 @@ export const cancelLineDispatch: Handler = async ({ deps, params }) => {
       result = current;
       if (isDispatchTerminal(current.status) || current.status === "stopping") return undefined;
       return transitionDispatch<LineDispatch>(
-        { ...current, failure: { code: "cancelled", message: "cancelled by the operator" } },
+        {
+          ...current,
+          failure: { code: "cancelled", message: "cancelled by the operator" },
+        },
         "stop",
         at,
       );
@@ -452,6 +514,7 @@ export const cancelLineDispatch: Handler = async ({ deps, params }) => {
 /** `POST …/line/heartbeat?branch=`. */
 export const lineHeartbeat: Handler = async (context) => {
   const { deps, request, params } = context;
+  refuseUser(context.principal, "heartbeat the line");
   const target = targetOf(params);
   const body = parseBody(LineHeartbeatBodySchema, request.body);
   const at = nowIso(deps.clock);
@@ -576,7 +639,12 @@ export const lineHeartbeat: Handler = async (context) => {
       ? 0
       : ((await deps.stores.projectSelfStartedUsage.get(target.projectId, previousMonthOf(month)))
           ?.charged?.[chargeKey] ?? 0);
-  const charge = { month, key: chargeKey, dispatchUsd: meteredUsd, baselineUsd };
+  const charge = {
+    month,
+    key: chargeKey,
+    dispatchUsd: meteredUsd,
+    baselineUsd,
+  };
   if (
     dispatchChargeDue(held, charge) ||
     (held !== undefined && held.meteredUsd >= capUsd && held.reachedAt === undefined)
@@ -648,7 +716,10 @@ export const lineHeartbeat: Handler = async (context) => {
         row,
         {
           batchId: batch.batchId,
-          ranges: batch.entries.map((entry) => ({ program: entry.program, upTo: entry.upTo })),
+          ranges: batch.entries.map((entry) => ({
+            program: entry.program,
+            upTo: entry.upTo,
+          })),
           reason: "composition_hour",
         },
         (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp"),
