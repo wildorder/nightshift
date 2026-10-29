@@ -19,22 +19,40 @@ export class SidecarError extends Error {
   override readonly name = "SidecarError";
 }
 
+/**
+ * How long one copy may take. A copy of keki-backend's 668,679 files took
+ * minutes; a copy that is still running after this is not copying: P24's
+ * machine sat 4.5 hours after its run succeeded behind an rsync pair
+ * deadlocked in `select` with nothing to do (2026-10-29), because the ending
+ * awaited it. The next interval copies again.
+ */
+export const SIDECAR_COPY_TIMEOUT_MS = 20 * 60_000;
+
 const rsync = async (
   machine: Machine,
   from: string,
   to: string,
   filters: readonly string[] = [],
 ): Promise<void> => {
-  const copied = await machine.exec("sudo", [
-    "rsync",
-    "-aHAX",
-    "--delete",
-    "--numeric-ids",
-    `--exclude=/${SIDECAR_MARKER}`,
-    ...filters,
-    `${from}/`,
-    `${to}/`,
-  ]);
+  const copied = await machine.exec(
+    "sudo",
+    [
+      "rsync",
+      "-aHAX",
+      "--delete",
+      "--numeric-ids",
+      `--exclude=/${SIDECAR_MARKER}`,
+      ...filters,
+      `${from}/`,
+      `${to}/`,
+    ],
+    { timeoutMs: SIDECAR_COPY_TIMEOUT_MS },
+  );
+  if (copied.timedOut === true) {
+    throw new SidecarError(
+      `rsync ${from} -> ${to} was killed after ${SIDECAR_COPY_TIMEOUT_MS / 60_000} minutes`,
+    );
+  }
   // 24: files vanished while copying, which a live workspace does; the copy is whole otherwise.
   if (copied.exitCode !== 0 && copied.exitCode !== 24) {
     throw new SidecarError(`rsync ${from} -> ${to} failed (${copied.exitCode}): ${copied.stderr}`);

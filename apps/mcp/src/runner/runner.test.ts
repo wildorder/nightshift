@@ -34,7 +34,7 @@ import {
 } from "./bootstrap.js";
 import { auditProgressOf, auditVerdictOf, gateProgressOf } from "./gates.js";
 import { createHeartbeat, PROGRESS_MIN_GAP_MS } from "./heartbeat.js";
-import type { CommandResult, Machine } from "./machine.js";
+import { type CommandResult, type ExecOptions, type Machine, nodeMachine } from "./machine.js";
 import { runRunner } from "./main.js";
 import type { PlaneFactory } from "./plane.js";
 import { placeProviderCredentials, rootEnvironment, tokenFile } from "./root.js";
@@ -42,6 +42,7 @@ import { createRunnerLog } from "./runner-log.js";
 import { countOomKills, cpuBusyPct, parseCpuTimes, parseDiskPct, parseMeminfo } from "./sampler.js";
 import {
   restoreFromSidecar,
+  SIDECAR_COPY_TIMEOUT_MS,
   SIDECAR_MARKER,
   sidecarHoldsCopy,
   startSidecarSync,
@@ -69,7 +70,11 @@ interface FakeMachine extends Machine {
 /** A machine whose tags name `f`'s run, with a first token waiting in SSM. */
 const fakeMachine = (
   overrides: {
-    readonly exec?: (file: string, args: readonly string[]) => CommandResult | undefined;
+    readonly exec?: (
+      file: string,
+      args: readonly string[],
+      options?: ExecOptions,
+    ) => CommandResult | undefined;
     readonly tags?: Partial<Record<keyof typeof RUNNER_TAGS, string>>;
   } = {},
 ): FakeMachine => {
@@ -91,9 +96,9 @@ const fakeMachine = (
   return {
     commands,
     files,
-    exec: async (file, args) => {
+    exec: async (file, args, options) => {
       commands.push([file, ...args].join(" "));
-      const custom = overrides.exec?.(file, args);
+      const custom = overrides.exec?.(file, args, options);
       if (custom !== undefined) return custom;
       if (file === "mv" && args[0] === "-f") {
         const source = args[1] ?? "";
@@ -822,6 +827,45 @@ describe("the durability sidecar (D-P10-27)", () => {
     await expect(syncToSidecar(broken, "/workspace", "/workspace-sidecar")).rejects.toThrow(
       /disk full/,
     );
+  });
+
+  it("kills a copy that outlives its bound, says so, and the next interval copies again (2026-10-29)", async () => {
+    // The fake honours the bound the way the real machine does: a copy that
+    // would never end answers killed once the bound is passed to it.
+    let copies = 0;
+    const machine = fakeMachine({
+      exec: (file, args, options) => {
+        if (file === "sudo" && args[0] === "rsync") {
+          copies += 1;
+          expect(options?.timeoutMs).toBe(SIDECAR_COPY_TIMEOUT_MS);
+          return copies === 1 ? { exitCode: 1, stdout: "", stderr: "", timedOut: true } : undefined;
+        }
+        return undefined;
+      },
+    });
+    await expect(syncToSidecar(machine, "/workspace", "/workspace-sidecar")).rejects.toThrow(
+      /killed after 20 minutes/,
+    );
+    const lines: string[] = [];
+    const sync = startSidecarSync(machine, {
+      workspace: "/workspace",
+      sidecar: "/workspace-sidecar",
+      intervalMs: 1_000,
+      log: (line) => lines.push(line),
+    });
+    for (let i = 0; i < 3; i += 1) await Promise.resolve();
+    await sync.stop();
+    expect(copies).toBeGreaterThanOrEqual(2);
+    expect(machine.commands.at(-1)).toBe(`touch /workspace-sidecar/${SIDECAR_MARKER}`);
+  });
+
+  it("the real machine kills a command that outlives its bound and says so", async () => {
+    if (process.platform === "win32") return;
+    const result = await nodeMachine.exec("sleep", ["30"], { timeoutMs: 200 });
+    expect(result.timedOut).toBe(true);
+    expect(result.exitCode).not.toBe(0);
+    const quick = await nodeMachine.exec("true", [], { timeoutMs: 5_000 });
+    expect(quick).toEqual({ exitCode: 0, stdout: "", stderr: "" });
   });
 
   it("copies on the interval and once more when stopped", async () => {
