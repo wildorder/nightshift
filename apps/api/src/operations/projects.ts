@@ -29,6 +29,7 @@ import {
 } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
 import { createOrConfirm, pageBody, requireProgram, requireProject, withCursor } from "./common.js";
+import { ensureLineProgramFor, refuseClientLineProgram } from "./ratification.js";
 
 /**
  * The organisation the caller acts for, already resolved by `enforce`.
@@ -125,6 +126,7 @@ const assertProgramPutAllowed = (
 
 export const putProgram: Handler = async ({ deps, request, params }) => {
   const program = parseBody(ProgramContractSchema, request.body);
+  refuseClientLineProgram(program);
   const scope = programScopeFrom(params);
   assertChainMatches(scope, program);
   await requireProject(deps.stores, scope.projectId);
@@ -132,10 +134,12 @@ export const putProgram: Handler = async ({ deps, request, params }) => {
   const existing = await deps.stores.programContracts.get(scope.projectId, scope.programId);
   // A retry of exactly what is stored is always a confirmation, ratified or not.
   if (existing !== undefined && sameRecord(existing, program)) {
+    await ensureLineProgramFor(deps, existing);
     return { status: 200, body: existing };
   }
   assertProgramPutAllowed(existing, program);
   await deps.stores.programContracts.put(program);
+  await ensureLineProgramFor(deps, program);
   return { status: existing === undefined ? 201 : 200, body: program };
 };
 

@@ -1745,6 +1745,10 @@ const CAUSE_SENTENCE: Readonly<Record<RepairCause, string>> = {
   flaky:
     "These gates failed and then passed when verification reran them on the same commit: they " +
     "are flaky. The work that met the flake landed; this repair runs off the blocking path.",
+  line_conflict:
+    "A range published to the project line conflicted with the line. Resolve it without weakening required verification.",
+  line_red:
+    "The project line was red once a range was composed onto it. Fix the gates without weakening required verification.",
 };
 
 /** The paragraph Nightshift appends to every repair's objective, and the decision behind it. */
