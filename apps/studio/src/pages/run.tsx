@@ -5,7 +5,7 @@
  * was; the run's status and the live indicator are on every tab.
  */
 import type { Artifact, Checkpoint, ExecutionNode, Run } from "@nightshift/contracts";
-import { type RunReport, type RunScope, storyStatuses } from "@nightshift/core";
+import { type LineRunReport, type RunReport, type RunScope, storyStatuses } from "@nightshift/core";
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Radio } from "lucide-react";
@@ -86,6 +86,93 @@ const Panel = ({
     </CardHeader>
     <CardContent>{children}</CardContent>
   </Card>
+);
+
+const rangeText = (ranges: readonly { program: string; from?: string; upTo: string }[]): string =>
+  ranges
+    .map(
+      (r) =>
+        `${r.program} ${r.from === undefined ? "" : `${shortSha(r.from)}..`}${shortSha(r.upTo)}`,
+    )
+    .join(", ");
+
+/** A line run's Status: what it composed, what it parked and why, and the repairs it ran. */
+const LineStatusTab = ({
+  report,
+  line,
+  scope,
+}: {
+  readonly report: RunReport;
+  readonly line: LineRunReport;
+  readonly scope: RunScope;
+}) => (
+  <div className="grid gap-4">
+    <Panel title="Compositions">
+      {line.compositions.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nothing was composed in this run.</p>
+      ) : (
+        <ul className="grid gap-2 text-sm">
+          {line.compositions.map((c) => (
+            <li key={c.compositionId} className="flex flex-wrap items-baseline gap-2">
+              <StatusBadge status={c.verification.outcome} />
+              <span className="font-medium">{c.compositionId}</span>
+              <code className="font-mono">{shortSha(c.commit)}</code>
+              <span className="text-muted-foreground">
+                {rangeText(c.ranges)} · {c.pushed === undefined ? "not pushed" : "pushed"} ·{" "}
+                {when(c.composedAt)}
+              </span>
+              {c.repair === undefined ? null : (
+                <span className="text-muted-foreground">
+                  repaired by job {shortId(c.repair.jobContractId)}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+    <Panel title="Parked">
+      {line.parked.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nothing was parked in this run.</p>
+      ) : (
+        <ul className="grid gap-2 text-sm">
+          {line.parked.map((p) => (
+            <li key={`${p.compositionId}-${p.parkedAt}`}>
+              <span className="font-medium">{p.compositionId}</span>{" "}
+              <span className="text-muted-foreground">
+                {rangeText(p.ranges)} · {when(p.parkedAt)}
+              </span>
+              <p className="text-status-danger-foreground">Reason: {p.reason}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+    <Panel title="Repairs">
+      {line.repairs.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No repairs in this run.</p>
+      ) : (
+        <ul className="grid gap-2 text-sm">
+          {line.repairs.map((repair) => (
+            <li key={repair.jobContractId} className="flex flex-wrap items-baseline gap-2">
+              <StatusBadge status={repair.status} />
+              <span className="font-medium">{repair.cause.replaceAll("_", " ")}</span>
+              <span>{firstLine(repair.objective)}</span>
+              <span className="text-muted-foreground">
+                {repair.gates.length === 0 ? "" : `gates ${repair.gates.join(", ")}`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
+    <Panel title="Gate health">
+      <GateHealthView gateHealth={report.gateHealth} scope={scope} />
+    </Panel>
+    <Panel title="Usage and cost">
+      <Usage report={report} />
+    </Panel>
+  </div>
 );
 
 const StatusTab = ({
@@ -188,6 +275,23 @@ const WhyTab = ({ report, scope }: { readonly report: RunReport; readonly scope:
   const statuses = storyStatuses(report);
   const plan = useProgramDocument(scope, report.program.planDocument?.sha256);
   const conversation = useProgramDocument(scope, report.program.conversation?.sha256);
+  if (report.line !== undefined) {
+    return (
+      <div className="grid gap-4">
+        <Panel title="Decisions of this run">
+          {report.graph.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No decisions were recorded.</p>
+          ) : (
+            <ul className="grid gap-2">
+              {report.graph.map((entry) => (
+                <DecisionRow key={entry.decision.decisionId} entry={entry} scope={scope} />
+              ))}
+            </ul>
+          )}
+        </Panel>
+      </div>
+    );
+  }
   return (
     <div className="grid gap-4">
       <Panel title="Why this program exists">
@@ -275,9 +379,6 @@ export const RunPage = () => {
   const scope: RunScope = useRunScope();
   const { stores, pollMs } = useStudio();
   const [params, setParams] = useSearchParams();
-  const tab: RunTab = RUN_TABS.includes(params.get("tab") as RunTab)
-    ? (params.get("tab") as RunTab)
-    : "overview";
   const openNode = params.get("node") ?? undefined;
   const setOpenNode = (next: string | undefined) => {
     const copy = new URLSearchParams(params);
@@ -314,6 +415,7 @@ export const RunPage = () => {
   if (run.data === undefined) return <p role="alert">No such run.</p>;
   const r: Run = run.data;
   const report = runStatus.data?.report;
+  const isLine = report?.line !== undefined;
 
   const byParent = new Map<string | null, ExecutionNode[]>();
   for (const node of nodes.data ?? []) {
@@ -338,6 +440,11 @@ export const RunPage = () => {
     ]),
   );
   const opened = openNode === undefined ? undefined : nodeOf.get(openNode);
+  const tab: RunTab = RUN_TABS.includes(params.get("tab") as RunTab)
+    ? (params.get("tab") as RunTab)
+    : isLine
+      ? "status"
+      : "overview";
   const setTab = (next: string) => {
     const copy = new URLSearchParams(params);
     copy.set("tab", next);
@@ -363,15 +470,23 @@ export const RunPage = () => {
         }
         description={
           <>
-            <p>{report?.program.objective ?? scope.programId}</p>
-            <p>
-              <Link
-                to={planPathOf(scope)}
-                className="font-medium underline-offset-4 hover:underline"
-              >
-                Plan
-              </Link>
-            </p>
+            {report?.line === undefined ? (
+              <>
+                <p>{report?.program.objective ?? scope.programId}</p>
+                <p>
+                  <Link
+                    to={planPathOf(scope)}
+                    className="font-medium underline-offset-4 hover:underline"
+                  >
+                    Plan
+                  </Link>
+                </p>
+              </>
+            ) : (
+              <p>
+                Line run of <span className="font-mono">{report.line.branch}</span>
+              </p>
+            )}
             <p>
               {r.location} · started {when(r.startedAt)} · ended {when(r.endedAt)} · took{" "}
               {between(r.startedAt, r.endedAt)}
@@ -424,6 +539,8 @@ export const RunPage = () => {
         <TabsContent value="status" className="mt-4">
           {report === undefined || runStatus.data === undefined ? (
             <p className="text-muted-foreground">Building the report…</p>
+          ) : report.line !== undefined ? (
+            <LineStatusTab report={report} line={report.line} scope={scope} />
           ) : (
             <StatusTab report={report} status={runStatus.data.status} scope={scope} />
           )}
@@ -449,7 +566,7 @@ export const RunPage = () => {
         </TabsContent>
 
         <TabsContent value="work" className="mt-4 grid gap-4">
-          {report === undefined ? null : report.strands.length > 0 ? (
+          {report === undefined ? null : report.line === undefined && report.strands.length > 0 ? (
             <Panel title="Strands">
               <div className="grid gap-3">
                 {report.strands.map((strand) => (
@@ -458,7 +575,7 @@ export const RunPage = () => {
               </div>
             </Panel>
           ) : (
-            <Panel title="Jobs">
+            <Panel title={report.line === undefined ? "Jobs" : "Repair jobs"}>
               <ul className="grid gap-2">
                 {(runStatus.data?.unplannedJobs ?? []).map((job) => (
                   <JobCard key={job.nodeId} job={job} onOpen={setOpenNode} />

@@ -8,6 +8,8 @@ import {
   makeEvent,
   makeFailedVerification,
   makeJobContract,
+  makeLineRecord,
+  makeLineVerification,
   makeNode,
   makeProgramContract,
   makeProject,
@@ -226,6 +228,146 @@ describe("the run page", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Work" }));
     await waitFor(() => expect(screen.getAllByText("A new job").length).toBeGreaterThanOrEqual(2), {
       timeout: 3000,
+    });
+  });
+
+  describe("a line run", () => {
+    const sha = (c: string) => c.repeat(40);
+    const seedLine = async (
+      f: Parameters<Parameters<typeof mountStudio>[0]>[1],
+      stores: Parameters<Parameters<typeof mountStudio>[0]>[0],
+      orgId: Parameters<Parameters<typeof mountStudio>[0]>[2],
+      withRepair: boolean,
+    ) => {
+      await stores.projects.put(makeProject(f, { orgId, name: "keyart" }));
+      await stores.programContracts.put(
+        makeProgramContract(f, {
+          objective: "The plan objective nobody should see",
+          kind: "line",
+          line: { branch: "nightshift/develop" },
+        }),
+      );
+      await stores.runs.put(
+        makeRun(f, {
+          status: "succeeded",
+          startedAt: "2026-09-15T12:00:00.000Z",
+          endedAt: "2026-09-15T13:00:00.000Z",
+        }),
+      );
+      const root = makeRootNode(f, { status: "succeeded" });
+      await stores.executionNodes.put(root);
+      const repairJob = makeJobContract(f, { objective: "Resolve the conflict in billing" });
+      let repair:
+        | { runId: typeof f.scope.runId; jobContractId: typeof repairJob.jobContractId }
+        | undefined;
+      if (withRepair) {
+        const job = makeJobContract(f, {
+          jobContractId: repairJob.jobContractId,
+          objective: "Resolve the conflict in billing",
+          repair: {
+            cause: "line_conflict",
+            gates: ["test"],
+            decisionId: f.ids.next("dec") as never,
+          },
+        });
+        await stores.jobContracts.put(job);
+        const node = makeNode(f, root.executionNodeId, {
+          kind: "job",
+          status: "verified",
+          jobContractId: job.jobContractId,
+          commitSha: sha("a"),
+        });
+        await stores.executionNodes.put(node);
+        await stores.agents.put(
+          makeAgent(f, node.executionNodeId, {
+            status: "completed",
+            model: "claude-haiku-4-5-20251001",
+          }),
+        );
+        await stores.verifications.put(makeVerification(f, node));
+        repair = { runId: f.scope.runId, jobContractId: job.jobContractId };
+      }
+      await stores.lines.update(f.scope.projectId, "nightshift/develop", () =>
+        makeLineRecord(f, {
+          compositions: [
+            {
+              compositionId: "comp_good",
+              commit: sha("b"),
+              parent: sha("c"),
+              ranges: [{ program: f.scope.programId, upTo: sha("d") }],
+              verification: makeLineVerification(f),
+              composedAt: "2026-09-15T12:10:00.000Z",
+              ...(repair === undefined ? {} : { repair }),
+            },
+          ],
+          parked: withRepair
+            ? [
+                {
+                  compositionId: "comp_parked",
+                  ranges: [{ program: f.scope.programId, upTo: sha("e") }],
+                  reason: "repair budget exhausted",
+                  parkedAt: "2026-09-15T12:20:00.000Z",
+                },
+              ]
+            : [],
+        }),
+      );
+    };
+
+    it("reads as compositions and repairs, not as a plan", async () => {
+      await mountStudio(async (stores, f, orgId) => seedLine(f, stores, orgId, true), {
+        at: runPathOf,
+      });
+      await waitFor(() => expect(screen.getByText(/Line run of/)).toBeTruthy());
+      expect(screen.queryByRole("link", { name: "Plan" })).toBeNull();
+      const card = (heading: string) => {
+        const found = screen
+          .getByRole("heading", { name: heading, level: 2 })
+          .closest('[data-slot="card"]');
+        if (!(found instanceof HTMLElement)) throw new Error(`no ${heading} card`);
+        return found;
+      };
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { name: "Compositions" })).toBeTruthy(),
+      );
+      expect(within(card("Compositions")).getByText("comp_good")).toBeTruthy();
+      expect(within(card("Parked")).getByText(/repair budget exhausted/)).toBeTruthy();
+      expect(within(card("Repairs")).getByText(/Resolve the conflict in billing/)).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: "Success criteria" })).toBeNull();
+
+      await userEvent.click(screen.getByRole("tab", { name: "Work" }));
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { name: "Repair jobs" })).toBeTruthy(),
+      );
+      expect(screen.queryByRole("heading", { name: "Strands" })).toBeNull();
+      await userEvent.click(
+        within(card("Repair jobs")).getByRole("button", {
+          name: /Resolve the conflict in billing/,
+        }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      await waitFor(() =>
+        expect(within(dialog).getByText(/claude-haiku-4-5-20251001/)).toBeTruthy(),
+      );
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      await userEvent.click(screen.getByRole("tab", { name: "Why" }));
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { name: "Decisions of this run" })).toBeTruthy(),
+      );
+      expect(screen.queryByRole("link", { name: "Open the plan page" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "The plan, as ratified" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "The planning conversation" })).toBeNull();
+      expect(screen.queryByText(/planned before Nightshift kept stories/)).toBeNull();
+    });
+
+    it("opens on the compositions without a tab parameter", async () => {
+      await mountStudio(async (stores, f, orgId) => seedLine(f, stores, orgId, false), {
+        at: runPathOf,
+      });
+      await waitFor(() => expect(screen.getByText("comp_good")).toBeTruthy());
+      expect(screen.queryByText(/none settled yet/i)).toBeNull();
     });
   });
 });
