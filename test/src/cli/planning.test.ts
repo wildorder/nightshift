@@ -311,6 +311,53 @@ describe("nightshift plan put, show and check, from the plane", () => {
     await rm(outside, { recursive: true, force: true });
   });
 
+  it("puts into --project over the directory's configuration, says so, and refuses a scratch that states another project (2026-10-29)", async () => {
+    const other = await createProject(op.environment, { name: "planning-other" });
+    // A scratch that states no project, put from the fixture repository, whose
+    // configuration names the first project: the draft goes where --project says.
+    const { projectId: _stated, ...unstated } = contract;
+    await writeFile(join(scratch, "contract.json"), `${JSON.stringify(unstated, null, 2)}\n`);
+    await writeFile(join(scratch, "plan.md"), PLAN);
+    op.out.length = 0;
+    op.err.length = 0;
+    expect(
+      await runCli({ ...op.environment, cwd: fixture.repo }, [
+        "plan",
+        "put",
+        contract.programId,
+        "--dir",
+        scratch,
+        "--project",
+        other.projectId,
+      ]),
+    ).toBe(0);
+    expect(op.out[0]).toContain(`in project ${other.projectId}`);
+    const draft = await planning().getDraft({
+      projectId: other.projectId as never,
+      programId: contract.programId,
+    });
+    expect(draft?.latestVersion).toBe(1);
+    expect(await planning().getDraft(scope())).toBeUndefined();
+
+    // A scratch that states one project is refused for another, before anything is written.
+    await writeScratch();
+    op.out.length = 0;
+    op.err.length = 0;
+    expect(
+      await runCli({ ...op.environment, cwd: outside }, [
+        "plan",
+        "put",
+        contract.programId,
+        "--dir",
+        scratch,
+        "--project",
+        other.projectId,
+      ]),
+    ).not.toBe(0);
+    expect(op.err.join("\n")).toContain(`is for project \`${contract.projectId}\``);
+    expect(await planning().getDraft(scope())).toBeUndefined();
+  });
+
   it("puts a scratch, shows it, checks it READY, and ratifies it, with no plan file in any repository", async () => {
     expect(await away("plan", "put", contract.programId, "--dir", scratch)).toBe(0);
     expect(op.out[0]).toContain("put version 1 of prog_");
