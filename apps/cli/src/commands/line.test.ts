@@ -46,6 +46,7 @@ const view = (record: object = {}, rest: object = {}): LineView =>
       repositoryUrl: "https://example.test/r.git",
       version: 1,
       queue: [],
+      held: [],
       compositions: [],
       parked: [],
       updatedAt: AT,

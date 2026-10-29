@@ -103,6 +103,7 @@ const setup = async (
     open,
     now,
     queue: [],
+    held: [],
     lastComposed: {},
   } as unknown as Harness;
   const verifier: LineVerifierPort = {

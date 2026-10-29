@@ -259,7 +259,31 @@ describe("the line's request bodies and view", () => {
 describe("a legacy line record", () => {
   it("reads with its decisions and agents stripped", () => {
     const parsed = LineRecordSchema.parse({ ...record, decisions: [{ choice: "x" }], agents: [] });
-    expect(parsed).toEqual(record);
+    expect(parsed).toEqual({ ...record, held: [] });
     expect("decisions" in parsed).toBe(false);
+  });
+});
+
+describe("held entries and repairs", () => {
+  const entry = { program: PROGRAM, upTo: A, enqueuedAt: AT };
+
+  it("parses a record without held, and with held entries carrying repairs", () => {
+    expect(LineRecordSchema.parse(record).held).toEqual([]);
+    const held = LineRecordSchema.parse({ ...record, held: [{ ...entry, repairs: 3 }] });
+    expect(held.held[0]?.repairs).toBe(3);
+    expect(
+      LineRecordSchema.safeParse({ ...record, queue: [{ ...entry, repairs: 4 }] }).success,
+    ).toBe(false);
+  });
+
+  it("accepts release on the take body and held on the settle body", () => {
+    expect(
+      TakeLineBatchBodySchema.safeParse({ generation: 1, release: [{ program: PROGRAM, upTo: A }] })
+        .success,
+    ).toBe(true);
+    expect(TakeLineBatchBodySchema.safeParse({ generation: 1 }).success).toBe(true);
+    expect(
+      LineSettleBodySchema.safeParse({ batchId: "b", parked: [], held: [entry] }).success,
+    ).toBe(true);
   });
 });

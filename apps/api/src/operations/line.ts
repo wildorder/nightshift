@@ -117,6 +117,7 @@ const refusalStatus = (refusal: LineRefusal): HttpError =>
     409,
     refusal.reason === "stale_batch" ||
       refusal.reason === "resolver_attempts" ||
+      refusal.reason === "held_not_in_batch" ||
       refusal.reason === "stale_generation"
       ? refusal.reason
       : "conflict",
@@ -230,7 +231,7 @@ export const takeLineBatch: Handler = async (context) => {
   let taken: ReturnType<typeof takeBatch> | undefined;
   const stored = await deps.stores.lines.update(target.projectId, target.branch, (current) => {
     if (current === undefined) return undefined;
-    taken = takeBatch(current, owner, { batchId: ids.next("comp") }, at);
+    taken = takeBatch(current, owner, { batchId: ids.next("comp") }, at, body.release);
     return taken.record === current ? undefined : taken.record;
   });
   if (stored === undefined || taken === undefined) {

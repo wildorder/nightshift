@@ -14,6 +14,7 @@ import type {
   LineView,
   ProgramContract,
   ProjectId,
+  TakeLineBatchBody,
 } from "@nightshift/contracts";
 import type { ProgramScope, RunScope } from "@nightshift/core";
 
@@ -58,7 +59,7 @@ export interface LineRunnerPlane {
   /** The line run's own dispatch. */
   dispatch(): Promise<Dispatch | undefined>;
   /** The whole queue as one batch, or the batch already held; `undefined` when there is nothing. */
-  takeBatch(): Promise<LineBatch | undefined>;
+  takeBatch(release?: TakeLineBatchBody["release"]): Promise<LineBatch | undefined>;
   /** Settles the held batch, with its composition and push when there is one. */
   settle(body: LineSettleBody): Promise<void>;
   /** The run's dispatch heartbeat. */

@@ -500,6 +500,7 @@ const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promi
           version: 1,
           ...(head === undefined ? {} : { head }),
           queue: [],
+          held: [],
           compositions: [],
           parked: [],
           updatedAt: at,

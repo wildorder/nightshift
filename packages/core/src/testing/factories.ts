@@ -540,6 +540,7 @@ export const makeLineRecord = (f: Fixtures, overrides: Overrides<LineRecord> = {
     repositoryUrl: "https://github.com/example/fixture",
     version: 1,
     queue: [],
+    held: [],
     compositions: [],
     parked: [],
     updatedAt: AT,
