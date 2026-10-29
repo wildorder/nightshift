@@ -668,3 +668,142 @@ describe("the line's idle wait", () => {
     expect(LINE_IDLE_SECONDS).toBe(600);
   });
 });
+
+describe("held entries", () => {
+  const sha = (n: number) => n.toString(16).padStart(40, "0");
+  const manyHeld = Array.from({ length: MAX_LINE_BATCH_ENTRIES + 5 }, (_, i) => ({
+    program: P1,
+    upTo: sha(i + 1),
+    enqueuedAt: AT,
+    repairs: 2,
+  }));
+  const settleHolding = (held: LineRecord["held"], generation = 1) => {
+    const base = { ...empty(), queue: held };
+    const taken = takeBatch(base, generation, { batchId: "b1" }, AT);
+    const result = settleBatch(
+      taken.record,
+      { batchId: "b1", parked: [], held: held.slice(0, MAX_LINE_BATCH_ENTRIES) } as never,
+      { parkedIds: [] },
+      generation,
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    return result.record;
+  };
+
+  it("moves settled held entries into record.held, deduplicated keeping the larger repairs", () => {
+    const taken = takeBatch(queued(), 1, { batchId: "b1" }, AT).record;
+    const entries = taken.batch?.entries ?? [];
+    const first = entries[0];
+    if (first === undefined) throw new Error("no entry");
+    const result = settleBatch(
+      taken,
+      {
+        batchId: "b1",
+        parked: [],
+        held: [
+          { ...first, repairs: 1 },
+          { ...first, repairs: 3 },
+          { ...first, repairs: 2 },
+        ],
+      } as never,
+      { parkedIds: [] },
+      1,
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.record.held).toEqual([{ ...first, repairs: 3 }]);
+    expect(result.record.batch).toBeUndefined();
+  });
+
+  it("refuses held entries that were not in the settled batch", () => {
+    const taken = takeBatch(queued(), 1, { batchId: "b1" }, AT).record;
+    expect(
+      settleBatch(
+        taken,
+        { batchId: "b1", parked: [], held: [{ program: P1, upTo: C, enqueuedAt: AT }] } as never,
+        { parkedIds: [] },
+        1,
+        LATER,
+      ),
+    ).toMatchObject({ ok: false, reason: "held_not_in_batch" });
+  });
+
+  it("never blocks unrelated queued entries, however many are held", () => {
+    const record = settleHolding(manyHeld);
+    expect(record.held).toHaveLength(MAX_LINE_BATCH_ENTRIES);
+    const withWork = appendQueueEntry(record, { program: P2, upTo: B }, LATER);
+    const taken = takeBatch(withWork, 1, { batchId: "b2" }, LATER).record;
+    expect(taken.batch?.entries.map((e) => e.upTo)).toEqual([
+      ...manyHeld.slice(MAX_LINE_BATCH_ENTRIES).map((e) => e.upTo),
+      B,
+    ]);
+    expect(taken.held).toHaveLength(MAX_LINE_BATCH_ENTRIES);
+  });
+
+  it("puts released entries at the queue front with repairs intact", () => {
+    const record = appendQueueEntry(
+      settleHolding(manyHeld.slice(0, 2)),
+      { program: P2, upTo: B },
+      LATER,
+    );
+    const released = takeBatch(record, 1, { batchId: "b2" }, LATER, [
+      { program: P1, upTo: sha(2) },
+    ]).record;
+    expect(released.batch?.entries.map((e) => [e.upTo, e.repairs])).toEqual([
+      [sha(2), 2],
+      [B, undefined],
+    ]);
+    expect(released.held.map((e) => e.upTo)).toEqual([sha(1)]);
+  });
+
+  it("releases every held entry when a newer generation takes", () => {
+    const record = settleHolding(manyHeld.slice(0, 2));
+    const taken = takeBatch(record, 2, { batchId: "b2" }, LATER).record;
+    expect(taken.held).toEqual([]);
+    expect(taken.batch).toMatchObject({ generation: 2 });
+    expect(taken.batch?.entries).toEqual(manyHeld.slice(0, 2));
+  });
+
+  it("keeps repairs when a rejected push requeues the composition's ranges", () => {
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const composed = composeBatch(
+      batched,
+      compositionBody("b", { ranges: [{ program: P1, upTo: A, repairs: 3 }] }) as never,
+      "comp-1",
+      AT,
+    );
+    if (!composed.ok) throw new Error("expected ok");
+    const pushed = requestPush(
+      composed.record,
+      { head: C, expectedPredecessor: A, bundleKey: "k" },
+      1,
+      AT,
+    );
+    if (!pushed.ok) throw new Error("expected ok");
+    const resolved = resolvePush(pushed.record, C, "conflict", "no", LATER);
+    if (!resolved.ok) throw new Error("expected ok");
+    expect(resolved.record.queue[0]).toMatchObject({ program: P1, upTo: A, repairs: 3 });
+  });
+
+  it("stores the repair ref from a composition and from parked bodies", () => {
+    const repair = { runId: f.ids.next("run"), jobContractId: f.ids.next("job") };
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const { batchId: _id, ...composition } = compositionBody("b", { repair });
+    const result = settleBatch(
+      batched,
+      {
+        batchId: "b",
+        composition,
+        push: { head: C, expectedPredecessor: A, bundleKey: "k" },
+        parked: [{ ranges: [{ program: P2, upTo: B }], reason: "x", repair }],
+      } as never,
+      { compositionId: "c1", parkedIds: ["p1"] },
+      1,
+      LATER,
+    );
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.record.compositions[0]?.repair).toEqual(repair);
+    expect(result.record.parked[0]?.repair).toEqual(repair);
+  });
+});

@@ -18,6 +18,7 @@ import type {
   LineParkBody,
   LinePushBody,
   LinePushStatus,
+  LineQueueEntry,
   LineRange,
   LineRecord,
   LineResolver,
@@ -77,6 +78,8 @@ export type LineRefusal =
   | { readonly reason: "push_pending"; readonly detail: string }
   /** The push named is not the one the line holds. */
   | { readonly reason: "no_such_push"; readonly detail: string }
+  /** A held entry was not an entry of the settled batch. */
+  | { readonly reason: "held_not_in_batch"; readonly detail: string }
   /** The write is from an owner generation the line has moved past. */
   | { readonly reason: "stale_generation"; readonly detail: string };
 
@@ -122,6 +125,22 @@ export const appendQueueEntry = (
   };
 };
 
+/** Moves the held entries `pick` chooses to the front of the queue, repairs and enqueuedAt kept. */
+const releaseHeld = (record: LineRecord, pick: (entry: LineQueueEntry) => boolean): LineRecord => {
+  const released = record.held.filter(pick);
+  if (released.length === 0) return record;
+  const kept = record.held.filter((entry) => !pick(entry));
+  const { heldBy: _heldBy, ...rest } = record;
+  return {
+    ...(kept.length === 0 ? rest : record),
+    held: kept,
+    queue: [
+      ...released.filter((entry) => !record.queue.some((queued) => sameRange(queued, entry))),
+      ...record.queue,
+    ],
+  };
+};
+
 /**
  * Moves the oldest `MAX_LINE_BATCH_ENTRIES` of the queue into one batch for the owner of `generation`. An empty
  * queue gives no batch. A batch already held is the owner's to finish, so it is
@@ -133,8 +152,26 @@ export const takeBatch = (
   owner: LineOwnerArg,
   ids: { readonly batchId: string },
   at: string,
+  release: readonly Pick<LineQueueEntry, "program" | "upTo">[] = [],
 ): { readonly record: LineRecord; readonly batch?: LineBatch } => {
   const generation = generationOf(owner);
+  // A newer owner has no reservations, so everything held returns; otherwise only what was named.
+  const replaced =
+    record.held.length > 0 &&
+    ((record.heldBy !== undefined && generation > record.heldBy) ||
+      (record.batch !== undefined && record.batch.generation !== generation));
+  const released = replaced
+    ? releaseHeld(record, () => true)
+    : release.length === 0
+      ? record
+      : releaseHeld(record, (entry) => release.some((named) => sameRange(named, entry)));
+  if (released !== record) {
+    const next = takeBatch(released, owner, ids, at);
+    return {
+      record: next.record === released ? { ...released, updatedAt: at } : next.record,
+      ...(next.batch === undefined ? {} : { batch: next.batch }),
+    };
+  }
   const ownedBy = typeof owner === "number" ? {} : { runId: owner.runId };
   if (record.batch !== undefined) {
     if (
@@ -188,6 +225,21 @@ const resolverOver = (resolver: LineResolver | undefined): LineRefusal | undefin
 const newest = <T>(items: readonly T[], max: number): T[] =>
   items.length > max ? items.slice(items.length - max) : [...items];
 
+const notInBatch = (
+  record: LineRecord,
+  held: readonly LineQueueEntry[],
+): LineRefusal | undefined => {
+  const missing = held.find(
+    (entry) => !(record.batch?.entries ?? []).some((taken) => sameRange(taken, entry)),
+  );
+  return missing === undefined
+    ? undefined
+    : {
+        reason: "held_not_in_batch",
+        detail: `${missing.program} up to ${missing.upTo.slice(0, 12)} was not an entry of batch ${record.batch?.batchId ?? "(none)"}`,
+      };
+};
+
 /** Records the owner's composition and settles its batch. */
 export const composeBatch = (
   record: LineRecord,
@@ -212,6 +264,7 @@ export const composeBatch = (
             ranges: body.ranges,
             verification: body.verification,
             ...(body.resolver === undefined ? {} : { resolver: body.resolver }),
+            ...(body.repair === undefined ? {} : { repair: body.repair }),
             composedAt: at,
           },
         ],
@@ -246,6 +299,7 @@ export const parkBatch = (
             ...(body.commit === undefined ? {} : { commit: body.commit }),
             ...(body.verification === undefined ? {} : { verification: body.verification }),
             ...(body.resolver === undefined ? {} : { resolver: body.resolver }),
+            ...(body.repair === undefined ? {} : { repair: body.repair }),
             parkedAt: at,
           },
         ],
@@ -282,15 +336,28 @@ export const settleBatch = (
           detail: `a push to ${pending.head.slice(0, 12)} is still pending`,
         } as const)
       : undefined) ??
+    notInBatch(record, body.held ?? []) ??
     resolverOver(body.composition?.resolver) ??
     body.parked.map((entry) => resolverOver(entry.resolver)).find((r) => r !== undefined);
   if (refusal !== undefined) return refuse(refusal);
   const { batch: _settled, ...rest } = record;
   const composition = body.composition;
+  const heldNow = (body.held ?? []).reduce<LineQueueEntry[]>(
+    (all, entry) => {
+      const at = all.findIndex((have) => sameRange(have, entry));
+      if (at < 0) return [...all, entry];
+      if ((entry.repairs ?? 0) > (all[at]?.repairs ?? 0)) all[at] = entry;
+      return all;
+    },
+    [...record.held],
+  );
   return {
     ok: true,
     record: {
       ...rest,
+      ...(body.held === undefined || body.held.length === 0
+        ? {}
+        : { held: heldNow, heldBy: generation }),
       compositions:
         composition === undefined
           ? record.compositions
@@ -304,6 +371,7 @@ export const settleBatch = (
                   ranges: composition.ranges,
                   verification: composition.verification,
                   ...(composition.resolver === undefined ? {} : { resolver: composition.resolver }),
+                  ...(composition.repair === undefined ? {} : { repair: composition.repair }),
                   composedAt: at,
                 },
               ],
@@ -335,6 +403,7 @@ export const settleBatch = (
                   ...(entry.commit === undefined ? {} : { commit: entry.commit }),
                   ...(entry.verification === undefined ? {} : { verification: entry.verification }),
                   ...(entry.resolver === undefined ? {} : { resolver: entry.resolver }),
+                  ...(entry.repair === undefined ? {} : { repair: entry.repair }),
                   parkedAt: at,
                 })),
               ],
@@ -413,6 +482,7 @@ export const resolvePush = (
               program: range.program,
               upTo: range.upTo,
               enqueuedAt: unpushed.composedAt,
+              ...(range.repairs === undefined ? {} : { repairs: range.repairs }),
             })),
           ...record.queue,
         ];
@@ -443,7 +513,10 @@ export const resolvePush = (
 
 /** Whether the line has anything left for an owner to do: a queue, a batch, or a push to resolve. */
 export const lineHasWork = (record: LineRecord): boolean =>
-  record.queue.length > 0 || record.batch !== undefined || record.push?.status === "pending";
+  record.queue.length > 0 ||
+  record.held.length > 0 ||
+  record.batch !== undefined ||
+  record.push?.status === "pending";
 
 /**
  * Whether a run's publication owes the line a range it has not queued: the run

@@ -146,12 +146,12 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
       LineViewSchema.parse(
         await send(transport, { method: "GET", path: routes.line(projectId, branch) }),
       ),
-    takeBatch: async () =>
+    takeBatch: async (release) =>
       TakeLineBatchResponseSchema.parse(
         await send(transport, {
           method: "POST",
           path: routes.lineBatch(projectId, branch),
-          body: { generation },
+          body: { generation, ...(release === undefined ? {} : { release }) },
         }),
       ).batch,
     settle: async (body) => {

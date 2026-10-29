@@ -122,6 +122,7 @@ const code = (response: ApiResponse): string =>
 interface Seed {
   readonly queue?: LineRecord["queue"];
   readonly batch?: LineRecord["batch"];
+  readonly held?: LineRecord["held"];
 }
 
 /** The engine of a run, as the dispatch Lambda mints it. */
@@ -180,6 +181,7 @@ const seedLineRecords = async (w: World, seed: Seed = {}) => {
   await w.stores.lines.update(w.f.scope.projectId, BRANCH, () =>
     makeLineRecord(w.f, {
       queue: seed.queue ?? [],
+      ...(seed.held === undefined ? {} : { held: seed.held }),
       ...(seed.batch === undefined ? {} : { batch: seed.batch }),
     }),
   );
@@ -425,6 +427,38 @@ describe("batch, settle and push", () => {
     );
     expect(none.status).toBe(200);
     expect(none.body).toEqual({});
+  });
+
+  it("holds settled entries, refuses others, and releases them on the next take", async () => {
+    const w = await setup();
+    const { me } = await seedLine(w, { queue: [entry(w), entry(w, SHA_B)] });
+    const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
+    const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
+    const url = lineUrl(w, BRANCH, "/settle");
+    const foreign = await call(
+      w,
+      "POST",
+      url,
+      { batchId, parked: [], held: [entry(w, "c".repeat(40))] },
+      me,
+    );
+    expect(foreign.status).toBe(409);
+    expect(code(foreign)).toBe("held_not_in_batch");
+    const held = { ...entry(w), repairs: 2 };
+    const settled = await call(w, "POST", url, { batchId, parked: [], held: [held] }, me);
+    expect(settled.status).toBe(200);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.held).toEqual([held]);
+    const released = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/batch"),
+      { generation: 1, release: [{ program: held.program, upTo: held.upTo }] },
+      me,
+    );
+    const entries = (released.body as { batch: { entries: unknown[] } }).batch.entries;
+    expect(entries).toEqual([held]);
+    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.held).toEqual([]);
   });
 
   it("settles a batch with a composition and parked entries in one change", async () => {

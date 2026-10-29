@@ -34,11 +34,17 @@ export const LineBranchSchema = z.string().min(1);
 /** The most compositions and parked entries a line record keeps, the newest. */
 export const MAX_LINE_COMPOSITIONS = 50;
 export const MAX_LINE_PARKED = 50;
+/** The most repairs one lineage of ranges may spend. */
+export const MAX_LINE_REPAIRS = 3;
+/** The repairs a lineage has spent; absent means none. */
+export const LineRepairsSchema = z.int().min(0).max(MAX_LINE_REPAIRS);
+
 /** One range of a program's landed work: `from` (exclusive, absent for its start) up to `upTo`. */
 export const LineRangeSchema = z.strictObject({
   program: ProgramIdSchema,
   from: CommitShaSchema.optional(),
   upTo: CommitShaSchema,
+  repairs: LineRepairsSchema.optional(),
 });
 export type LineRange = z.infer<typeof LineRangeSchema>;
 
@@ -47,6 +53,7 @@ export const LineQueueEntrySchema = z.strictObject({
   program: ProgramIdSchema,
   upTo: CommitShaSchema,
   enqueuedAt: IsoTimestampSchema,
+  repairs: LineRepairsSchema.optional(),
 });
 export type LineQueueEntry = z.infer<typeof LineQueueEntrySchema>;
 
@@ -180,6 +187,10 @@ const LineRecordShape = z.strictObject({
   /** The line's head at GitHub, as last known. */
   head: CommitShaSchema.optional(),
   queue: z.array(LineQueueEntrySchema),
+  /** Entries the composer holds back behind a repair; never handed out until released. */
+  held: z.array(LineQueueEntrySchema).default([]),
+  /** The owner generation that last held entries back; a newer generation takes them all back. */
+  heldBy: z.int().min(1).optional(),
   batch: LineBatchSchema.optional(),
   /** Newest `MAX_LINE_COMPOSITIONS` kept. */
   compositions: z.array(LineCompositionSchema),
@@ -224,6 +235,8 @@ export type ProjectSelfStartedUsage = z.infer<typeof ProjectSelfStartedUsageSche
 /** `POST …/line/batch?branch=`. */
 export const TakeLineBatchBodySchema = z.strictObject({
   generation: z.int().min(1),
+  /** Held entries to return to the queue front before taking. */
+  release: z.array(z.strictObject({ program: ProgramIdSchema, upTo: CommitShaSchema })).optional(),
 });
 export type TakeLineBatchBody = z.infer<typeof TakeLineBatchBodySchema>;
 
@@ -276,6 +289,8 @@ export const LineSettleBodySchema = z
     /** The publication of the composition, recorded with it so a dead owner cannot lose it. */
     push: LinePushBodySchema.optional(),
     parked: z.array(LineParkBodySchema.omit({ batchId: true })),
+    /** Entries of the settled batch the composer holds behind a repair. */
+    held: z.array(LineQueueEntrySchema).optional(),
   })
   .superRefine((body, ctx) => {
     const { composition, push } = body;
