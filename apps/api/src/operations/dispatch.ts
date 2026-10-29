@@ -612,7 +612,11 @@ export const heartbeat: Handler = async (context) => {
     ) * 3600;
   const hours = ceilingSeconds / 3600;
   // A line run is also metered against the project's own cap (Pipkin).
-  const lineCap = live ? await chargeLineRun(deps, dispatch, at) : undefined;
+  // The charge is made on every beat, a stopping or terminal one included, so
+  // a run's final spend reaches the usage and a failed write is repaired by the
+  // next beat; only the decision to stop on it is a live dispatch's.
+  const charged = await chargeLineRun(deps, dispatch, at);
+  const lineCap = live ? charged : undefined;
   if (
     live &&
     (lineCap !== undefined || meteredSeconds > ceilingSeconds || meteredUsd > ceilings.maxUsdPerRun)

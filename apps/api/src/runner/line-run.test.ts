@@ -276,6 +276,61 @@ describe("a line run's heartbeat", () => {
       "monthly_cap",
     );
   });
+
+  const usageOf = async (w: World) =>
+    w.stores.projectSelfStartedUsage.get(w.f.scope.projectId, MONTH);
+
+  it("charges a stopped report's final spend once, and refuses the next start at the cap", async () => {
+    const w = await setup(undefined, 0.5);
+    const { scope, dispatch } = await live(w);
+    const key = dispatchChargeKey(BRANCH, scope.runId);
+    await beat(w, scope, 60);
+    const before = (await usageOf(w))?.charged?.[key] ?? 0;
+    const seconds = Math.ceil((0.5 / dispatch.usdPerHour) * 3600) + 600;
+    const final = await handleRequest(w.deps, {
+      method: "POST",
+      path: `/projects/${w.f.scope.projectId}/programs/${scope.programId}/runs/${scope.runId}/dispatch/heartbeat`,
+      query: {},
+      body: {
+        generation: 1,
+        meteredSeconds: seconds,
+        report: "stopped",
+        samples: [{ memoryPct: 1, cpuPct: 1, diskPct: 1, swapUsed: false, oomKills: 0 }],
+      },
+      principal: w.principal,
+    });
+    expect(final.status, JSON.stringify(final.body)).toBe(200);
+    const after = await usageOf(w);
+    expect(after?.charged?.[key]).toBeGreaterThan(before);
+    expect(after?.meteredUsd).toBeGreaterThanOrEqual(0.5);
+    // A repeated terminal beat charges nothing more.
+    await beat(w, scope, seconds);
+    expect((await usageOf(w))?.meteredUsd).toBe(after?.meteredUsd);
+    // The cap the final spend crossed refuses the next start.
+    const next = await start(w);
+    expect(next.kind).not.toBe("started");
+  });
+
+  it("repairs a failed usage write on a later beat of a terminal dispatch", async () => {
+    const w = await setup(undefined, 5);
+    const { scope } = await live(w);
+    const key = dispatchChargeKey(BRANCH, scope.runId);
+    const real = w.stores.projectSelfStartedUsage.update.bind(w.stores.projectSelfStartedUsage);
+    let fail = true;
+    w.stores.projectSelfStartedUsage.update = (async (...args: Parameters<typeof real>) => {
+      if (fail) throw new Error("write failed");
+      return real(...args);
+    }) as typeof real;
+    expect((await beat(w, scope, 60)).status).toBe(500);
+    fail = false;
+    const stored = await w.stores.dispatches.get(scope);
+    if (stored === undefined) throw new Error("no dispatch");
+    await w.stores.dispatches.put({ ...stored, status: "stopped" });
+    expect((await usageOf(w))?.charged?.[key]).toBeUndefined();
+    const repaired = await beat(w, scope, 60);
+    expect(repaired.status, JSON.stringify(repaired.body)).toBe(200);
+    expect((await usageOf(w))?.charged?.[key]).toBeGreaterThan(0);
+  });
 });
 
 describe("a line run's machine", () => {
