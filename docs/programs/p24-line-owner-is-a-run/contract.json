@@ -1,0 +1,414 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_01M49RRHPS6B770S9G5HDCPSD2",
+  "programId": "prog_01M62ZYJAZDWH8W63977YCNGBW",
+  "objective": "A line owner session is a run of a per-line program, with the composer in the root seat and repairs as engine repair jobs on the same machine, so the line shares every piece of run machinery (dispatch, lease, token, agents, events, transcripts, examination, report, Studio) and its private agent and machine paths are deleted; the line never stops for a repair, reserving only the failing range's paths; every machine keeps its runner log as an artifact. Pipkin follow-up to P23 (A-66). The authority is the plan document stored with this contract.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p24-line-owner-is-a-run"
+  },
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "A line owner session is a run of the project's line program: it is dispatched, leased, tokened, heartbeated, replaced and stopped by the same code and records as a program run; LineDispatch and its handlers no longer exist; 'one owner per line' is the one-live-run guard; the line record holds the queue, compositions, parked ranges, push and cap and nothing about agents.",
+      "serves": [
+        "US-01",
+        "US-03"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "A conflict or a red landing check on the line becomes a repair job of the owner's run, executed by the engine on the owner machine, with an Agent record, events, a routing decision, usage, a transcript, a high-risk examination and a recorded decision; the line's own agent launcher, its resolver loop and the harnesses' startLine are gone.",
+      "serves": [
+        "US-02",
+        "US-03"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "While a repair runs, the line keeps composing ranges that touch none of the failing range's paths and holds the ones that do; a repaired range is composed next; a range whose repair budget is spent is parked with the cause and the agent's own words, never retried without end.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "Every machine's runner log is recorded as an artifact of its run, periodically and at every ending, for program runs and line runs alike, and can be read from the Studio after the machine is gone.",
+      "serves": [
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "The Studio shows a project's line as a program apart from its plan programs, with its runs, repairs and parked ranges; nightshift line status reads the same; a line run's report leads with compositions, parked ranges and repairs and has no plan sections.",
+      "serves": [
+        "US-02"
+      ]
+    }
+  ],
+  "constraints": [
+    "No run-keyed record (Agent, Event, RoutingDecision, Measurement, Artifact, Verification, Examination) changes shape; the line gains a run instead.",
+    "Nothing about how a program run plans, lands, verifies or publishes changes, except that its machine now keeps its runner log.",
+    "No new way to launch an agent: a repair is an ordinary engine job, and when this program ends there is exactly one agent launch path.",
+    "The line never waits on a repair; only ranges touching the reserved paths wait, and every repair is bounded by a budget after which the range is parked.",
+    "A verification made on the line is never landing evidence for a program run (A-66).",
+    "Windows keeps working: nothing added assumes a POSIX shell or path.",
+    "infra/** is not edited; a grant the work needs is recorded as a decision for the owner, as in P23."
+  ],
+  "scope": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "test/**",
+      "docs/**",
+      "AGENTS.md"
+    ],
+    "excludes": [
+      "infra/**"
+    ],
+    "forbiddenActions": [
+      "deploy any stack",
+      "build a runner image",
+      "push to main",
+      "edit another program's documents under docs/programs/"
+    ]
+  },
+  "setup": [
+    {
+      "id": "install",
+      "command": "npm ci --prefer-offline"
+    }
+  ],
+  "verification": [
+    {
+      "id": "build",
+      "command": "npm run build"
+    },
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck"
+    },
+    {
+      "id": "lint",
+      "command": "npm run lint"
+    },
+    {
+      "id": "test",
+      "command": "npm run test"
+    },
+    {
+      "id": "synth",
+      "command": "npm --workspace @nightshift/cdk run synth"
+    },
+    {
+      "id": "sterility",
+      "command": "npm run check:sterility"
+    }
+  ],
+  "modelPolicy": {
+    "allowedProviders": [
+      "anthropic",
+      "openai"
+    ],
+    "allowedModels": [],
+    "forbiddenModels": []
+  },
+  "examinationPolicy": {
+    "low": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "medium": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "high": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    }
+  },
+  "delegationLimits": {
+    "maxDepth": 2,
+    "maxConcurrency": 2
+  },
+  "costPolicy": {},
+  "defaultRisk": "high",
+  "createdAt": "2026-10-28T19:40:00Z",
+  "status": "ratified",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "The owner running several programs at once",
+      "problem": "When one program's range conflicts on the line, the owner holds the whole line for up to an hour while a resolver works, so every range queued behind it waits; with many programs, conflicts become the throughput limit.",
+      "outcome": "A conflict starts a repair on the warm line machine and the line keeps composing everything that does not touch the same files; only the colliding ranges wait, and a range that keeps failing is parked for its pull request instead of looping.",
+      "words": [
+        "i want what scales. what moves us toward the futue scion vision. but i want it done elegantly not clumsily. what do you recommend"
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "The owner reading a line failure the morning after",
+      "problem": "A line repair leaves no Agent record, no events, no transcript and no machine log; the first line failure on foodfly was 'the resolver failed (exit 127)' and nothing else, and the machine that could have explained it was gone.",
+      "outcome": "A repair is a job of the line's run, with its transcript, events, examination and decision in the Studio and the report, and every machine's runner log is kept as an artifact, so any line failure can be read afterwards without anyone watching live.",
+      "words": [
+        "do you have to monitor the error live, or can you troubleshoot after, will you have the right logging in place to look at a failure afterwards? because if that's the case, i'm just going to keep operating as-is and wait for this to appear again"
+      ]
+    },
+    {
+      "id": "US-03",
+      "who": "Whoever maintains Nightshift",
+      "problem": "The line has its own agent launcher, its own harness entry point and its own machine record and handlers beside the run's; the three bugs found on the line's first trial all lived in that copy.",
+      "outcome": "There is one way an agent is launched and recorded and one implementation of a machine's lifecycle, used by program runs and line runs alike; the line keeps only what is genuinely the line's: the queue, compositions, the push and the cap.",
+      "words": [
+        "plasse tell me we aren't rebuilding everything all over again",
+        "i don't like how it seems to be making things more complex when the goal was to make things less complicated by sharing",
+        "should't the mechanics of a line owner be the exact same as a run?"
+      ]
+    }
+  ],
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "The line program and its run, in the plane",
+      "scope": {
+        "summary": "Contracts, core rules, API operations and persistence: the line program kind, a line run's dispatch and admission, the engine access for a line run, the removal of LineDispatch and its handlers, the slimmed line record, the architecture row",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/**",
+          "packages/persistence/**",
+          "apps/api/**",
+          "test/src/conformance/**",
+          "docs/architecture.md"
+        ],
+        "excludes": [
+          "packages/core/src/report/**"
+        ]
+      },
+      "acceptance": [
+        "A project that names a line has a program of kind line whose programBranch is the line branch, made idempotently by the plane; its contract is honest content and needs no ratification to run",
+        "A queued range with no live run of the line program starts one through dispatch.create, under the self-started cap and the org's ceilings, with an engine token; a second start is refused by the one-live-run guard",
+        "LineDispatch, the line principal, provision-line and the duplicated heartbeat, credential, token and cancel handlers are deleted; the remaining line.* operations are granted to a line run's engine token for its own project and branch and to no other engine token",
+        "The line record drops agents and resolver decisions; compositions and parked entries name the repair's run and job where one ran; the conformance suite proves the stores on memory, SQLite and DynamoDB",
+        "The handler tests pin every principal's access to every surviving line route",
+        "docs/architecture.md records the decision as a row amending A-66",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-01"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "The composer in the root seat, repairs as engine jobs, the kept log",
+      "scope": {
+        "summary": "The runner, the execution engine's line module, the harnesses and the line end-to-end tests: the composer hosted as a run's root, repair jobs through delegateJob/startJob landing on the line candidate, path reservation and the repair budget, the deletion of the line agent path, and the runner log kept as an artifact",
+        "includes": [
+          "apps/mcp/**",
+          "packages/execution/**",
+          "packages/harness/**",
+          "packages/harness-claude/**",
+          "packages/harness-codex/**",
+          "test/src/line/**",
+          "test/src/execution/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "A machine dispatched for a line run boots as any run machine and starts the composer in the root seat with an engine token, standard stores and an orchestrator Agent record of its own",
+        "A conflict or red check records a decision and delegates a repair job (cause line_conflict or line_red) whose brief carries the line head, the ranges it holds, the conflicting paths or failing check output, what landed since and the line's recent repairs; the job lands on the line candidate and the composer composes on from its commit",
+        "While a repair runs, ranges touching none of the reserved paths are composed and pushed; ranges touching them are held and composed after; a repaired range is composed next",
+        "A range whose repair budget is spent is parked with the cause and the failed agent's own words; the end-to-end test proves repair, reservation and park against a real git server",
+        "line-agents.ts, the resolver loop, LineResolverAgentPort, startLine in both adapters and HarnessLineStartInput are deleted",
+        "The runner tees its log to a file on the volume and records it as an artifact of the run (kind runner-log) every ten minutes and at every ending, for program runs and line runs, never failing a run when it cannot",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-02",
+        "SC-03",
+        "SC-04"
+      ],
+      "dependsOn": [
+        "S-01"
+      ],
+      "prerequisites": []
+    },
+    {
+      "id": "S-03",
+      "name": "Seeing it: Studio, CLI, report",
+      "scope": {
+        "summary": "The Studio's project and run pages, nightshift line status, the report of a line run, and the skills' wording",
+        "includes": [
+          "apps/studio/**",
+          "apps/cli/**",
+          "packages/core/src/report/**",
+          "docs/**",
+          "AGENTS.md"
+        ],
+        "excludes": [
+          "docs/architecture.md"
+        ]
+      },
+      "acceptance": [
+        "The project page lists a line program apart from plan programs with its head, last composition, parked ranges and live run; a line run's page reads as compositions and repairs, and a repair job shows as any job with its transcript and examination",
+        "nightshift line status shows the line record and the line program's runs with their machines and spend",
+        "A line run's report leads with what was composed, what was parked and why, and the repairs, and has no plan or strand sections",
+        "The run-program and plan-program skills name the line's new shape and warn that a file every program appends to is where repairs concentrate",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-05"
+      ],
+      "dependsOn": [
+        "S-01"
+      ],
+      "prerequisites": []
+    }
+  ],
+  "prerequisites": [],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "What is a line owner session, so that it shares the run machinery?",
+      "options": [
+        "A run of a per-line program of kind line, with the composer (code) in the root orchestrator's seat",
+        "A new agent-session parent beside runs on every agent record",
+        "A line that stays its own thing and starts a separate run per repair"
+      ],
+      "leaning": "A run of a per-line program of kind line, with the composer (code) in the root orchestrator's seat",
+      "answer": "A run of a per-line program of kind line, with the composer (code) in the root orchestrator's seat",
+      "rationale": "The owner: the line owner machine is the right place, it was lacking the run's machinery, and sharing must make things simpler, not add shapes. A run is what the engine keys everything by, so the line gains one rather than every record gaining a second parent.",
+      "touches": "all"
+    },
+    {
+      "id": "D-02",
+      "question": "How does the line repair a conflict or a red check?",
+      "options": [
+        "A repair job (P15, D-P15-04) executed by the engine on the warm line machine, with a recorded decision and high-risk examination",
+        "The line's own resolver and examiner agents, as today",
+        "A separate run started by the plane for each repair"
+      ],
+      "leaning": "A repair job (P15, D-P15-04) executed by the engine on the warm line machine, with a recorded decision and high-risk examination",
+      "answer": "A repair job (P15, D-P15-04) executed by the engine on the warm line machine, with a recorded decision and high-risk examination",
+      "rationale": "Seconds to launch on the warm worktree, and every record a job has; a separate run costs minutes of start-up per repair for no gain, and the line's own agents are the path being deleted.",
+      "touches": [
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-03",
+      "question": "Is LineDispatch retired in this program?",
+      "options": [
+        "Yes: a line run is dispatched as a run, and the duplicated heartbeat, token, credential and cancel handlers are deleted",
+        "Later: keep LineDispatch pointing at the line's run"
+      ],
+      "leaning": "Yes: a line run is dispatched as a run, and the duplicated heartbeat, token, credential and cancel handlers are deleted",
+      "answer": "Yes: a line run is dispatched as a run, and the duplicated heartbeat, token, credential and cancel handlers are deleted",
+      "rationale": "The owner chose this in planning; the copy is where the first trial's route and lease bugs lived.",
+      "touches": [
+        "S-01",
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-04",
+      "question": "When are a failing range's paths reserved, so the line never stops but a repair is sure to land?",
+      "options": [
+        "On its first conflict or red check: the repair runs against a base that cannot move in its files",
+        "Only after a repaired range bounces a second time: fully optimistic first, reserve on repeat"
+      ],
+      "leaning": "On its first conflict or red check: the repair runs against a base that cannot move in its files",
+      "answer": "On its first conflict or red check: the repair runs against a base that cannot move in its files",
+      "rationale": "The owner chose certainty that a repair lands over the last increment of throughput; ranges in other files still never wait, and the rule can be relaxed later if reservations themselves become the bottleneck.",
+      "touches": [
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-05",
+      "question": "How many repairs may a range's lineage spend before it is parked for its pull request?",
+      "options": [
+        "Three, as today's resolver attempts",
+        "One",
+        "Five"
+      ],
+      "leaning": "Three, as today's resolver attempts",
+      "answer": "Three, as today's resolver attempts",
+      "rationale": "The owner kept today's figure, counted across a range's whole lineage so a repair of a repair cannot loop; after it, the range is parked for its program's pull request.",
+      "touches": [
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-06",
+      "question": "Where does a line program come from, and what is its branch?",
+      "options": [
+        "The plane makes one per (project, line branch) when a project first names a line, with an honest contract and programBranch equal to the line branch, so the engine's own integration lands repairs where the composer wants them",
+        "The owner plans one by hand like any program"
+      ],
+      "leaning": "The plane makes one per (project, line branch) when a project first names a line, with an honest contract and programBranch equal to the line branch, so the engine's own integration lands repairs where the composer wants them",
+      "answer": "The plane makes one per (project, line branch) when a project first names a line, with an honest contract and programBranch equal to the line branch, so the engine's own integration lands repairs where the composer wants them",
+      "rationale": "The owner wants no ceremony to have a line; a program the plane makes from the config is what lets the line be a run without anyone planning it.",
+      "touches": [
+        "S-01",
+        "S-02",
+        "S-03"
+      ]
+    },
+    {
+      "id": "D-07",
+      "question": "Does a line run take one of the org's machine slots (maxConcurrentRuns)?",
+      "options": [
+        "Yes: it is a machine, as today's line owner is, and the ceiling is the owner's to raise in the Studio",
+        "No: line runs are counted only against the self-started cap"
+      ],
+      "leaning": "Yes: it is a machine, as today's line owner is, and the ceiling is the owner's to raise in the Studio",
+      "answer": "Yes: it is a machine, as today's line owner is, and the ceiling is the owner's to raise in the Studio",
+      "rationale": "The owner chose to count it: the ceiling bounds machines, and the Studio now edits it.",
+      "touches": [
+        "S-01"
+      ]
+    }
+  ],
+  "outOfScope": [
+    "Batch-and-bisect proving and conflict analysis between ranges (PK-7)",
+    "Release candidates and landing on them (M2)",
+    "Removing a project's own hotspot files such as a shared docs/as-built.md (a project convention; guidance only)",
+    "Changing the publisher's push or the self-started cap"
+  ],
+  "planHash": "1de5afb306896e3a9aee27a6170a2ceabbd57a0c882304c85f64e4dc7d1813ee",
+  "planDocument": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M62ZYJAZDWH8W63977YCNGBW/2c0ce89a98c65f5115e7fd60fa5e92b8ebcd996d6657d92f466d652da17768ea.md",
+    "sha256": "2c0ce89a98c65f5115e7fd60fa5e92b8ebcd996d6657d92f466d652da17768ea",
+    "sizeBytes": 14734
+  },
+  "conversation": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M62ZYJAZDWH8W63977YCNGBW/10523f32631cc618b132c3eaa78a05f197fcf6df500cbe3c379d1c09db6f10e8.md",
+    "sha256": "10523f32631cc618b132c3eaa78a05f197fcf6df500cbe3c379d1c09db6f10e8",
+    "sizeBytes": 62643
+  },
+  "ratifications": [
+    {
+      "planHash": "1de5afb306896e3a9aee27a6170a2ceabbd57a0c882304c85f64e4dc7d1813ee",
+      "planDocument": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M62ZYJAZDWH8W63977YCNGBW/2c0ce89a98c65f5115e7fd60fa5e92b8ebcd996d6657d92f466d652da17768ea.md",
+        "sha256": "2c0ce89a98c65f5115e7fd60fa5e92b8ebcd996d6657d92f466d652da17768ea",
+        "sizeBytes": 14734
+      },
+      "conversation": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M62ZYJAZDWH8W63977YCNGBW/10523f32631cc618b132c3eaa78a05f197fcf6df500cbe3c379d1c09db6f10e8.md",
+        "sha256": "10523f32631cc618b132c3eaa78a05f197fcf6df500cbe3c379d1c09db6f10e8",
+        "sizeBytes": 62643
+      },
+      "ratifiedAt": "2026-10-29T05:08:33.030Z"
+    }
+  ]
+}
