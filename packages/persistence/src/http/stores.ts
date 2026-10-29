@@ -77,7 +77,6 @@ import type {
   GateHealthStore,
   InstallationClaimStore,
   JobContractStore,
-  LineDispatchStore,
   LineStore,
   MeasurementSummaryStore,
   OrgConfigStore,
@@ -585,17 +584,6 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
       throw new Error("listing lines with work is the reconciler's read; no route serves it");
     },
   };
-  const lineDispatches: LineDispatchStore = {
-    // The line's owner is a run of its line program now: the view names that run.
-    get: async () => undefined,
-    start: planeOwns("line dispatch", "the plane's own start of the line owner"),
-    update: planeOwns("line dispatch", "the line run's dispatch heartbeat"),
-    listByStatus: async () => {
-      throw new Error(
-        "listing line dispatches by status is the reconciler's read; no route serves it",
-      );
-    },
-  };
   const projectSelfStartedUsage: ProjectSelfStartedUsageStore = {
     get: async (projectId, month) => {
       throw new Error(
@@ -745,7 +733,6 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     projects,
     dispatches,
     lines,
-    lineDispatches,
     projectSelfStartedUsage,
     computeUtilizations,
     warmCaches,

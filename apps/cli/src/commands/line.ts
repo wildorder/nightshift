@@ -127,14 +127,6 @@ export const describeLine = (view: LineView): string[] => {
     for (const parked of record.parked) lines.push(...describeParked(parked, names));
   }
 
-  const newest = record.decisions?.at(-1);
-  if (record.decisions !== undefined && newest !== undefined) {
-    const unit =
-      newest.unit.kind === "main"
-        ? `main ${short(newest.unit.commit)}`
-        : describeRange(newest.unit.range, names);
-    lines.push(`decisions: ${record.decisions.length}`, `  newest: ${unit}: ${newest.choice}`);
-  }
   return lines;
 };
 

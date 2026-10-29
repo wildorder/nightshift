@@ -783,9 +783,6 @@ describe("the line program", () => {
     expect(made[0]?.repository.programBranch).toBe(LINE.branch);
     expect(made[0]?.programId).toBe(lineProgramId(w.f.scope.projectId, LINE.branch));
     expect(await w.deps.stores.lines.get(w.f.scope.projectId, LINE.branch)).toBeUndefined();
-    expect(
-      await w.deps.stores.lineDispatches.get(w.f.scope.projectId, LINE.branch),
-    ).toBeUndefined();
     expect((await call(w, "PUT", w.paths.program, contract)).status).toBe(200);
     expect(await lineProgramsOf(w)).toHaveLength(1);
   });

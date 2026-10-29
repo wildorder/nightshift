@@ -33,8 +33,7 @@ import { IllegalTransitionError } from "../errors.js";
 
 /**
  * What the machine rules need of a record, structurally: a run's `Dispatch`
- * and the project line's `LineDispatch` both have it, so one set of rules
- * drives both.
+ * has it (the project line's own machine is a run of the line program).
  */
 export interface DispatchMachine {
   readonly status: DispatchStatus;

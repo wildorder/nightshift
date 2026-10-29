@@ -40,7 +40,6 @@ import type {
   GateHealth,
   JobContract,
   JobContractId,
-  LineDispatch,
   LineRecord,
   MeasurementSummary,
   MeasurementSummaryId,
@@ -547,34 +546,6 @@ export interface LineStore {
   listWithWork(): Promise<readonly LineRecord[]>;
 }
 
-/** Whether `LineDispatchStore.start` stored the dispatch, or one was already live. */
-export type LineDispatchStart = "started" | "live";
-
-/** The machine of one line owner, one per (project, line branch). */
-export interface LineDispatchStore {
-  get(projectId: ProjectId, branch: string): Promise<LineDispatch | undefined>;
-  /**
-   * Stores `next` only when none is stored, or the stored one is `stopped` or
-   * `failed` with `cleanup.settledAt` set and `next.generation` is its
-   * generation plus one. Otherwise `live`, and nothing changes. Atomic, so of
-   * two concurrent starts exactly one answers `started`.
-   */
-  start(next: LineDispatch): Promise<LineDispatchStart>;
-  /**
-   * Applies `change` to the stored dispatch by compare-and-swap on `version`,
-   * for claims and transitions; stamps the next `version`. `change` must be
-   * pure: it is called again on a lost race. Returning `undefined` changes
-   * nothing. Answers the stored dispatch, or `undefined` when there is none.
-   */
-  update(
-    projectId: ProjectId,
-    branch: string,
-    change: (current: LineDispatch) => LineDispatch | undefined,
-  ): Promise<LineDispatch | undefined>;
-  /** Every dispatch in one of `statuses`, across projects: the reconciler's read. */
-  listByStatus(statuses: readonly DispatchStatus[]): Promise<readonly LineDispatch[]>;
-}
-
 /** What the plane's own starts have cost one project this month, against its cap. */
 export interface ProjectSelfStartedUsageStore {
   get(projectId: ProjectId, month: CalendarMonth): Promise<ProjectSelfStartedUsage | undefined>;
@@ -626,9 +597,8 @@ export interface ProjectStores {
   readonly feedback: RunFeedbackStore;
   // P20 (D-05): explicit groupings of runs that delivered one outcome.
   readonly completionHistories: CompletionHistoryStore;
-  // Pipkin M1b: the project line, its owner's machine, and the project's self-started spend.
+  // Pipkin M1b: the project line and the project's self-started spend.
   readonly lines: LineStore;
-  readonly lineDispatches: LineDispatchStore;
   readonly projectSelfStartedUsage: ProjectSelfStartedUsageStore;
 }
 

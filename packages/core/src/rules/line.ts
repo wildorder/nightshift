@@ -3,7 +3,7 @@
  * batch an owner takes, what it composes or parks, and the one push in flight;
  * the project's self-started spend against its cap; and the machine's slot.
  *
- * Pure over `LineRecord`, `ProjectSelfStartedUsage` and `LineDispatch`. The
+ * Pure over `LineRecord` and `ProjectSelfStartedUsage`. The
  * stores apply them inside a compare-and-swap `update`, so each is a function
  * of the current record alone and is safe to call again on a lost race. A
  * refusal is a value, not a throw: the routes (J3) map each reason to a status.

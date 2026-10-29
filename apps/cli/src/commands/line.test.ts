@@ -71,35 +71,6 @@ describe("describeLine", () => {
     expect(out).not.toContain("parked");
   });
 
-  it("summarises the decisions: their count and the newest's unit and choice", () => {
-    const decision = (choice: string, upTo: string) => ({
-      decisionId: "dec_1",
-      generation: 1,
-      authority: "line",
-      unit: { kind: "range", range: range(ALPHA, upTo) },
-      base: sha("b"),
-      commit: sha("c"),
-      context: "c",
-      alternatives: [],
-      choice,
-      rationale: "r",
-      reversibility: "reversible",
-      resolverModel: "m",
-      examinerModel: "n",
-      attempts: 1,
-      verificationId: "ver_00000000000000000000000001",
-      decidedAt: AT,
-    });
-    const out = text(
-      describeLine(
-        view({ decisions: [decision("first", sha("d")), decision("keep both", sha("e"))] }),
-      ),
-    );
-    expect(out).toContain("decisions: 2");
-    expect(out).toContain("newest: nightshift/alpha base..eeeeeee: keep both");
-    expect(text(describeLine(view()))).not.toContain("decisions");
-  });
-
   it("lists the queue with branch names and short shas", () => {
     const out = text(
       describeLine(
