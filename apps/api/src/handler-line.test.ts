@@ -1,30 +1,26 @@
 /**
- * The project line's routes (Pipkin M1b, J3): authorization of the line owner
- * and of humans, the queue and its refusals, the push, the bundle upload URL,
- * the heartbeat's fence, metering, caps and parking, the idle-stop race, and the
- * concurrency accounting of line dispatches. Through the real handler over the
- * memory stores.
+ * The project line's routes (Pipkin M1b): who may use each of the five that
+ * survive (line.get, takeBatch, settle, push, createBundleUploadUrl), the
+ * queue and its refusals, the push and the bundle upload URL. The line's owner
+ * is the engine of a run of the line program; humans may read the line.
+ * Through the real handler over the memory stores.
  */
 import { generateKeyPairSync, sign as signWith } from "node:crypto";
 import {
-  DEFAULT_COMPUTE_CEILINGS,
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
-  type LineDispatch,
   type LineRecord,
   type OrgId,
   type ProjectSelfStartedUsage,
+  type RunId,
 } from "@nightshift/contracts";
 import {
-  beginReplacement,
   createFixedClock,
   createFixtures,
-  dispatchChargeKey,
   type Fixtures,
   lineBundleObjectKey,
   lineProgramId,
   makeDispatch,
-  makeLineDispatch,
   makeLineRecord,
   makeLineVerification,
   makeMembership,
@@ -36,9 +32,8 @@ import {
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it, vi } from "vitest";
 import type { RequestPrincipal } from "./auth/principal.js";
-import { handleRequest } from "./handler.js";
+import { handleRequest, ROUTES } from "./handler.js";
 import type { ApiDeps, ApiResponse } from "./http.js";
-import { verifyExecutionToken } from "./tokens/verify.js";
 
 const NOW = "2026-10-01T12:00:00.000Z";
 const SHA = "a".repeat(40);
@@ -47,7 +42,6 @@ const BRANCH = "nightshift/develop";
 const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const ISSUER = "https://api.test.nightshift.invalid";
 
-const provisioned: string[] = [];
 const published: string[] = [];
 
 interface World {
@@ -67,7 +61,6 @@ const setup = async (): Promise<World> => {
   await stores.memberships.put(makeMembership(subject, orgId));
   await stores.projects.put(makeProject(f, { orgId }));
   const signed: string[] = [];
-  provisioned.length = 0;
   published.length = 0;
   return {
     stores,
@@ -80,7 +73,6 @@ const setup = async (): Promise<World> => {
       clock: createFixedClock(Date.parse(NOW)),
       dispatcher: {
         provision: async () => undefined,
-        provisionLine: async ({ branch }) => void provisioned.push(branch),
         publishLine: async ({ branch }) => void published.push(branch),
       },
       uploads: {
@@ -124,48 +116,64 @@ const call = (
   return handleRequest(w.deps, { method, path, query, body, principal });
 };
 
-const linePrincipal = (
-  _w: World,
-  dispatch: LineDispatch,
-  overrides: Partial<{
-    branch: string;
-    generation: number;
-    projectId: string;
-  }> = {},
-): RequestPrincipal =>
-  ({
-    kind: "line",
-    projectId: dispatch.projectId,
-    branch: dispatch.branch,
-    agentId: dispatch.engineAgentId,
-    generation: dispatch.generation,
-    ...overrides,
-  }) as RequestPrincipal;
-
 const code = (response: ApiResponse): string =>
   (response.body as { error: { code: string } }).error.code;
-
-const beat = (generation: number, extra: Record<string, unknown> = {}) => ({
-  generation,
-  meteredSeconds: 60,
-  samples: [],
-  ...extra,
-});
 
 interface Seed {
   readonly queue?: LineRecord["queue"];
   readonly batch?: LineRecord["batch"];
-  readonly dispatch?: Partial<LineDispatch>;
-  readonly capUsd?: number;
 }
 
-/** A line with a running dispatch and a program feeding it. */
-const seedLine = async (w: World, seed: Seed = {}) => {
+/** The engine of a run, as the dispatch Lambda mints it. */
+const engineOf = (
+  w: World,
+  runId: string,
+  overrides: Record<string, unknown> = {},
+): RequestPrincipal =>
+  ({
+    kind: "execution",
+    projectId: w.f.scope.projectId,
+    programId: lineProgramId(w.f.scope.projectId, BRANCH),
+    runId,
+    nodeId: w.f.rootNodeId,
+    agentId: w.f.ids.next("agent"),
+    role: "engine",
+    generation: 1,
+    ...overrides,
+  }) as RequestPrincipal;
+
+/** Starts a run of a program with a dispatch at generation 1, as the plane does. */
+const startRun = async (w: World, programId = lineProgramId(w.f.scope.projectId, BRANCH)) => {
+  const runId = w.f.ids.next("run");
+  await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "pending" }));
+  await w.stores.dispatches.put(
+    makeDispatch(w.f, { programId, runId, generation: 1, status: "running", instanceId: "i-1" }),
+  );
+  await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "running" }));
+  return runId;
+};
+
+const endRun = async (w: World, runId: string) => {
+  const programId = lineProgramId(w.f.scope.projectId, BRANCH);
+  const run = await w.stores.runs.get(
+    { projectId: w.f.scope.projectId, programId },
+    runId as RunId,
+  );
+  if (run === undefined) throw new Error("no such run");
+  await w.stores.runs.put({ ...run, status: "succeeded" });
+};
+
+/** A line fed by a program, and the line program, with no run of it yet. */
+const seedLineRecords = async (w: World, seed: Seed = {}) => {
+  await w.stores.programContracts.put(makeProgramContract(w.f, { line: { branch: BRANCH } }));
   await w.stores.programContracts.put(
     makeProgramContract(w.f, {
-      line: {
-        branch: BRANCH,
-        ...(seed.capUsd === undefined ? {} : { monthlyUsd: seed.capUsd }),
+      programId: lineProgramId(w.f.scope.projectId, BRANCH),
+      kind: "line",
+      repository: {
+        url: "https://example.invalid/repo.git",
+        baseBranch: "main",
+        programBranch: BRANCH,
       },
     }),
   );
@@ -175,20 +183,13 @@ const seedLine = async (w: World, seed: Seed = {}) => {
       ...(seed.batch === undefined ? {} : { batch: seed.batch }),
     }),
   );
-  const dispatch = makeLineDispatch(w.f, {
-    status: "running",
-    instanceId: "i-1",
-    ...seed.dispatch,
-  });
-  expect(await w.stores.lineDispatches.start(dispatch)).toBe("started");
-  return dispatch;
 };
 
-/** The line's stored dispatch; the test seeded one. */
-const heldDispatch = async (w: World): Promise<LineDispatch> => {
-  const held = await w.stores.lineDispatches.get(w.f.scope.projectId, BRANCH);
-  if (held === undefined) throw new Error("no line dispatch stored");
-  return held;
+/** A line as `seedLineRecords` makes it, and a live run of its program: answers the run and its engine. */
+const seedLine = async (w: World, seed: Seed = {}) => {
+  await seedLineRecords(w, seed);
+  const runId = await startRun(w);
+  return { runId, me: engineOf(w, runId) };
 };
 
 const entry = (w: World, upTo = SHA) => ({
@@ -197,70 +198,158 @@ const entry = (w: World, upTo = SHA) => ({
   enqueuedAt: NOW,
 });
 
-describe("authorization of the line routes", () => {
-  it("refuses a stale generation with 403, but serves the current one", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { dispatch: { generation: 1 } });
-    const stale = linePrincipal(w, dispatch, { generation: 0 + 2 });
-    const response = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, stale);
-    expect(response.status).toBe(403);
-    const current = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/batch"),
-      { generation: 1 },
-      linePrincipal(w, dispatch),
-    );
-    expect(current.status).toBe(200);
-  });
-
-  it("refuses a line principal of another project or another branch", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w);
-    const otherBranch = linePrincipal(w, dispatch, {
-      branch: "nightshift/other",
-    });
-    const otherProject = linePrincipal(w, dispatch, {
-      projectId: createFixtures().scope.projectId.replace(/.$/, "Z"),
-    });
-    for (const principal of [otherBranch, otherProject]) {
-      expect((await call(w, "GET", lineUrl(w), undefined, principal)).status).toBe(403);
-      expect(
-        (await call(w, "POST", lineUrl(w, BRANCH, "/heartbeat"), beat(1), principal)).status,
-      ).toBe(403);
-    }
-  });
-
-  it("refuses a user of another org", async () => {
-    const w = await setup();
-    await seedLine(w);
-    const stranger = nextUserId(w.f);
-    await w.stores.memberships.put(makeMembership(stranger, w.f.ids.next("org")));
-    const response = await call(w, "GET", lineUrl(w), undefined, {
-      kind: "user",
-      userId: stranger,
-    });
-    expect(response.status).toBe(403);
-  });
-
-  it("refuses line.cancel by a line principal, and lets a user cancel", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w);
-    const cancel = lineUrl(w, BRANCH, "/dispatch/cancel");
-    expect((await call(w, "POST", cancel, {}, linePrincipal(w, dispatch))).status).toBe(403);
-    const response = await call(w, "POST", cancel, {});
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      status: "stopping",
-      failure: { code: "cancelled" },
-    });
+describe("the line routes", () => {
+  it("are exactly the five that survive", () => {
+    expect(
+      ROUTES.filter((route) => route.operation.startsWith("line.")).map((route) => route.operation),
+    ).toEqual([
+      "line.get",
+      "line.takeBatch",
+      "line.settle",
+      "line.push",
+      "line.createBundleUploadUrl",
+    ]);
   });
 });
 
+/**
+ * Every principal against every surviving line route. `allowed` is a route the
+ * principal reaches (anything but a 403: what it then asks may still be
+ * refused for its own reasons); `read` only the GET; `none` no route at all.
+ */
+describe("every principal against every line route", () => {
+  type Reach = "all" | "read" | "none";
+  const ROUTES = [
+    { name: "line.get", method: "GET", tail: "", body: undefined, read: true },
+    {
+      name: "line.takeBatch",
+      method: "POST",
+      tail: "/batch",
+      body: { generation: 1 },
+      read: false,
+    },
+    {
+      name: "line.settle",
+      method: "POST",
+      tail: "/settle",
+      body: { batchId: "x", parked: [] },
+      read: false,
+    },
+    {
+      name: "line.push",
+      method: "POST",
+      tail: "/push",
+      body: { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" },
+      read: false,
+    },
+    {
+      name: "line.createBundleUploadUrl",
+      method: "POST",
+      tail: "/bundle-upload-url",
+      body: { generation: 1, id: "b1" },
+      read: false,
+    },
+  ] as const;
+
+  interface Case {
+    readonly name: string;
+    readonly reach: Reach;
+    readonly principal: (w: World, runId: string) => Promise<RequestPrincipal> | RequestPrincipal;
+    /** Which branch the request names; the line's own unless the case says otherwise. */
+    readonly branch?: string;
+  }
+
+  const CASES: readonly Case[] = [
+    { name: "a user of the owning org", reach: "read", principal: (w) => w.user },
+    {
+      name: "a user of another org",
+      reach: "none",
+      principal: async (w) => {
+        const stranger = nextUserId(w.f);
+        await w.stores.memberships.put(makeMembership(stranger, w.f.ids.next("org")));
+        return { kind: "user", userId: stranger };
+      },
+    },
+    {
+      name: "the line run's engine token",
+      reach: "all",
+      principal: (w, runId) => engineOf(w, runId),
+    },
+    {
+      name: "the line run's engine token, on another branch",
+      reach: "none",
+      branch: "nightshift/other",
+      principal: (w, runId) => engineOf(w, runId),
+    },
+    {
+      name: "the line run's engine token, of another project",
+      reach: "none",
+      principal: (w, runId) => engineOf(w, runId, { projectId: createFixtures().scope.projectId }),
+    },
+    {
+      name: "the line run's engine token, at a stale generation",
+      reach: "read",
+      principal: (w, runId) => engineOf(w, runId, { generation: 2 }),
+    },
+    {
+      name: "the line run's engine token, once its run has ended",
+      reach: "read",
+      principal: async (w, runId) => {
+        await endRun(w, runId);
+        return engineOf(w, runId);
+      },
+    },
+    {
+      name: "a non-line engine token of the same project",
+      reach: "none",
+      principal: async (w) => {
+        const runId = await startRun(w, w.f.scope.programId);
+        return engineOf(w, runId, { programId: w.f.scope.programId });
+      },
+    },
+    ...(["orchestrator", "worker", "examiner"] as const).map(
+      (role): Case => ({
+        name: `the line run's ${role}`,
+        reach: "none",
+        principal: (w, runId) => engineOf(w, runId, { role }),
+      }),
+    ),
+  ];
+
+  for (const kase of CASES) {
+    describe(kase.name, () => {
+      for (const route of ROUTES) {
+        const reached =
+          kase.reach === "all" || (kase.reach === "read" && route.read) ? "reaches" : "is refused";
+        it(`${reached} ${route.name}`, async () => {
+          const w = await setup();
+          const { runId } = await seedLine(w, { queue: [entry(w)] });
+          const principal = await kase.principal(w, runId);
+          const response = await call(
+            w,
+            route.method,
+            lineUrl(w, kase.branch ?? BRANCH, route.tail),
+            route.body,
+            principal,
+          );
+          if (reached === "is refused") {
+            expect(response.status, JSON.stringify(response.body)).toBe(403);
+          } else {
+            expect(response.status, JSON.stringify(response.body)).not.toBe(403);
+            if (route.name === "line.get" || route.name === "line.takeBatch") {
+              expect(response.status, JSON.stringify(response.body)).toBe(200);
+            }
+          }
+        });
+      }
+    });
+  }
+});
+
 describe("GET the line", () => {
-  it("returns the record, the dispatch, this month's usage and each queued program's branch", async () => {
+  it("returns the record, the line program's latest run, this month's usage and each queued program's branch", async () => {
     const w = await setup();
-    await seedLine(w, { queue: [entry(w)] });
+    const { runId, me } = await seedLine(w, { queue: [entry(w)] });
     const usage: ProjectSelfStartedUsage = {
       schemaVersion: 1,
       projectId: w.f.scope.projectId,
@@ -271,21 +360,37 @@ describe("GET the line", () => {
       updatedAt: NOW,
     };
     await w.stores.projectSelfStartedUsage.update(w.f.scope.projectId, "2026-10", () => usage);
-    const dispatch = await heldDispatch(w);
-    for (const principal of [w.user, linePrincipal(w, dispatch)]) {
+    for (const principal of [w.user, me]) {
       const response = await call(w, "GET", lineUrl(w), undefined, principal);
       expect(response.status, JSON.stringify(response.body)).toBe(200);
-      const view = response.body as {
+      const view = response.body as Record<string, unknown> & {
         record: LineRecord;
-        dispatch: LineDispatch;
         usage: ProjectSelfStartedUsage;
-        programs: unknown;
       };
       expect(view.record.branch).toBe(BRANCH);
-      expect(view.dispatch.status).toBe("running");
+      expect(view.programId).toBe(lineProgramId(w.f.scope.projectId, BRANCH));
+      expect(view.runId).toBe(runId);
+      expect(view.dispatchStatus).toBe("running");
+      expect(view.generation).toBe(1);
+      expect(view.meteredUsd).toBe(0);
+      expect(view.dispatch).toBeUndefined();
       expect(view.usage.meteredUsd).toBe(1.5);
       expect(view.programs).toEqual([{ program: w.f.scope.programId, branch: "program/fixture" }]);
     }
+  });
+
+  it("names the line program and no run before one has started", async () => {
+    const w = await setup();
+    await seedLine(w);
+    const bare = await setup();
+    await bare.stores.lines.update(bare.f.scope.projectId, BRANCH, () => makeLineRecord(bare.f));
+    const response = await call(bare, "GET", lineUrl(bare));
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      programId: lineProgramId(bare.f.scope.projectId, BRANCH),
+    });
+    expect((response.body as { runId?: string }).runId).toBeUndefined();
+    expect((response.body as { dispatchStatus?: string }).dispatchStatus).toBeUndefined();
   });
 
   it("is a 404 for a line that does not exist", async () => {
@@ -294,11 +399,10 @@ describe("GET the line", () => {
   });
 });
 
-describe("batch, compositions, parked and push", () => {
+describe("batch, settle and push", () => {
   it("takes the whole queue as one batch, and answers none when empty", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w, { queue: [entry(w), entry(w, SHA_B)] });
-    const me = linePrincipal(w, dispatch);
+    const { me } = await seedLine(w, { queue: [entry(w), entry(w, SHA_B)] });
     const url = lineUrl(w, BRANCH, "/batch");
     const first = await call(w, "POST", url, { generation: 1 }, me);
     expect((first.body as { batch: { entries: unknown[] } }).batch.entries).toHaveLength(2);
@@ -311,60 +415,21 @@ describe("batch, compositions, parked and push", () => {
     );
     // Nothing queued and nothing held: none.
     const empty = await setup();
-    const d2 = await seedLine(empty);
+    const idle = await seedLine(empty);
     const none = await call(
       empty,
       "POST",
       lineUrl(empty, BRANCH, "/batch"),
       { generation: 1 },
-      linePrincipal(empty, d2),
+      idle.me,
     );
     expect(none.status).toBe(200);
     expect(none.body).toEqual({});
   });
 
-  const composition = (batchId: string, attempts = 0) => ({
-    batchId,
-    commit: SHA_B,
-    parent: SHA,
-    ranges: [{ program: undefined as unknown, upTo: SHA }],
-    verification: undefined as unknown,
-    resolver: { decision: "none", attempts },
-  });
-
-  it("composes the batch it holds, and refuses a stale batchId with 409", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { queue: [entry(w)] });
-    const me = linePrincipal(w, dispatch);
-    const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
-    const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
-    const body = {
-      ...composition(batchId),
-      ranges: [{ program: w.f.scope.programId, upTo: SHA }],
-      verification: makeLineVerification(w.f),
-    };
-    const stale = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/compositions"),
-      { ...body, batchId: "nope" },
-      me,
-    );
-    expect(stale.status).toBe(409);
-    expect(code(stale)).toBe("stale_batch");
-    const ok = await call(w, "POST", lineUrl(w, BRANCH, "/compositions"), body, me);
-    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
-    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
-    expect(record?.batch).toBeUndefined();
-    expect(record?.compositions).toHaveLength(1);
-    // Settled: the same batch again is stale.
-    expect((await call(w, "POST", lineUrl(w, BRANCH, "/compositions"), body, me)).status).toBe(409);
-  });
-
   it("settles a batch with a composition and parked entries in one change", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w, { queue: [entry(w), entry(w, SHA_B)] });
-    const me = linePrincipal(w, dispatch);
+    const { me } = await seedLine(w, { queue: [entry(w), entry(w, SHA_B)] });
     const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
     const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
     const program = w.f.scope.programId;
@@ -398,6 +463,18 @@ describe("batch, compositions, parked and push", () => {
     );
     expect(over.status).toBe(409);
     expect(code(over)).toBe("resolver_attempts");
+    const overComposed = await call(
+      w,
+      "POST",
+      url,
+      {
+        ...body,
+        composition: { ...body.composition, resolver: { decision: "none", attempts: 4 } },
+      },
+      me,
+    );
+    expect(overComposed.status).toBe(409);
+    expect(code(overComposed)).toBe("resolver_attempts");
     const ok = await call(w, "POST", url, body, me);
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
@@ -417,8 +494,7 @@ describe("batch, compositions, parked and push", () => {
   describe("settle asks the publisher", () => {
     const settleWorld = async () => {
       const w = await setup();
-      const dispatch = await seedLine(w, { queue: [entry(w)] });
-      const me = linePrincipal(w, dispatch);
+      const { me } = await seedLine(w, { queue: [entry(w)] });
       const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
       const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
       const withPush = {
@@ -488,8 +564,7 @@ describe("batch, compositions, parked and push", () => {
 
   it("refuses to settle a composition while a different push is pending", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w, { queue: [entry(w)] });
-    const me = linePrincipal(w, dispatch);
+    const { me } = await seedLine(w, { queue: [entry(w)] });
     const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
     const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
     const other = {
@@ -520,76 +595,9 @@ describe("batch, compositions, parked and push", () => {
     expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.batch).toBeDefined();
   });
 
-  it("refuses settle to another principal and to a stale generation", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { queue: [entry(w)] });
-    const url = lineUrl(w, BRANCH, "/settle");
-    const body = { batchId: "x", parked: [] };
-    const principals = [
-      linePrincipal(w, dispatch, { branch: "nightshift/other" }),
-      linePrincipal(w, dispatch, { generation: 2 }),
-    ];
-    for (const principal of principals) {
-      expect((await call(w, "POST", url, body, principal)).status).toBe(403);
-    }
-  });
-
-  it("refuses resolver attempts above 3 with 409, on compositions and parked", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { queue: [entry(w)] });
-    const me = linePrincipal(w, dispatch);
-    const taken = await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me);
-    const batchId = (taken.body as { batch: { batchId: string } }).batch.batchId;
-    const ranges = [{ program: w.f.scope.programId, upTo: SHA }];
-    const over = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/compositions"),
-      {
-        ...composition(batchId, 4),
-        ranges,
-        verification: makeLineVerification(w.f),
-      },
-      me,
-    );
-    expect(over.status).toBe(409);
-    expect(code(over)).toBe("resolver_attempts");
-    const parkedOver = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/parked"),
-      {
-        batchId,
-        ranges,
-        reason: "conflict",
-        resolver: { decision: "gave_up", attempts: 4 },
-      },
-      me,
-    );
-    expect(parkedOver.status).toBe(409);
-    const parked = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/parked"),
-      {
-        batchId,
-        ranges,
-        reason: "conflict",
-        resolver: { decision: "gave_up", attempts: 3 },
-      },
-      me,
-    );
-    expect(parked.status, JSON.stringify(parked.body)).toBe(200);
-    expect(
-      (await call(w, "POST", lineUrl(w, BRANCH, "/parked"), { batchId, ranges, reason: "x" }, me))
-        .status,
-    ).toBe(409);
-  });
-
   it("records a pending push, then asks the publisher; another head is refused", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w);
-    const me = linePrincipal(w, dispatch);
+    const { me } = await seedLine(w);
     const push = {
       head: SHA_B,
       expectedPredecessor: SHA,
@@ -618,13 +626,13 @@ describe("batch, compositions, parked and push", () => {
 describe("bundle-upload-url", () => {
   it("signs a PUT for the line bundle key", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w);
+    const { me } = await seedLine(w);
     const response = await call(
       w,
       "POST",
       lineUrl(w, BRANCH, "/bundle-upload-url"),
       { generation: 1, id: "01ABC" },
-      linePrincipal(w, dispatch),
+      me,
     );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     const key = lineBundleObjectKey(w.f.scope.projectId, BRANCH, 1, "01ABC");
@@ -638,8 +646,7 @@ describe("bundle-upload-url", () => {
 
   it("refuses an id that would leave its prefix, and a stale generation", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w);
-    const me = linePrincipal(w, dispatch);
+    const { me } = await seedLine(w);
     const url = lineUrl(w, BRANCH, "/bundle-upload-url");
     expect((await call(w, "POST", url, { generation: 1, id: "../x" }, me)).status).toBe(400);
     expect((await call(w, "POST", url, { generation: 2, id: "ok" }, me)).status).toBe(409);
@@ -647,500 +654,10 @@ describe("bundle-upload-url", () => {
   });
 });
 
-describe("the heartbeat", () => {
-  const usageOf = (w: World) =>
-    w.stores.projectSelfStartedUsage.get(w.f.scope.projectId, "2026-10");
-  const ledgerOf = (w: World) => w.stores.computeLedger.get(w.orgId, "2026-10");
-
-  it("refuses a body generation that is not the current one", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { dispatch: { generation: 2 } });
-    const response = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/heartbeat"),
-      beat(1),
-      linePrincipal(w, dispatch),
-    );
-    expect(response.status).toBe(409);
-    expect(code(response)).toBe("stale_generation");
-  });
-
-  it("meters both the project's self-started ledger and the org's", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w);
-    const response = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/heartbeat"),
-      beat(1, { meteredSeconds: 1800 }),
-      linePrincipal(w, dispatch),
-    );
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    const stored = await heldDispatch(w);
-    expect(stored.spend.meteredUsd).toBeGreaterThan(0);
-    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(stored.spend.meteredUsd);
-    expect((await ledgerOf(w))?.meteredUsd).toBeCloseTo(stored.spend.meteredUsd);
-    // A second beat adds only the difference.
-    await call(w, "POST", lineUrl(w, BRANCH, "/heartbeat"), beat(1, { meteredSeconds: 3000 }));
-    const after = await heldDispatch(w);
-    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(after.spend.meteredUsd);
-    expect((await ledgerOf(w))?.meteredUsd).toBeCloseTo(after.spend.meteredUsd);
-  });
-
-  it("renews the token, and carries the GitHub read token, only while running", async () => {
-    const w = await setup();
-    const deps: ApiDeps = {
-      ...w.deps,
-      github: {
-        app: async () => ({ slug: "s", installUrl: "https://example.invalid" }),
-        installation: async () => ({
-          account: "example",
-          repositories: ["example/fixture"],
-        }),
-        branchHead: async () => SHA,
-        readToken: async () => ({ token: "ghs_read", expiresAt: NOW }),
-        writeToken: async () => ({ token: "ghs_write", expiresAt: NOW }),
-      },
-    };
-    const world = { ...w, deps };
-    const dispatch = await seedLine(world);
-    await world.stores.orgConfigs.put({
-      schemaVersion: 1,
-      orgId: world.orgId,
-      routingPolicy: DEFAULT_ROUTING_POLICY,
-      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
-      installations: [
-        {
-          installationId: 5,
-          account: "example",
-          repositories: ["example/fixture"],
-          recordedAt: NOW,
-        },
-      ] as never,
-      compute: DEFAULT_COMPUTE_CEILINGS,
-      version: 1,
-      updatedAt: NOW,
-    });
-    const response = await call(
-      world,
-      "POST",
-      lineUrl(world, BRANCH, "/heartbeat"),
-      beat(1),
-      linePrincipal(world, dispatch),
-    );
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    const body = response.body as {
-      token: string;
-      stop: boolean;
-      credentials?: Record<string, string>;
-    };
-    expect(body.stop).toBe(false);
-    const verified = verifyExecutionToken(body.token, {
-      publicKey: keys.publicKey,
-      issuer: ISSUER,
-      now: Date.parse(NOW),
-    });
-    expect(verified.ok && verified.principal).toMatchObject({
-      kind: "line",
-      branch: BRANCH,
-      generation: 1,
-    });
-    expect(body.credentials).toEqual({ github: "ghs_read" });
-  });
-
-  it("stops the machine when the project cap is crossed and records waiting", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { capUsd: 0.1 });
-    const response = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/heartbeat"),
-      beat(1, { meteredSeconds: 3600 }),
-      linePrincipal(w, dispatch),
-    );
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(response.body).toMatchObject({ stop: true, status: "stopping" });
-    expect((response.body as { token?: string }).token).toBeUndefined();
-    const stored = await heldDispatch(w);
-    expect(stored.failure?.code).toBe("line_cap");
-    expect((await usageOf(w))?.reachedAt).toBe(NOW);
-    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
-    expect(record?.waiting).toMatchObject({
-      reason: "monthly_cap",
-      since: NOW,
-    });
-  });
-
-  it("counts spend made earlier by another branch of the same project", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { capUsd: 1 });
-    await w.stores.projectSelfStartedUsage.update(w.f.scope.projectId, "2026-10", () => ({
-      schemaVersion: 1,
-      projectId: w.f.scope.projectId,
-      month: "2026-10",
-      // Spent by a line on another branch: all but a cent of the cap.
-      meteredUsd: 0.995,
-      capUsd: 1,
-      version: 1,
-      updatedAt: NOW,
-    }));
-    const response = await call(
-      w,
-      "POST",
-      lineUrl(w, BRANCH, "/heartbeat"),
-      beat(1, { meteredSeconds: 120 }),
-      linePrincipal(w, dispatch),
-    );
-    expect(response.body).toMatchObject({ stop: true });
-    expect((await w.stores.lineDispatches.get(w.f.scope.projectId, BRANCH))?.failure?.code).toBe(
-      "line_cap",
-    );
-  });
-
-  it("parks a batch older than an hour with reason composition_hour", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, {
-      batch: {
-        batchId: "batch-old",
-        entries: [entry(w)],
-        takenAt: "2026-10-01T10:30:00.000Z",
-        generation: 1,
-      },
-    });
-    await call(w, "POST", lineUrl(w, BRANCH, "/heartbeat"), beat(1), linePrincipal(w, dispatch));
-    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
-    expect(record?.batch).toBeUndefined();
-    expect(record?.parked).toHaveLength(1);
-    expect(record?.parked[0]).toMatchObject({
-      reason: "composition_hour",
-      ranges: [{ program: w.f.scope.programId, upTo: SHA }],
-    });
-  });
-
-  it("leaves a younger batch alone", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, {
-      batch: {
-        batchId: "batch-young",
-        entries: [entry(w)],
-        takenAt: "2026-10-01T11:30:00.000Z",
-        generation: 1,
-      },
-    });
-    await call(w, "POST", lineUrl(w, BRANCH, "/heartbeat"), beat(1), linePrincipal(w, dispatch));
-    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.batch?.batchId).toBe(
-      "batch-young",
-    );
-  });
-
-  it("moves provisioning to ready and ready to running", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, {
-      dispatch: { status: "provisioning" },
-    });
-    const me = linePrincipal(w, dispatch);
-    const url = lineUrl(w, BRANCH, "/heartbeat");
-    expect((await call(w, "POST", url, beat(1, { report: "ready" }), me)).body).toMatchObject({
-      status: "ready",
-    });
-    expect((await call(w, "POST", url, beat(1, { report: "running" }), me)).body).toMatchObject({
-      status: "running",
-    });
-  });
-
-  it("starts no second dispatch on `stopped` with work queued until cleanup has settled", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { queue: [entry(w)] });
-    const me = linePrincipal(w, dispatch);
-    const url = lineUrl(w, BRANCH, "/heartbeat");
-    const stopped = await call(w, "POST", url, beat(1, { report: "stopped" }), me);
-    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
-    expect((await w.stores.lineDispatches.get(w.f.scope.projectId, BRANCH))?.status).toBe(
-      "stopped",
-    );
-    expect(provisioned).toEqual([]);
-    const again = await call(w, "POST", url, beat(1, { report: "stopped" }), me);
-    expect(again.status).toBe(200);
-    expect(provisioned).toEqual([]);
-    expect((await w.stores.lineDispatches.get(w.f.scope.projectId, BRANCH))?.generation).toBe(1);
-
-    // Cleanup settles (J5's); the next report starts exactly one, at the next generation.
-    await w.stores.lineDispatches.update(w.f.scope.projectId, BRANCH, (current) => ({
-      ...current,
-      cleanup: { ...current.cleanup, settledAt: NOW },
-    }));
-    await call(w, "POST", url, beat(1, { report: "stopped" }), me);
-    await call(w, "POST", url, beat(1, { report: "stopped" }), me);
-    const next = await heldDispatch(w);
-    expect(next).toMatchObject({ generation: 2, status: "requested" });
-    expect(provisioned).toEqual([BRANCH]);
-  });
-});
-
-describe("the heartbeat's charge to the project's ledger", () => {
-  const usageOf = (w: World, month = "2026-10") =>
-    w.stores.projectSelfStartedUsage.get(w.f.scope.projectId, month);
-  const url = (w: World) => lineUrl(w, BRANCH, "/heartbeat");
-  // A direct request: the path, and the query apart from it.
-  const path = (w: World) => `/projects/${w.f.scope.projectId}/line/heartbeat`;
-  const query = { branch: BRANCH };
-
-  it("repairs a failed ledger write on the retry, records the cap and stops the machine", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { capUsd: 0.1 });
-    const real = w.stores.projectSelfStartedUsage;
-    let failures = 1;
-    const flaky: ApiDeps = {
-      ...w.deps,
-      stores: {
-        ...w.stores,
-        projectSelfStartedUsage: {
-          ...real,
-          get: real.get.bind(real),
-          update: async (...args: Parameters<typeof real.update>) => {
-            if (failures-- > 0) throw new Error("injected ledger failure");
-            return real.update(...args);
-          },
-        },
-      },
-    };
-    const principal = linePrincipal(w, dispatch);
-    const first = await handleRequest(flaky, {
-      method: "POST",
-      path: path(w),
-      query,
-      body: beat(1, { meteredSeconds: 3600 }),
-      principal,
-    });
-    expect(first.status).toBe(500);
-    expect(await usageOf(w)).toBeUndefined();
-    const spent = (await heldDispatch(w)).spend.meteredUsd;
-    expect(spent).toBeGreaterThan(0.1);
-
-    const retry = await handleRequest(flaky, {
-      method: "POST",
-      path: path(w),
-      query,
-      body: beat(1, { meteredSeconds: 3600 }),
-      principal,
-    });
-    expect(retry.body).toMatchObject({ stop: true, status: "stopping" });
-    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(spent);
-    expect((await usageOf(w))?.reachedAt).toBe(NOW);
-    expect((await heldDispatch(w)).failure?.code).toBe("line_cap");
-    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.waiting).toMatchObject({
-      reason: "monthly_cap",
-    });
-  });
-
-  it("charges a dispatch once however many beats repeat its spend", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { capUsd: 100 });
-    const principal = linePrincipal(w, dispatch);
-    for (let i = 0; i < 3; i += 1) {
-      await call(w, "POST", url(w), beat(1, { meteredSeconds: 1800 }), principal);
-    }
-    const spent = (await heldDispatch(w)).spend.meteredUsd;
-    const row = await usageOf(w);
-    expect(row?.meteredUsd).toBeCloseTo(spent);
-    expect(row?.charged?.[dispatchChargeKey(BRANCH, dispatch.engineAgentId)]).toBeCloseTo(spent);
-    expect(row?.version).toBe(1);
-  });
-
-  it("charges a replaced dispatch once: the earlier generation's spend is not charged again", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { capUsd: 0.6 });
-    const first = await call(
-      w,
-      "POST",
-      url(w),
-      beat(1, { meteredSeconds: 3600 }),
-      linePrincipal(w, dispatch),
-    );
-    expect(first.body).toMatchObject({ stop: false });
-    const spent = (await heldDispatch(w)).spend.meteredUsd;
-    expect(spent).toBeGreaterThan(0.4);
-    expect(spent).toBeLessThan(0.6);
-    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(spent);
-
-    await w.stores.lineDispatches.update(w.f.scope.projectId, BRANCH, (current) => ({
-      ...beginReplacement(current, "lease_lost", NOW),
-      status: "running" as const,
-      instanceId: "i-2",
-    }));
-    const second = linePrincipal(w, await heldDispatch(w));
-    expect(second.kind === "line" && second.generation).toBe(2);
-    const zero = await call(w, "POST", url(w), beat(2, { meteredSeconds: 0 }), second);
-    expect(zero.body).toMatchObject({ stop: false });
-    expect((await heldDispatch(w)).spend.meteredUsd).toBeCloseTo(spent);
-    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(spent);
-    expect((await usageOf(w))?.reachedAt).toBeUndefined();
-
-    const more = await call(w, "POST", url(w), beat(2, { meteredSeconds: 600 }), second);
-    expect(more.body).toMatchObject({ stop: false });
-    const total = (await heldDispatch(w)).spend.meteredUsd;
-    expect(total).toBeGreaterThan(spent);
-    expect((await usageOf(w))?.meteredUsd).toBeCloseTo(total);
-  });
-
-  it("charges each of two successive line dispatches its own spend", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { capUsd: 100 });
-    await call(w, "POST", url(w), beat(1, { meteredSeconds: 1800 }), linePrincipal(w, dispatch));
-    const one = (await heldDispatch(w)).spend.meteredUsd;
-    await w.stores.lineDispatches.update(w.f.scope.projectId, BRANCH, () =>
-      makeLineDispatch(w.f, {
-        status: "running",
-        instanceId: "i-3",
-        generation: 2,
-        attempts: [{ generation: 2, reason: "dispatch", startedAt: NOW }],
-      }),
-    );
-    const next = await heldDispatch(w);
-    expect(next.engineAgentId).not.toBe(dispatch.engineAgentId);
-    await call(w, "POST", url(w), beat(2, { meteredSeconds: 900 }), linePrincipal(w, next));
-    const two = (await heldDispatch(w)).spend.meteredUsd;
-    expect(two).toBeGreaterThan(0);
-    const row = await usageOf(w);
-    expect(row?.meteredUsd).toBeCloseTo(one + two);
-    expect(Object.keys(row?.charged ?? {})).toHaveLength(2);
-  });
-
-  it("charges only the spend after a month boundary in the new month's row", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w, { capUsd: 100 });
-    const principal = linePrincipal(w, dispatch);
-    await call(w, "POST", url(w), beat(1, { meteredSeconds: 1800 }), principal);
-    const october = (await heldDispatch(w)).spend.meteredUsd;
-    await handleRequest(
-      {
-        ...w.deps,
-        clock: createFixedClock(Date.parse("2026-11-01T00:30:00.000Z")),
-      },
-      {
-        method: "POST",
-        path: path(w),
-        query,
-        body: beat(1, { meteredSeconds: 3600 }),
-        principal,
-      },
-    );
-    const total = (await heldDispatch(w)).spend.meteredUsd;
-    expect((await usageOf(w, "2026-10"))?.meteredUsd).toBeCloseTo(october);
-    expect((await usageOf(w, "2026-11"))?.meteredUsd).toBeCloseTo(total - october);
-  });
-});
-
-const decisionBody = (generation: number, overrides: Record<string, unknown> = {}) => ({
-  generation,
-  authority: "line",
-  unit: { kind: "main", commit: SHA },
-  base: SHA_B,
-  commit: "c".repeat(40),
-  context: "a conflict in a.ts",
-  alternatives: [{ summary: "take theirs", rejectedBecause: "loses a fix" }],
-  choice: "merge both",
-  rationale: "both changes are needed",
-  reversibility: "reversible",
-  resolverModel: "m-1",
-  examinerModel: "m-2",
-  attempts: 1,
-  verificationId: "ver_00000000000000000000000001",
-  decidedAt: NOW,
-  ...overrides,
-});
-
-describe("resolver decisions", () => {
-  it("stores a decision once, refuses a stale generation, and refuses other principals", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w);
-    const me = linePrincipal(w, dispatch);
-    const url = lineUrl(w, BRANCH, "/decisions");
-    const first = await call(w, "POST", url, decisionBody(1), me);
-    expect(first.status, JSON.stringify(first.body)).toBe(200);
-    expect((first.body as LineRecord).decisions).toHaveLength(1);
-    const again = await call(w, "POST", url, decisionBody(1), me);
-    expect(again.status).toBe(200);
-    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.decisions).toHaveLength(1);
-    const other = await call(w, "POST", url, decisionBody(1, { commit: "d".repeat(40) }), me);
-    expect((other.body as LineRecord).decisions).toHaveLength(2);
-
-    const stale = await call(w, "POST", url, decisionBody(0 + 2), me);
-    expect(stale.status).toBe(409);
-    expect(code(stale)).toBe("stale_generation");
-
-    expect(
-      (await call(w, "POST", url, decisionBody(1), linePrincipal(w, dispatch, { branch: "x" })))
-        .status,
-    ).toBe(403);
-    expect(
-      (await call(w, "POST", url, decisionBody(1), linePrincipal(w, dispatch, { generation: 2 })))
-        .status,
-    ).toBe(403);
-  });
-});
-
-describe("agent announcements", () => {
-  const agent = (id: string) => ({
-    agentId: `agent_${id}`,
-    role: "line_resolver",
-    model: { harness: "codex", provider: "openai", model: "m-1" },
-    announcedAt: NOW,
-  });
-  const ID_A = "01M5XW8F0SCAAWKGW76RXXZQ98";
-  const ID_B = "01M5XW8F0SCAAWKGW76RXXZQ99";
-
-  it("stores an agent once, refuses a stale generation and other principals", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w);
-    const me = linePrincipal(w, dispatch);
-    const url = lineUrl(w, BRANCH, "/agents");
-    const first = await call(w, "POST", url, { generation: 1, agent: agent(ID_A) }, me);
-    expect(first.status, JSON.stringify(first.body)).toBe(200);
-    expect((first.body as LineDispatch).agents).toHaveLength(1);
-    await call(w, "POST", url, { generation: 1, agent: agent(ID_A) }, me);
-    expect((await heldDispatch(w)).agents).toHaveLength(1);
-    await call(w, "POST", url, { generation: 1, agent: agent(ID_B) }, me);
-    expect((await heldDispatch(w)).agents).toHaveLength(2);
-
-    const stale = await call(w, "POST", url, { generation: 2, agent: agent(ID_A) }, me);
-    expect(stale.status).toBe(409);
-    expect(
-      (
-        await call(
-          w,
-          "POST",
-          url,
-          { generation: 1, agent: agent(ID_A) },
-          linePrincipal(w, dispatch, { generation: 2 }),
-        )
-      ).status,
-    ).toBe(403);
-  });
-
-  it("survives a heartbeat and a lease replacement", async () => {
-    const w = await setup();
-    const dispatch = await seedLine(w);
-    const me = linePrincipal(w, dispatch);
-    await call(w, "POST", lineUrl(w, BRANCH, "/agents"), { generation: 1, agent: agent(ID_A) }, me);
-    const beatResponse = await call(w, "POST", lineUrl(w, BRANCH, "/heartbeat"), beat(1), me);
-    expect(beatResponse.status).toBe(200);
-    expect((await heldDispatch(w)).agents).toHaveLength(1);
-    await w.stores.lineDispatches.update(w.f.scope.projectId, BRANCH, (current) =>
-      beginReplacement(current, "lease_lost", NOW),
-    );
-    const replaced = await heldDispatch(w);
-    expect(replaced.generation).toBe(2);
-    expect(replaced.agents).toHaveLength(1);
-  });
-});
-
 describe("GET the line's policy", () => {
   it("is the org's effective policy, and absent without an org config", async () => {
     const w = await setup();
-    const dispatch = await seedLine(w);
-    const me = linePrincipal(w, dispatch);
+    const { me } = await seedLine(w);
     const none = await call(w, "GET", lineUrl(w), undefined, me);
     expect((none.body as { policy?: unknown }).policy).toBeUndefined();
     await w.stores.orgConfigs.put({
@@ -1178,57 +695,9 @@ describe("a line run's engine token", () => {
     bundleKey: "bundles/k",
   };
 
-  const engineOf = (
-    w: World,
-    runId: string,
-    overrides: Record<string, unknown> = {},
-  ): RequestPrincipal =>
-    ({
-      kind: "execution",
-      projectId: w.f.scope.projectId,
-      programId: lineProgramId(w.f.scope.projectId, BRANCH),
-      runId,
-      nodeId: w.f.rootNodeId,
-      agentId: w.f.ids.next("agent"),
-      role: "engine",
-      generation: 1,
-      ...overrides,
-    }) as RequestPrincipal;
-
-  /** Starts a run of the line program with a dispatch at generation 1. */
-  const startRun = async (w: World, programId = lineProgramId(w.f.scope.projectId, BRANCH)) => {
-    const runId = w.f.ids.next("run");
-    await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "pending" }));
-    await w.stores.dispatches.put(makeDispatch(w.f, { programId, runId, generation: 1 }));
-    await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "running" }));
-    return runId;
-  };
-
-  const endRun = async (w: World, runId: string) => {
-    const programId = lineProgramId(w.f.scope.projectId, BRANCH);
-    const run = await w.stores.runs.get(
-      { projectId: w.f.scope.projectId, programId },
-      runId as never,
-    );
-    if (run === undefined) throw new Error("no such run");
-    await w.stores.runs.put({ ...run, status: "succeeded" });
-  };
-
   const world = async () => {
     const w = await setup();
-    await seedLine(w, { queue: [entry(w)] });
-    const programId = lineProgramId(w.f.scope.projectId, BRANCH);
-    await w.stores.programContracts.put(
-      makeProgramContract(w.f, {
-        programId,
-        kind: "line",
-        repository: {
-          url: "https://example.invalid/repo.git",
-          baseBranch: "main",
-          programBranch: BRANCH,
-        },
-      }),
-    );
+    await seedLineRecords(w, { queue: [entry(w)] });
     return w;
   };
 
@@ -1355,7 +824,6 @@ describe("users and the line", () => {
       ["/settle", { batchId: "x", parked: [] }],
       ["/push", { head: SHA_B, expectedPredecessor: SHA, bundleKey: "bundles/k" }],
       ["/bundle-upload-url", { generation: 1, id: "b1" }],
-      ["/heartbeat", beat(1)],
     ] as const) {
       expect((await call(w, "POST", lineUrl(w, BRANCH, path), body)).status, path).toBe(403);
     }

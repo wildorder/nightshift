@@ -78,6 +78,17 @@ const briefOf = (failure: LineFailure, earlier: string[]): string => {
   return lines.join("\n");
 };
 
+/**
+ * A failure parked with its cause and no agent launched: the line owner has no
+ * agent of its own (a repair is an engine job, A-66), so a range that conflicts
+ * or is red waits, with the reason on the record.
+ */
+export const parkLineFailure = (failure: LineFailure): LineResolution => ({
+  kind: "parked",
+  reason: `${causeOf(failure)}; no agent is launched on the line, so the range is parked`,
+  resolver: { decision: "none", attempts: 0 },
+});
+
 export const resolveLineFailure = async (
   ports: LineResolverPorts,
   failure: LineFailure,

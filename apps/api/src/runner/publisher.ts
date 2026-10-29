@@ -33,9 +33,6 @@ import {
   blocksPublication,
   type Clock,
   chainOrder,
-  createUlidIdGenerator,
-  DEFAULT_LINE_MONTHLY_USD,
-  ensureLineDispatch,
   type GitHubAppClient,
   hasPendingIntent,
   holdBehind,
@@ -59,6 +56,8 @@ import {
   pushReceivePack,
   ZERO_OID,
 } from "../github/smart-http.js";
+import type { ApiDeps } from "../http.js";
+import { startLineRun } from "./line-run.js";
 
 /** Where the packs the engine uploaded are read back from. */
 export interface BundleStore {
@@ -140,11 +139,12 @@ export interface PublisherDeps {
   readonly remoteUrlOf?: (repositoryUrl: string) => string;
   readonly log?: (line: string) => void;
   readonly ids?: IdGenerator;
-  /** Brings the line owner's machine up for a dispatch just stored `requested`; absent where no plane starts machines. */
-  readonly startLineMachine?: (target: {
-    readonly projectId: ProjectId;
-    readonly branch: string;
-  }) => Promise<void>;
+  /**
+   * The control plane's wiring (`ApiDeps`) a line run is started through
+   * (`startLineRun`, which admits it as any dispatch); absent where no plane
+   * starts machines, and the range is only queued.
+   */
+  readonly plane?: ApiDeps;
 }
 
 /** How many times a transient push failure is tried before the intent blocks. */
@@ -514,24 +514,15 @@ const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promi
       publication: { ...latest.publication, lineQueuedUpTo: upTo },
       updatedAt: nowIso(deps.clock),
     });
-    if (deps.startLineMachine !== undefined) {
-      const project = await deps.stores.projects.get(scope.projectId);
-      if (project !== undefined) {
-        const result = await ensureLineDispatch(
-          {
-            stores: deps.stores,
-            clock: deps.clock,
-            ids: deps.ids ?? createUlidIdGenerator(deps.clock),
-            startMachine: deps.startLineMachine,
-          },
-          {
-            projectId: scope.projectId,
-            branch,
-            capUsd: program.line.monthlyUsd ?? DEFAULT_LINE_MONTHLY_USD,
-          },
-        );
-        log(`${scope.runId}: line ${branch}: ${result.kind}`);
-      }
+    if (deps.plane !== undefined) {
+      const result = await startLineRun(deps.plane, {
+        projectId: scope.projectId,
+        branch,
+        naming: program,
+      });
+      log(
+        `${scope.runId}: line ${branch}: ${result.kind}${result.kind === "waiting" ? ` (${result.reason}: ${result.detail})` : ""}`,
+      );
     }
   } catch (error) {
     log(`${scope.runId}: could not queue the range on the line: ${String(error)}`);

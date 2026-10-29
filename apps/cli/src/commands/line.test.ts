@@ -135,7 +135,10 @@ describe("describeLine", () => {
             ],
           },
           {
-            dispatch: { status: "running", generation: 3, spend: { meteredUsd: 1.5 } },
+            runId: "run_01J0000000000000000000000A",
+            dispatchStatus: "running",
+            generation: 3,
+            meteredUsd: 1.5,
           },
         ),
       ),

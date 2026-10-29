@@ -27,6 +27,7 @@ import {
   bootstrapEngineToken,
   isLineIdentity,
   type LineIdentity,
+  machineKeyOf,
   type RunnerIdentity,
   readIdentity,
 } from "./bootstrap.js";
@@ -333,7 +334,7 @@ const lineMode = (options: RunnerOptions, identity: LineIdentity): Mode => {
   }
   const onLineToken = options.onLineToken;
   return {
-    key: identity.engineAgentId,
+    key: machineKeyOf(identity),
     identity,
     onToken: onLineToken === undefined ? undefined : (renewed) => onLineToken(renewed, identity),
     readCachedToken: undefined,
@@ -341,17 +342,18 @@ const lineMode = (options: RunnerOptions, identity: LineIdentity): Mode => {
       const plane = linePlane(identity.apiEndpoint, tokens, {
         projectId: identity.projectId,
         branch: identity.branch,
+        scope: identity.scope,
         generation: identity.generation,
       });
       return {
         postHeartbeat: (body) => plane.heartbeat(body),
         startedAt: async () => {
-          const attempt = (await plane.line()).dispatch?.attempts.find(
+          const attempt = (await plane.dispatch())?.attempts.find(
             (entry) => entry.generation === identity.generation,
           );
           return attempt === undefined ? undefined : Date.parse(attempt.startedAt);
         },
-        askedDisk: async () => (await plane.line()).dispatch?.workspace?.disk,
+        askedDisk: async () => (await plane.dispatch())?.workspace?.disk,
         prepare: async ({ heartbeat, layout }) => {
           // The mirror and the checkout are the owner's to keep (`runLineOwner`),
           // once the read token has come; the machine's directory is made now.

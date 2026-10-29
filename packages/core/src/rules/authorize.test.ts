@@ -7,13 +7,7 @@
  * is that it can be checked completely, and because SC-P4-04 is the claim that a
  * worker's token does exactly the operations §4.4 grants and nothing else.
  */
-import {
-  type OrgId,
-  type Principal,
-  PrincipalSchema,
-  type ProjectId,
-  type UserId,
-} from "@nightshift/contracts";
+import { type OrgId, type Principal, PrincipalSchema, type UserId } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import { createFixturePair } from "../testing/factories.js";
 import {
@@ -197,15 +191,9 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "dispatch.heartbeat": "forbidden",
   "line.get": "forbidden",
   "line.takeBatch": "forbidden",
-  "line.compose": "forbidden",
-  "line.park": "forbidden",
-  "line.decide": "forbidden",
-  "line.announce": "forbidden",
   "line.settle": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
-  "line.heartbeat": "forbidden",
-  "line.cancel": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -620,28 +608,14 @@ const ENGINE_LINE_OPERATIONS: readonly string[] = [
 
 describe("the project line (Pipkin M1b)", () => {
   const LINE_OPERATIONS = ALL_OPERATIONS.filter((operation) => operation.startsWith("line."));
-  const line = {
-    kind: "line" as const,
-    projectId: ownTarget.projectId as ProjectId,
-    branch: "nightshift/develop",
-    agentId: OWN_AGENT,
-    generation: 1,
-  };
-
-  it("names the nine line operations", () => {
+  it("names the five line operations", () => {
     expect([...LINE_OPERATIONS].sort()).toEqual(
       [
         "line.get",
         "line.takeBatch",
-        "line.compose",
-        "line.park",
-        "line.decide",
-        "line.announce",
         "line.settle",
         "line.push",
         "line.createBundleUploadUrl",
-        "line.heartbeat",
-        "line.cancel",
       ].sort(),
     );
   });
@@ -665,15 +639,6 @@ describe("the project line (Pipkin M1b)", () => {
         const lineRun = role === "engine" && ENGINE_LINE_OPERATIONS.includes(operation);
         expect(access, `${role} ${operation}`).toBe(lineRun ? "own_project_line" : "forbidden");
       }
-    }
-  });
-
-  it("refuses a line principal every operation outside line.* (authorize-line.test.ts covers line.*)", () => {
-    for (const operation of ALL_OPERATIONS.filter((op) => !op.startsWith("line."))) {
-      expect(authorize(line, operation, ownTarget), operation).toMatchObject({
-        allowed: false,
-        reason: "execution_forbidden_operation",
-      });
     }
   });
 });

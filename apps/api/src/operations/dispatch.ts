@@ -61,7 +61,6 @@ import {
   mayResume,
   meterUsd,
   nowIso,
-  occupiesComputeSlot,
   parkBatch,
   previousMonthOf,
   type RunScope,
@@ -75,6 +74,7 @@ import {
 import { type ApiDeps, type ApiResponse, HttpError, parseBody } from "../http.js";
 import { runScopeFrom } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
+import { followLineRun } from "../runner/line-lifecycle.js";
 import { lineCapUsd, recordLineWaiting } from "../runner/line-support.js";
 import { EngineTokenExpiredError, mintEngineToken } from "../tokens/mint.js";
 import { requireProgram, requireProject, requireRun } from "./common.js";
@@ -117,31 +117,9 @@ const liveRunsOf = async (deps: ApiDeps, orgId: OrgId): Promise<readonly RunId[]
   return runs;
 };
 
-/** The statuses in which a line dispatch holds one of the org's compute slots. */
-const SLOT_DISPATCH_STATUSES: readonly DispatchStatus[] =
-  DispatchStatusSchema.options.filter(occupiesComputeSlot);
-
-/**
- * The org's line dispatches holding a compute slot (Pipkin M1b): a machine
- * being made, up, or being stopped. A `requested` one has no machine and holds
- * none, so lines waiting for capacity cannot deadlock each other.
- */
-const slotLinesOf = async (deps: ApiDeps, orgId: OrgId): Promise<number> => {
-  const lines = await deps.stores.lineDispatches.listByStatus(SLOT_DISPATCH_STATUSES);
-  const orgOf = new Map<string, OrgId | undefined>();
-  let count = 0;
-  for (const line of lines) {
-    if (!orgOf.has(line.projectId)) {
-      orgOf.set(line.projectId, (await deps.stores.projects.get(line.projectId))?.orgId);
-    }
-    if (orgOf.get(line.projectId) === orgId) count += 1;
-  }
-  return count;
-};
-
-/** What the org's concurrency ceiling counts: its live runs and its line dispatches holding a slot. */
+/** What the org's concurrency ceiling counts: its live runs, a line's among them. */
 const concurrentOf = async (deps: ApiDeps, orgId: OrgId): Promise<number> =>
-  (await liveRunsOf(deps, orgId)).length + (await slotLinesOf(deps, orgId));
+  (await liveRunsOf(deps, orgId)).length;
 
 /**
  * `POST …/runs/{runId}/dispatch` — authorise a machine for a run.
@@ -604,6 +582,7 @@ export const heartbeat: Handler = async (context) => {
     updatedAt: at,
   };
   await deps.stores.dispatches.put(dispatch);
+  await followLineRun(deps.stores, deps.clock, dispatch);
 
   const project = await requireProject(deps.stores, scope.projectId);
   if (live && body.refreshedCredentials?.openai !== undefined) {

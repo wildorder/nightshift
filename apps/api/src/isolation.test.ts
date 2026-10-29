@@ -243,17 +243,12 @@ describe("SC-P4-01 — a user in another organisation is refused every project-s
   });
 });
 
-/** The line's writes are its owner's: a human reads the line and stops its dispatch, nothing more. */
+/** The line's writes are its owner's: a human reads the line, nothing more. */
 const USER_REFUSED_LINE_WRITES: readonly string[] = [
   "line.takeBatch",
-  "line.compose",
-  "line.park",
-  "line.decide",
-  "line.announce",
   "line.settle",
   "line.push",
   "line.createBundleUploadUrl",
-  "line.heartbeat",
 ];
 
 describe("a user in the owning organisation is refused nothing", () => {

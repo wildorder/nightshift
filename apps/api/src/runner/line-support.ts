@@ -55,21 +55,3 @@ export const recordLineWaiting = async (
     return { ...current, waiting: { ...waiting, since }, updatedAt: at };
   });
 };
-
-/** The line's owner is starting: nothing is waiting any more. */
-export const clearLineWaiting = async (
-  stores: Pick<ProjectStores, "lines">,
-  clock: Clock,
-  target: { readonly projectId: ProjectId; readonly branch: string },
-): Promise<void> => {
-  const at = nowIso(clock);
-  await stores.lines.update(target.projectId, target.branch, (current) => {
-    if (current?.waiting === undefined) return undefined;
-    const { waiting: _cleared, ...rest } = current;
-    return { ...rest, updatedAt: at };
-  });
-};
-
-/** The line dispatch failure a refused admission ends with. */
-export const failureCodeOf = (reason: LineWaitingReason): "line_cap" | "org_month" | undefined =>
-  reason === "monthly_cap" ? "line_cap" : reason === "org_month_ceiling" ? "org_month" : undefined;

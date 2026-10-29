@@ -9,9 +9,7 @@ import type {
   HeartbeatBody,
   HeartbeatResponse,
   JobContract,
-  LineAgentBody,
   LineBatch,
-  LineDecisionBody,
   LineSettleBody,
   LineView,
   ProgramContract,
@@ -38,25 +36,32 @@ export interface RunnerPlane {
 
 export type PlaneFactory = (endpoint: string, tokens: EngineTokens) => RunnerPlane;
 
-/** A line owner's dispatch: whose line it is, and the generation every call carries. */
+/**
+ * A line owner's run: whose line it is, the run of the line program it is, and
+ * the generation every call carries.
+ */
 export interface LineTarget {
   readonly projectId: ProjectId;
   readonly branch: string;
+  readonly scope: RunScope;
   readonly generation: number;
 }
 
 /**
  * What the line owner needs from the control plane, as a port (Pipkin M1b, S-04):
- * the line routes, each already bound to the owner's project, branch and
- * generation. The adapter is in `compose.ts`; the tests use a fake.
+ * the line routes and the run's heartbeat, each already bound to the owner's
+ * project, branch, run and generation. The adapter is in `compose.ts`; the tests use a fake.
  */
 export interface LineRunnerPlane {
-  /** The line's record, its dispatch, the policy its agents route under, and the programs that feed it. */
+  /** The line's record, its program and latest run, the policy it routes under, and the programs that feed it. */
   line(): Promise<LineView>;
+  /** The line run's own dispatch. */
+  dispatch(): Promise<Dispatch | undefined>;
   /** The whole queue as one batch, or the batch already held; `undefined` when there is nothing. */
   takeBatch(): Promise<LineBatch | undefined>;
   /** Settles the held batch, with its composition and push when there is one. */
   settle(body: LineSettleBody): Promise<void>;
+  /** The run's dispatch heartbeat. */
   heartbeat(body: HeartbeatBody): Promise<HeartbeatResponse>;
   /** A presigned PUT for one bundle; `key` is what the push names. */
   bundleUploadUrl(id: string): Promise<{
@@ -64,10 +69,6 @@ export interface LineRunnerPlane {
     readonly key: string;
     readonly contentType: string;
   }>;
-  /** A resolver's decision, recorded for review. */
-  decide(decision: Omit<LineDecisionBody, "generation">): Promise<void>;
-  /** An agent announced before it runs. */
-  announce(agent: LineAgentBody["agent"]): Promise<void>;
 }
 
 export type LinePlaneFactory = (

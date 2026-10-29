@@ -1,83 +1,45 @@
 /**
- * The project line's routes (Pipkin M1b): what the line owner (a machine holding
- * a `line` token) and humans use. Everything is keyed by (project, branch); the
- * branch is one URL-encoded path segment, which the router has decoded.
+ * The project line's routes (Pipkin M1b): what the engine of the line's run (a
+ * run of the line program) and humans use. Everything is keyed by (project,
+ * branch); the branch is one URL-encoded path segment, which the router has
+ * decoded.
  *
  * The rules are `core`'s (`rules/line.ts`) and return refusals as values; this
  * file only maps each to a status and applies the result inside the store's
- * compare-and-swap `update`. The heartbeat mirrors a run's (`dispatch.ts`),
- * applied to a `LineDispatch` and metered against the project's own cap as well
- * as the org's ledger.
+ * compare-and-swap `update`. The line run's heartbeat is a run's own
+ * (`dispatch.ts`).
  */
 import {
   calendarMonthOf,
-  DEFAULT_COMPUTE_CEILINGS,
-  type HeartbeatResponse,
-  HeartbeatResponseSchema,
-  LineAgentBodySchema,
   LineBundleUploadUrlBodySchema,
-  type LineCompositionBody,
-  LineCompositionBodySchema,
-  LineDecisionBodySchema,
-  type LineDispatch,
-  type LineDispatchFailureCode,
-  LineHeartbeatBodySchema,
-  type LineParkBody,
-  LineParkBodySchema,
   LinePushBodySchema,
   type LineRecord,
   type LineSettleBody,
   LineSettleBodySchema,
   type LineView,
   LineViewSchema,
-  type OrgId,
-  PROVIDERS,
   type Principal,
-  type Project,
   type ProjectId,
-  type Provider,
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
-  announceLineAgent,
-  chargeDispatchUsage,
-  composeBatch,
   createUlidIdGenerator,
-  DEFAULT_LINE_MONTHLY_USD,
-  dispatchChargeDue,
-  dispatchChargeKey,
-  ensureLineDispatch,
-  foldProgress,
-  foldStages,
-  installationGranting,
-  isDispatchTerminal,
-  LINE_COMPOSITION_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
   type LineChange,
   type LineOwnerArg,
   type LineRefusal,
-  leaseExpiryFrom,
   lineBundleObjectKey,
-  meterUsd,
+  lineProgramId,
   nowIso,
-  parkBatch,
-  previousMonthOf,
-  recordLineDecision,
-  repositoryNameOf,
   requestPush,
   requireEffectivePolicy,
-  runnerStopped,
   settleBatch,
   takeBatch,
-  transitionDispatch,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
 import { projectIdFrom } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
-import { mintLineToken } from "../tokens/mint.js";
 import { pageAt, readAll, requireProject } from "./common.js";
-import { keepRefreshedLogin, usageOf } from "./dispatch.js";
-import { openProjectSecrets } from "./secrets.js";
 
 interface LineTarget {
   readonly projectId: ProjectId;
@@ -108,32 +70,7 @@ const requireLine = async (deps: ApiDeps, target: LineTarget): Promise<LineRecor
   return record;
 };
 
-const requireLineDispatch = async (deps: ApiDeps, target: LineTarget): Promise<LineDispatch> => {
-  const dispatch = await deps.stores.lineDispatches.get(target.projectId, target.branch);
-  if (dispatch === undefined) {
-    throw new HttpError(404, "not_found", `the line on ${target.branch} has no dispatch`);
-  }
-  return dispatch;
-};
-
-/** A dispatch of the generation the caller claims, or 409: the owner is stale. */
-const requireGeneration = async (
-  deps: ApiDeps,
-  target: LineTarget,
-  generation: number,
-): Promise<LineDispatch> => {
-  const dispatch = await requireLineDispatch(deps, target);
-  if (dispatch.generation !== generation) {
-    throw new HttpError(
-      409,
-      "stale_generation",
-      `this call is from generation ${generation}; the line's dispatch is at ${dispatch.generation}`,
-    );
-  }
-  return dispatch;
-};
-
-/** Humans read the line and stop its dispatch; every other line write is the owner's. */
+/** Humans read the line; every line write is the line run's engine's. */
 const refuseUser = (principal: Principal, what: string): void => {
   if (principal.kind === "user") {
     throw new HttpError(403, "execution_forbidden_operation", `a user may not ${what}`);
@@ -141,39 +78,38 @@ const refuseUser = (principal: Principal, what: string): void => {
 };
 
 /**
- * The owner a line write acts as, fenced as its principal is. The line principal
- * keeps the line dispatch's fence on the generation it claims (or the
- * dispatch's, where the body names none). A line run's engine is fenced on its
- * own run's dispatch, and the batch is held as (runId, generation).
+ * The owner a line write acts as: the line run's engine, fenced on its own
+ * run's dispatch (and on the generation the body claims, where it names one).
+ * The batch is held as (runId, generation).
  */
 const ownerOf = async (
   { deps, principal }: Pick<RouteContext, "deps" | "principal">,
-  target: LineTarget,
   claimed: number | undefined,
 ): Promise<LineOwnerArg> => {
-  if (principal.kind === "execution") {
-    const dispatch = await deps.stores.dispatches.get({
-      projectId: principal.projectId,
-      programId: principal.programId,
-      runId: principal.runId,
-    });
-    if (
-      dispatch === undefined ||
-      dispatch.generation !== principal.generation ||
-      (claimed !== undefined && claimed !== dispatch.generation)
-    ) {
-      throw new HttpError(
-        409,
-        "stale_generation",
-        `this call is from generation ${String(claimed ?? principal.generation)}; the run's dispatch is at ${String(dispatch?.generation)}`,
-      );
-    }
-    return { runId: principal.runId, generation: dispatch.generation };
+  if (principal.kind !== "execution") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "only the line run's engine may write to the line",
+    );
   }
-  refuseUser(principal, "write to the line");
-  return claimed === undefined
-    ? (await requireLineDispatch(deps, target)).generation
-    : (await requireGeneration(deps, target, claimed)).generation;
+  const dispatch = await deps.stores.dispatches.get({
+    projectId: principal.projectId,
+    programId: principal.programId,
+    runId: principal.runId,
+  });
+  if (
+    dispatch === undefined ||
+    dispatch.generation !== principal.generation ||
+    (claimed !== undefined && claimed !== dispatch.generation)
+  ) {
+    throw new HttpError(
+      409,
+      "stale_generation",
+      `this call is from generation ${String(claimed ?? principal.generation)}; the run's dispatch is at ${String(dispatch?.generation)}`,
+    );
+  }
+  return { runId: principal.runId, generation: dispatch.generation };
 };
 
 const refusalStatus = (refusal: LineRefusal): HttpError =>
@@ -217,23 +153,6 @@ const applyLineChange = async (
   return stored;
 };
 
-/**
- * The project's monthly cap for this line: the lowest `line.monthlyUsd` among
- * the project's programs configured for this branch that set one, else the
- * default. Read from the programs' contracts, which inherit the config.
- */
-const capUsdOf = async (deps: ApiDeps, target: LineTarget): Promise<number> => {
-  const contracts = await readAll((cursor) =>
-    deps.stores.programContracts.listByProject(target.projectId, pageAt(cursor)),
-  );
-  const caps = contracts.flatMap((contract) =>
-    contract.line?.branch === target.branch && contract.line.monthlyUsd !== undefined
-      ? [contract.line.monthlyUsd]
-      : [],
-  );
-  return caps.length === 0 ? DEFAULT_LINE_MONTHLY_USD : Math.min(...caps);
-};
-
 const fedProgramsOf = (record: LineRecord) => [
   ...new Set([
     ...record.queue.map((entry) => entry.program),
@@ -245,7 +164,22 @@ const fedProgramsOf = (record: LineRecord) => [
 export const getLine: Handler = async ({ deps, params }) => {
   const target = targetOf(params);
   const record = await requireLine(deps, target);
-  const dispatch = await deps.stores.lineDispatches.get(target.projectId, target.branch);
+  const programId = lineProgramId(target.projectId, target.branch);
+  const runs = await readAll((cursor) =>
+    deps.stores.runs.listByProgram({ projectId: target.projectId, programId }, pageAt(cursor)),
+  );
+  const latest = runs.reduce<(typeof runs)[number] | undefined>(
+    (best, run) => (best === undefined || run.runId > best.runId ? run : best),
+    undefined,
+  );
+  const dispatch =
+    latest === undefined
+      ? undefined
+      : await deps.stores.dispatches.get({
+          projectId: target.projectId,
+          programId,
+          runId: latest.runId,
+        });
   const month = calendarMonthOf(nowIso(deps.clock));
   const usage = await deps.stores.projectSelfStartedUsage.get(target.projectId, month);
   const programs: LineView["programs"] = [];
@@ -269,7 +203,15 @@ export const getLine: Handler = async ({ deps, params }) => {
         });
   const view: LineView = {
     record,
-    ...(dispatch === undefined ? {} : { dispatch }),
+    programId,
+    ...(latest === undefined ? {} : { runId: latest.runId }),
+    ...(dispatch === undefined
+      ? {}
+      : {
+          dispatchStatus: dispatch.status,
+          generation: dispatch.generation,
+          meteredUsd: dispatch.spend.meteredUsd,
+        }),
     ...(usage === undefined ? {} : { usage }),
     ...(policy === undefined ? {} : { policy }),
     programs,
@@ -282,7 +224,7 @@ export const takeLineBatch: Handler = async (context) => {
   const { deps, request, params } = context;
   const target = targetOf(params);
   const body = parseBody(TakeLineBatchBodySchema, request.body);
-  const owner = await ownerOf(context, target, body.generation);
+  const owner = await ownerOf(context, body.generation);
   const at = nowIso(deps.clock);
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
   let taken: ReturnType<typeof takeBatch> | undefined;
@@ -320,72 +262,6 @@ const refuseResolverOver = (body: unknown): void => {
   }
 };
 
-/** `POST …/line/compositions?branch=`. */
-export const postLineComposition: Handler = async ({ deps, request, params, principal }) => {
-  refuseUser(principal, "write to the line");
-  const target = targetOf(params);
-  refuseResolverOver(request.body);
-  const body: LineCompositionBody = parseBody(LineCompositionBodySchema, request.body);
-  const at = nowIso(deps.clock);
-  const compositionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp");
-  const record = await applyLineChange(deps, target, (current) =>
-    composeBatch(current, body, compositionId, at),
-  );
-  return { status: 200, body: record };
-};
-
-/** `POST …/line/decisions?branch=` — a resolver's decision, recorded for later review. */
-export const postLineDecision: Handler = async ({ deps, request, params, principal }) => {
-  refuseUser(principal, "write to the line");
-  const target = targetOf(params);
-  const body = parseBody(LineDecisionBodySchema, request.body);
-  const dispatch = await requireGeneration(deps, target, body.generation);
-  const at = nowIso(deps.clock);
-  const decisionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("dec");
-  const record = await applyLineChange(deps, target, (current) =>
-    recordLineDecision(current, body, decisionId, dispatch.generation, at),
-  );
-  return { status: 200, body: record };
-};
-
-/** `POST …/line/agents?branch=` — an agent announced before it runs (A-04). */
-export const postLineAgent: Handler = async ({ deps, request, params, principal }) => {
-  refuseUser(principal, "write to the line");
-  const target = targetOf(params);
-  const body = parseBody(LineAgentBodySchema, request.body);
-  await requireGeneration(deps, target, body.generation);
-  const at = nowIso(deps.clock);
-  let refused: string | undefined;
-  const stored = await deps.stores.lineDispatches.update(
-    target.projectId,
-    target.branch,
-    (current) => {
-      const change = announceLineAgent(current, { ...body.agent, generation: body.generation }, at);
-      refused = change.ok ? undefined : change.detail;
-      return change.ok && change.dispatch !== current ? change.dispatch : undefined;
-    },
-  );
-  if (refused !== undefined) throw new HttpError(409, "stale_generation", refused);
-  if (stored === undefined) {
-    throw new HttpError(404, "not_found", `the line on ${target.branch} has no dispatch`);
-  }
-  return { status: 200, body: stored };
-};
-
-/** `POST …/line/parked?branch=`. */
-export const postLineParked: Handler = async ({ deps, request, params, principal }) => {
-  refuseUser(principal, "write to the line");
-  const target = targetOf(params);
-  refuseResolverOver(request.body);
-  const body: LineParkBody = parseBody(LineParkBodySchema, request.body);
-  const at = nowIso(deps.clock);
-  const compositionId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp");
-  const record = await applyLineChange(deps, target, (current) =>
-    parkBatch(current, body, compositionId, at),
-  );
-  return { status: 200, body: record };
-};
-
 /** Ask the publisher for a pending push; recorded first, then published, so an error is only logged. */
 const askPublisher = async (deps: ApiDeps, target: LineTarget): Promise<void> => {
   await deps.dispatcher?.publishLine?.(target).catch((error: unknown) => {
@@ -410,7 +286,7 @@ export const postLineSettle: Handler = async (context) => {
   const ids = deps.ids ?? createUlidIdGenerator(deps.clock);
   const compositionId = body.composition === undefined ? undefined : ids.next("comp");
   const parkedIds = body.parked.map(() => ids.next("comp"));
-  const owner = await ownerOf(context, target, undefined);
+  const owner = await ownerOf(context, undefined);
   const record = await applyLineChange(deps, target, (current) =>
     settleBatch(
       current,
@@ -435,7 +311,7 @@ export const postLinePush: Handler = async (context) => {
   const target = targetOf(params);
   refuseUser(context.principal, "write to the line");
   const body = parseBody(LinePushBodySchema, request.body);
-  const owner = await ownerOf(context, target, undefined);
+  const owner = await ownerOf(context, undefined);
   const at = nowIso(deps.clock);
   const record = await applyLineChange(deps, target, (current) =>
     requestPush(current, body, owner, at),
@@ -456,7 +332,7 @@ export const createLineBundleUploadUrl: Handler = async (context) => {
   if (!BUNDLE_ID.test(body.id)) {
     throw new HttpError(400, "validation_failed", "id must be 1-64 letters, digits, - or _");
   }
-  await ownerOf(context, target, body.generation);
+  await ownerOf(context, body.generation);
   const signKey = deps.uploads?.signKey?.bind(deps.uploads);
   if (signKey === undefined) {
     throw new HttpError(
@@ -477,362 +353,4 @@ export const createLineBundleUploadUrl: Handler = async (context) => {
       expiresAt: signed.expiresAt,
     },
   };
-};
-
-const STOP_STATUSES = ["stopping", "stopped", "failed"] as const;
-
-/**
- * `POST …/line/dispatch/cancel?branch=` — a human stops the line owner.
- * `authorize` refuses the line principal this operation.
- */
-export const cancelLineDispatch: Handler = async ({ deps, params }) => {
-  const target = targetOf(params);
-  const at = nowIso(deps.clock);
-  let result: LineDispatch | undefined;
-  const stored = await deps.stores.lineDispatches.update(
-    target.projectId,
-    target.branch,
-    (current) => {
-      result = current;
-      if (isDispatchTerminal(current.status) || current.status === "stopping") return undefined;
-      return transitionDispatch<LineDispatch>(
-        {
-          ...current,
-          failure: { code: "cancelled", message: "cancelled by the operator" },
-        },
-        "stop",
-        at,
-      );
-    },
-  );
-  if (stored === undefined || result === undefined) {
-    throw new HttpError(404, "not_found", `the line on ${target.branch} has no dispatch`);
-  }
-  return { status: 200, body: stored };
-};
-
-/** `POST …/line/heartbeat?branch=`. */
-export const lineHeartbeat: Handler = async (context) => {
-  const { deps, request, params } = context;
-  refuseUser(context.principal, "heartbeat the line");
-  const target = targetOf(params);
-  const body = parseBody(LineHeartbeatBodySchema, request.body);
-  const at = nowIso(deps.clock);
-  const month = calendarMonthOf(at);
-
-  const current = await requireLineDispatch(deps, target);
-  // The fence: only the current generation is heard.
-  if (body.generation !== current.generation) {
-    throw new HttpError(
-      409,
-      "stale_generation",
-      `this heartbeat is from generation ${body.generation}; the line's dispatch is at ${current.generation}`,
-    );
-  }
-  if (current.status === "requested") {
-    throw new HttpError(409, "no_machine", "the dispatch has no machine yet to heartbeat from");
-  }
-
-  let previousUsd = 0;
-  let dispatch = current;
-  const stored = await deps.stores.lineDispatches.update(
-    target.projectId,
-    target.branch,
-    (held): LineDispatch | undefined => {
-      if (held.generation !== body.generation) return undefined;
-      let next = held;
-      if (body.report === "ready" && next.status === "provisioning") {
-        next = transitionDispatch(next, "ready", at);
-      } else if (body.report === "running" && next.status === "ready") {
-        next = transitionDispatch(next, "start", at);
-      } else if (body.report === "stopped") {
-        next = runnerStopped(next, body.failure, at);
-      }
-      previousUsd = held.spend.meteredUsd;
-      const attempts = next.attempts.map((attempt) =>
-        attempt.generation === next.generation
-          ? {
-              ...attempt,
-              meteredSeconds: Math.max(attempt.meteredSeconds ?? 0, body.meteredSeconds),
-              ...(body.report === "ready" && attempt.readyAt === undefined ? { readyAt: at } : {}),
-              ...(body.report === "running" && attempt.runningAt === undefined
-                ? { runningAt: at }
-                : {}),
-              ...(body.report === "stopped" && attempt.endedAt === undefined
-                ? {
-                    endedAt: at,
-                    endReason:
-                      body.failure === undefined ? ("stopped" as const) : ("failed" as const),
-                  }
-                : {}),
-            }
-          : attempt,
-      );
-      const meteredSeconds = attempts.reduce(
-        (total, attempt) => total + (attempt.meteredSeconds ?? 0),
-        0,
-      );
-      const live = !STOP_STATUSES.includes(next.status as (typeof STOP_STATUSES)[number]);
-      const progress =
-        body.progress === undefined
-          ? undefined
-          : foldProgress(next.progress, body.progress, next.generation, at);
-      const updated: LineDispatch = {
-        ...next,
-        attempts,
-        spend: {
-          ...next.spend,
-          meteredSeconds,
-          meteredUsd: meterUsd(next.tier, meteredSeconds),
-        },
-        ...(live ? { leaseExpiresAt: leaseExpiryFrom(deps.clock.now()) } : {}),
-        ...(progress === undefined ? {} : { progress, stages: foldStages(next.stages, progress) }),
-        updatedAt: at,
-      };
-      dispatch = updated;
-      return updated;
-    },
-  );
-  if (stored === undefined) {
-    throw new HttpError(
-      409,
-      "stale_generation",
-      "the line's dispatch moved on during the heartbeat",
-    );
-  }
-  dispatch = stored;
-  const live = !STOP_STATUSES.includes(dispatch.status as (typeof STOP_STATUSES)[number]);
-  const { meteredUsd, meteredSeconds } = dispatch.spend;
-  const delta = Math.max(0, meteredUsd - previousUsd);
-
-  const project = await requireProject(deps.stores, target.projectId);
-  if (live && body.refreshedCredentials?.openai !== undefined) {
-    await keepRefreshedLogin(
-      deps,
-      project.orgId,
-      `line ${target.branch}`,
-      body.refreshedCredentials.openai,
-    );
-  }
-
-  // The org's ledger, exactly as a run's.
-  if (delta > 0) {
-    const usage = await usageOf(deps, project.orgId, at);
-    await deps.stores.computeLedger.put({
-      ...usage,
-      meteredUsd: usage.meteredUsd + (meteredUsd - previousUsd),
-      updatedAt: at,
-    });
-  }
-
-  // The project's own: shared by every line branch of the project, by CAS.
-  let record = await requireLine(deps, target);
-  const capUsd = await capUsdOf(deps, target);
-  const held = await deps.stores.projectSelfStartedUsage.get(target.projectId, month);
-  let usage = held;
-  // Charged by the dispatch's cumulative spend against what the row already
-  // holds for it, never by this beat's delta: a write that failed is repaired
-  // by the next beat, and a repeated beat charges nothing.
-  const chargeKey = dispatchChargeKey(dispatch.branch, dispatch.engineAgentId);
-  const baselineUsd =
-    held !== undefined && held.charged?.[chargeKey] !== undefined
-      ? 0
-      : ((await deps.stores.projectSelfStartedUsage.get(target.projectId, previousMonthOf(month)))
-          ?.charged?.[chargeKey] ?? 0);
-  const charge = {
-    month,
-    key: chargeKey,
-    dispatchUsd: meteredUsd,
-    baselineUsd,
-  };
-  if (
-    dispatchChargeDue(held, charge) ||
-    (held !== undefined && held.meteredUsd >= capUsd && held.reachedAt === undefined)
-  ) {
-    usage = await deps.stores.projectSelfStartedUsage.update(target.projectId, month, (row) =>
-      chargeDispatchUsage(row, { projectId: target.projectId, capUsd, ...charge }, at),
-    );
-  }
-
-  // Ceilings: the project's cap, then the org's per-run and wall-clock ones.
-  let stop = !live;
-  const ceilings =
-    (await deps.stores.orgConfigs.get(project.orgId))?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-  if (live) {
-    const overCap = usage !== undefined && usage.month === month && usage.meteredUsd >= capUsd;
-    const overRun = meteredUsd > ceilings.maxUsdPerRun;
-    const overHours = meteredSeconds > ceilings.maxRunHours * 3600;
-    if (overCap || overRun || overHours) {
-      const code: LineDispatchFailureCode = overCap
-        ? "line_cap"
-        : overRun
-          ? "run_cap"
-          : "wall_clock";
-      const message =
-        code === "line_cap"
-          ? `the project's self-started spend $${(usage?.meteredUsd ?? 0).toFixed(2)} reached the $${capUsd.toFixed(2)} monthly cap for ${month}`
-          : code === "run_cap"
-            ? `metered $${meteredUsd.toFixed(2)} crossed the $${ceilings.maxUsdPerRun.toFixed(2)} cap per run`
-            : `metered ${Math.round(meteredSeconds / 60)} minutes crossed the ${ceilings.maxRunHours}-hour wall clock`;
-      const stopped = await deps.stores.lineDispatches.update(
-        target.projectId,
-        target.branch,
-        (now) =>
-          now.generation === dispatch.generation &&
-          !isDispatchTerminal(now.status) &&
-          now.status !== "stopping"
-            ? transitionDispatch<LineDispatch>({ ...now, failure: { code, message } }, "stop", at)
-            : undefined,
-      );
-      if (stopped !== undefined) dispatch = stopped;
-      if (code === "line_cap") {
-        await deps.stores.lines.update(target.projectId, target.branch, (row) =>
-          row === undefined
-            ? undefined
-            : {
-                ...row,
-                waiting: {
-                  reason: "monthly_cap",
-                  detail: message,
-                  since: row.waiting?.reason === "monthly_cap" ? row.waiting.since : at,
-                },
-                updatedAt: at,
-              },
-        );
-      }
-      stop = true;
-    }
-  }
-
-  // A batch an owner has held past the composition hour is parked, whole.
-  if (live) {
-    await deps.stores.lines.update(target.projectId, target.branch, (row) => {
-      const batch = row?.batch;
-      if (row === undefined || batch === undefined) return undefined;
-      if (Date.parse(at) - Date.parse(batch.takenAt) <= LINE_COMPOSITION_SECONDS * 1000) {
-        return undefined;
-      }
-      const parked = parkBatch(
-        row,
-        {
-          batchId: batch.batchId,
-          ranges: batch.entries.map((entry) => ({
-            program: entry.program,
-            upTo: entry.upTo,
-          })),
-          reason: "composition_hour",
-        },
-        (deps.ids ?? createUlidIdGenerator(deps.clock)).next("comp"),
-        at,
-      );
-      return parked.ok ? parked.record : undefined;
-    });
-  }
-
-  // The owner stopped with work still queued: ask for the next dispatch. It
-  // answers `live` until the last one's cleanup has settled (J5 restarts then).
-  if (body.report === "stopped") {
-    record = await requireLine(deps, target);
-    if (record.queue.length > 0) {
-      await ensureLineDispatch(
-        {
-          stores: deps.stores,
-          clock: deps.clock,
-          ids: deps.ids ?? createUlidIdGenerator(deps.clock),
-          startMachine: async (line) => {
-            await deps.dispatcher?.provisionLine?.(line).catch((error: unknown) => {
-              console.error(`line ${line.branch}: the dispatcher could not be invoked`, error);
-            });
-          },
-        },
-        { ...target, capUsd: await capUsdOf(deps, target) },
-      );
-    }
-  }
-
-  record = await requireLine(deps, target);
-  const response: HeartbeatResponse = {
-    generation: dispatch.generation,
-    status: dispatch.status,
-    leaseExpiresAt: dispatch.leaseExpiresAt ?? at,
-    stop,
-    ...(await renewedLineToken(context, dispatch, stop)),
-    ...(await credentialsFor(deps, project, record, dispatch, stop)),
-    ...(await secretsFor(deps, project, dispatch, stop)),
-  };
-  return { status: 200, body: HeartbeatResponseSchema.parse(response) };
-};
-
-const renewedLineToken = async (
-  { deps }: RouteContext,
-  dispatch: LineDispatch,
-  stop: boolean,
-): Promise<Pick<HeartbeatResponse, "token" | "tokenExpiresAt">> => {
-  if (stop || deps.tokens === undefined) return {};
-  const minted = await mintLineToken(deps.tokens.signer, {
-    dispatch,
-    issuer: deps.tokens.issuer,
-    now: deps.clock.now(),
-  });
-  return { token: minted.token, tokenExpiresAt: minted.expiresAt };
-};
-
-/** The project's secrets, only while the owner is running and is to carry on. */
-const secretsFor = async (
-  deps: ApiDeps,
-  project: Project,
-  dispatch: LineDispatch,
-  stop: boolean,
-): Promise<Pick<HeartbeatResponse, "secrets">> => {
-  if (stop || dispatch.status !== "running") return {};
-  const secrets = await openProjectSecrets(deps, project);
-  return Object.keys(secrets).length === 0 ? {} : { secrets };
-};
-
-/**
- * The org's provider keys and a GitHub read token for the line's repository,
- * only while the owner is running and is to carry on. The read token is the one
- * credential for GitHub the owner is given: only the publisher writes.
- */
-const credentialsFor = async (
-  deps: ApiDeps,
-  project: Project,
-  record: LineRecord,
-  dispatch: LineDispatch,
-  stop: boolean,
-): Promise<Pick<HeartbeatResponse, "credentials">> => {
-  if (stop || dispatch.status !== "running") return {};
-  const orgId: OrgId = project.orgId;
-  const credentials: Record<string, string> = {};
-  const repository = repositoryNameOf(record.repositoryUrl);
-  const installation =
-    repository === undefined
-      ? undefined
-      : installationGranting(
-          (await deps.stores.orgConfigs.get(orgId))?.installations ?? [],
-          repository,
-        );
-  if (deps.github !== undefined && installation !== undefined && repository !== undefined) {
-    try {
-      credentials.github = (
-        await deps.github.readToken(installation.installationId, [repository])
-      ).token;
-    } catch (error) {
-      console.error(`line ${dispatch.branch}: no GitHub read token for the machine`, error);
-    }
-  }
-  if (deps.envelope !== undefined) {
-    for (const provider of PROVIDERS) {
-      let sealed: Awaited<ReturnType<typeof deps.stores.credentials.sealed>>;
-      try {
-        sealed = await deps.stores.credentials.sealed(orgId, provider as Provider);
-      } catch (error) {
-        if (error instanceof Error && error.name === "CredentialsTableUnavailableError") break;
-        throw error;
-      }
-      if (sealed === undefined) continue;
-      credentials[provider] = await deps.envelope.open(orgId, provider as Provider, sealed);
-    }
-  }
-  return Object.keys(credentials).length === 0 ? {} : { credentials };
 };

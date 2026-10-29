@@ -10,18 +10,22 @@
  * that still holds a pending publication intent has the publisher asked again:
  * a push that failed for a passing reason is retried, and the last landing of a
  * run is never left waiting for a next one that will not come (2026-10-14).
- * The project line's dispatches and lines with work are walked the same way.
+ * Lines with work and no live run have one started (Pipkin).
  *
  * Composition only: the rules are `runner/reconcile.ts`.
  */
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SSMClient } from "@aws-sdk/client-ssm";
-import { createUlidIdGenerator, systemClock } from "@nightshift/core";
+import { systemClock } from "@nightshift/core";
 import { createAwsClients, createAwsStores } from "@nightshift/persistence/aws";
 import { createEc2Compute, createSsmFirstTokens } from "../aws/ec2-compute.js";
 import { loadConfig, loadRunnerConfig, loadTokenConfig } from "../config.js";
+import { createGitHubAppClient, type GitHubAppSecret } from "../github/app.js";
+import type { ApiDeps } from "../http.js";
+import { provisionDispatch } from "../runner/provision.js";
 import { type PublisherRequest, reconcile } from "../runner/reconcile.js";
 import { createKmsExecutionTokenSigner } from "../tokens/kms.js";
 
@@ -65,10 +69,45 @@ const askPublisher = async (request: PublisherRequest): Promise<void> => {
   );
 };
 
+/**
+ * What a line run is started through (`startLineRun`): the same admission as a
+ * dispatch. It needs the GitHub App to verify the line's base, which this
+ * function reads only where the secret is named; without it the start is
+ * refused as `github_unavailable` and counted as an error.
+ */
+const githubSecretName = config.githubAppSecret;
+const github =
+  githubSecretName === undefined
+    ? undefined
+    : createGitHubAppClient({
+        secret: async (): Promise<GitHubAppSecret> => {
+          const found = await new SecretsManagerClient({}).send(
+            new GetSecretValueCommand({ SecretId: githubSecretName }),
+          );
+          const parsed = JSON.parse(found.SecretString ?? "{}") as Partial<GitHubAppSecret>;
+          if (parsed.appId === undefined || parsed.privateKey === undefined) {
+            throw new Error(`secret ${githubSecretName} has no appId or privateKey`);
+          }
+          return { appId: String(parsed.appId), privateKey: parsed.privateKey };
+        },
+      });
+const plane: ApiDeps = {
+  stores,
+  clock: systemClock,
+  ...(github === undefined ? {} : { github }),
+  runner: { amiVersion: runner.imageVersion },
+  // The reconciler holds what provisioning needs, so it provisions the run it starts itself.
+  dispatcher: {
+    provision: async (scope) => {
+      await provisionDispatch(provision, scope);
+    },
+  },
+};
+
 export const handler = async (): Promise<Record<string, number>> => {
   const counts = await reconcile({
     provision,
-    ids: createUlidIdGenerator(systemClock),
+    plane,
     askPublisher,
   });
   console.warn(`reconciler: ${JSON.stringify(counts)}`);

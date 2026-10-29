@@ -2,12 +2,13 @@
  * The project line, end to end and offline (Pipkin M1b, S-04 J5).
  *
  * Real pieces, all on localhost: the control plane's handler over the memory
- * stores, the publisher (`publishAll` queues a landed range on the line,
- * `publishLine` moves the line) pushing to a real smart-HTTP git server that
- * stands in for GitHub, and the line owner (`runLineOwner`, booted by
- * `runRunner` as a line machine's runner is) over a fake machine. The owner's
- * agents go through `createLineAgents` over a fake harness whose `startLine`
- * scripts the processes.
+ * stores, the publisher (`publishAll` queues a landed range on the line and
+ * starts a run of the line program; `publishLine` moves the line) pushing to a
+ * real smart-HTTP git server that stands in for GitHub, and the line owner
+ * (`runLineOwner`, booted by `runRunner` as a line run's machine is) over a fake
+ * machine. The owner is the engine of its run: it reaches the line routes with
+ * the run's engine token and heartbeats the run's dispatch. It launches no
+ * agent: a range that conflicts is parked with its reason.
  *
  * One stand-in is worth naming. The machine's `exec` swaps GitHub's clone URL
  * for the local server's, as the machine would reach GitHub.
@@ -26,11 +27,12 @@ import {
   startGitHttpServer,
 } from "@nightshift/api/testing";
 import {
+  DEFAULT_COMPUTE_CEILINGS,
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
+  type Dispatch,
   type HeartbeatBody,
   HeartbeatResponseSchema,
-  type LineDispatch,
   type LineRecord,
   LineViewSchema,
   NIGHTSHIFT_CONFIG_FILE,
@@ -45,6 +47,7 @@ import {
   type Fixtures,
   type GitHubAppClient,
   leaseLost,
+  lineProgramId,
   makeDispatch,
   makeMembership,
   makeProgramContract,
@@ -56,14 +59,14 @@ import {
   transitionDispatch,
 } from "@nightshift/core";
 import { nodeGitRunner } from "@nightshift/execution";
-import type { Harness, HarnessExit } from "@nightshift/harness";
 import {
-  LINE_TAGS,
+  LINE_TAG,
   type LineRunnerPlane,
   type Machine,
   runLineOwner,
   runRunner,
 } from "@nightshift/mcp";
+import { routes } from "@nightshift/persistence/http";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -184,13 +187,16 @@ interface Plane {
   /** Program fixtures by name; both belong to one project. */
   readonly programs: Record<"a" | "b", Fixtures>;
   readonly publisher: PublisherDeps;
-  /** The machines the plane was asked to bring up, by generation. */
-  readonly provisioned: number[];
+  /** The runs the plane was asked to bring a machine up for, by run id and generation. */
+  readonly provisioned: { runId: string; generation: number }[];
   readonly bundles: Map<string, Uint8Array>;
   readonly projectId: Fixtures["scope"]["projectId"];
   readonly intents: Map<string, number>;
   land(name: "a" | "b", head: string, predecessor: string): Promise<void>;
-  lineDispatch(): Promise<LineDispatch>;
+  /** The line program's one run, and its dispatch. */
+  lineRun(): Promise<{ readonly runId: string; readonly dispatch: Dispatch }>;
+  /** The line program's runs. */
+  lineRuns(): Promise<readonly { readonly runId: string; readonly status: string }[]>;
   lineRecord(): Promise<LineRecord>;
 }
 
@@ -234,6 +240,8 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
         recordedAt: "2026-10-27T11:00:00.000Z",
       },
     ],
+    // The two program runs are live beside the line's: room for a third.
+    compute: { ...DEFAULT_COMPUTE_CEILINGS, maxConcurrentRuns: 3 },
     version: 1,
     updatedAt: "2026-10-27T11:00:00.000Z",
   });
@@ -253,22 +261,27 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
   }
 
   const bundles = new Map<string, Uint8Array>();
-  const provisioned: number[] = [];
+  const provisioned: { runId: string; generation: number }[] = [];
   const lineKey = { projectId: a.scope.projectId, branch: LINE };
+  const lineProgram = lineProgramId(a.scope.projectId, LINE);
   const at = () => new Date(clock.at).toISOString();
 
   /** What provisioning does for a requested (or replacement) dispatch: a machine is being made. */
-  const provisionLine = async (): Promise<void> => {
-    const stored = await stores.lineDispatches.update(
-      lineKey.projectId,
-      lineKey.branch,
-      (current) => {
-        const claimed =
-          current.status === "requested" ? transitionDispatch(current, "provision", at()) : current;
-        return { ...claimed, instanceId: claimed.instanceId ?? `i-line-${current.generation}` };
-      },
-    );
-    provisioned.push(stored?.generation ?? 0);
+  const provisionRun = async (scope: {
+    projectId: typeof lineKey.projectId;
+    programId: string;
+    runId: string;
+  }): Promise<void> => {
+    const current = await stores.dispatches.get(scope as never);
+    if (current === undefined) throw new Error("no dispatch to provision");
+    const claimed =
+      current.status === "requested" ? transitionDispatch(current, "provision", at()) : current;
+    await stores.dispatches.put({
+      ...claimed,
+      instanceId: `i-line-${current.generation}`,
+      updatedAt: at(),
+    });
+    provisioned.push({ runId: scope.runId, generation: current.generation });
   };
 
   const counting = {
@@ -278,31 +291,18 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
       return smartHttpRemote.push(input);
     },
   };
-  const publisher: PublisherDeps = {
-    stores,
-    clock,
-    github: { writeToken: async () => ({ token: "ghs_write", expiresAt: at() }) },
-    bundles: {
-      get: async (key) => {
-        const found = bundles.get(key);
-        if (found === undefined) throw new Error(`no bundle ${key}`);
-        return found;
-      },
-    },
-    remote: counting,
-    remoteUrlOf: () => `${origin.server.url}/line.git`,
-    startLineMachine: provisionLine,
-  };
 
   const deps: ApiDeps = {
     stores,
     clock,
     github: {
       readToken: async () => ({ token: GITHUB_TOKEN, expiresAt: at() }),
+      // The refs of the git server standing in for GitHub.
+      branchHead: async (_installationId: number, _repository: string, branch: string) =>
+        origin.refOf(`refs/heads/${branch}`),
     } as unknown as GitHubAppClient,
     dispatcher: {
-      provision: async () => undefined,
-      provisionLine,
+      provision: provisionRun,
       publishLine: async (target) => {
         await publishLine(publisher, target);
       },
@@ -319,6 +319,22 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
         expiresAt: at(),
       }),
     },
+  };
+  const publisher: PublisherDeps = {
+    stores,
+    clock,
+    github: { writeToken: async () => ({ token: "ghs_write", expiresAt: at() }) },
+    bundles: {
+      get: async (key) => {
+        const found = bundles.get(key);
+        if (found === undefined) throw new Error(`no bundle ${key}`);
+        return found;
+      },
+    },
+    remote: counting,
+    remoteUrlOf: () => `${origin.server.url}/line.git`,
+    // Landing a range starts a run of the line program, through the same admission as any dispatch.
+    plane: deps,
   };
 
   const intents = new Map<string, number>();
@@ -350,10 +366,25 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     projectId: a.scope.projectId,
     intents,
     land,
-    lineDispatch: async () => {
-      const found = await stores.lineDispatches.get(lineKey.projectId, lineKey.branch);
-      if (found === undefined) throw new Error("no line dispatch");
-      return found;
+    lineRuns: async () =>
+      (
+        await stores.runs.listByProgram({ projectId: lineKey.projectId, programId: lineProgram })
+      ).items.map((run) => ({ runId: run.runId, status: run.status })),
+    lineRun: async () => {
+      const runs = (
+        await stores.runs.listByProgram({ projectId: lineKey.projectId, programId: lineProgram })
+      ).items;
+      const run = runs.at(-1);
+      if (run === undefined || runs.length !== 1) {
+        throw new Error(`the line program has ${runs.length} runs, not one`);
+      }
+      const dispatch = await stores.dispatches.get({
+        projectId: lineKey.projectId,
+        programId: lineProgram,
+        runId: run.runId,
+      });
+      if (dispatch === undefined) throw new Error("no line dispatch");
+      return { runId: run.runId, dispatch };
     },
     lineRecord: async () => {
       const found = await stores.lines.get(lineKey.projectId, lineKey.branch);
@@ -365,65 +396,71 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
 
 /**
  * The owner's view of the plane (`LineRunnerPlane`), through the real handler as
- * the machine's HTTP adapter reaches it, bound to the dispatch's generation.
+ * the machine's HTTP adapter reaches it: the line routes and the run's dispatch
+ * heartbeat, under the run's engine token, bound to the dispatch's generation.
  */
 const planeFor = (
   plane: Plane,
-  dispatch: LineDispatch,
+  run: { readonly runId: string; readonly dispatch: Dispatch },
+  generation: number,
   hooks: {
     readonly bundleUploadUrl?: () => void;
     readonly afterSettle?: (settled: { batchId: string; pushed: boolean }) => Promise<void>;
   } = {},
 ): LineRunnerPlane & { readonly settles: { batchId: string; generation: number }[] } => {
-  const { generation } = dispatch;
+  const programId = lineProgramId(plane.projectId, LINE);
+  const scope = { projectId: plane.projectId, programId, runId: run.runId as never };
   const base = `/projects/${plane.projectId}/line`;
-  const principal = {
-    kind: "line",
-    projectId: plane.projectId,
-    branch: LINE,
-    agentId: dispatch.engineAgentId,
-    generation,
-  } as never;
-  const call = async (method: string, tail: string, body?: unknown): Promise<unknown> => {
+  const call = async (
+    method: string,
+    path: string,
+    query: Record<string, string>,
+    body?: unknown,
+  ) => {
+    const stored = await plane.stores.runs.get(scope, scope.runId);
     const response = await handleRequest(plane.deps, {
       method,
-      path: `${base}${tail}`,
-      query: { branch: LINE },
+      path,
+      query,
       body,
-      principal,
+      principal: {
+        kind: "execution",
+        ...scope,
+        nodeId: stored?.rootNodeId,
+        agentId: run.dispatch.engineAgentId,
+        role: "engine",
+        generation,
+      } as never,
     });
     if (response.status >= 400) {
-      throw new Error(`${method} ${tail}: ${response.status} ${JSON.stringify(response.body)}`);
+      throw new Error(`${method} ${path}: ${response.status} ${JSON.stringify(response.body)}`);
     }
     return response.body;
   };
+  const line = (method: string, tail: string, body?: unknown) =>
+    call(method, `${base}${tail}`, { branch: LINE }, body);
   const settles: { batchId: string; generation: number }[] = [];
   return {
     settles,
-    line: async () => LineViewSchema.parse(await call("GET", "")),
+    line: async () => LineViewSchema.parse(await line("GET", "")),
+    dispatch: () => plane.stores.dispatches.get(scope),
     takeBatch: async () =>
-      TakeLineBatchResponseSchema.parse(await call("POST", "/batch", { generation })).batch,
+      TakeLineBatchResponseSchema.parse(await line("POST", "/batch", { generation })).batch,
     settle: async (body) => {
-      await call("POST", "/settle", body);
+      await line("POST", "/settle", body);
       settles.push({ batchId: body.batchId, generation });
       await hooks.afterSettle?.({ batchId: body.batchId, pushed: body.push !== undefined });
     },
     heartbeat: async (body: HeartbeatBody) =>
-      HeartbeatResponseSchema.parse(await call("POST", "/heartbeat", body)),
+      HeartbeatResponseSchema.parse(await call("POST", routes.dispatchHeartbeat(scope), {}, body)),
     bundleUploadUrl: async (id) => {
       hooks.bundleUploadUrl?.();
-      const signed = (await call("POST", "/bundle-upload-url", { generation, id })) as {
+      const signed = (await line("POST", "/bundle-upload-url", { generation, id })) as {
         uploadUrl: string;
         key: string;
         contentType: string;
       };
       return { uploadUrl: signed.uploadUrl, key: signed.key, contentType: signed.contentType };
-    },
-    decide: async (decision) => {
-      await call("POST", "/decisions", { ...decision, generation });
-    },
-    announce: async (agent) => {
-      await call("POST", "/agents", { generation, agent });
     },
   };
 };
@@ -439,18 +476,19 @@ const REAL = new Set(["git", "env", "mkdir"]);
 const lineMachine = (
   plane: Plane,
   origin: Origin,
-  dispatch: LineDispatch,
+  runId: string,
+  generation: number,
 ): Machine & { readonly commands: string[] } => {
   const commands: string[] = [];
   const files = new Map<string, string>();
   const tags: Record<string, string> = {
-    [LINE_TAGS.kind]: "line",
-    [LINE_TAGS.project]: plane.projectId,
-    [LINE_TAGS.line]: LINE,
-    [LINE_TAGS.agent]: dispatch.engineAgentId,
-    [LINE_TAGS.generation]: String(dispatch.generation),
-    [LINE_TAGS.stage]: "dev",
-    [LINE_TAGS.api]: "https://api.dev.nightshift.invalid",
+    [LINE_TAG]: LINE,
+    "nightshift-project": plane.projectId,
+    "nightshift-program": lineProgramId(plane.projectId, LINE),
+    "nightshift-run": runId,
+    "nightshift-generation": String(generation),
+    "nightshift-stage": "dev",
+    "nightshift-api": "https://api.dev.nightshift.invalid",
   };
   const github = `${REPOSITORY}.git`;
   const local = `${origin.server.url}/line.git`;
@@ -502,7 +540,7 @@ const lineMachine = (
       }
       if (headers["X-aws-ec2-metadata-token"] !== "imds-token") return { status: 401, text: "" };
       const path = url.slice(`${IMDS}/latest/meta-data/`.length);
-      if (path === "instance-id") return { status: 200, text: `i-line-${dispatch.generation}` };
+      if (path === "instance-id") return { status: 200, text: `i-line-${generation}` };
       const tag = tags[path.replace("tags/instance/", "")];
       return tag === undefined ? { status: 404, text: "" } : { status: 200, text: tag };
     },
@@ -510,41 +548,6 @@ const lineMachine = (
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms / SPEED)),
     now: () => plane.clock.at,
   };
-};
-
-// --- the agents ---------------------------------------------------------------------------
-
-interface Launch {
-  readonly role: string;
-  readonly model: string;
-}
-
-/** A harness whose resolver merges the conflicted file and whose examiner approves. */
-const scriptedHarnesses = (launches: Launch[]): { get(harness: string): Harness | undefined } => {
-  const harness = (id: string): Harness => ({
-    id,
-    capabilities: { usage: true },
-    start: async () => {
-      throw new Error("the run path is not used by the line");
-    },
-    startLine: async (input) => {
-      launches.push({ role: input.role, model: input.model.model });
-      let exit: HarnessExit = { kind: "completed", result: "done" };
-      if (input.role === "line_resolver") {
-        writeFileSync(join(input.worktree, "shared.txt"), "from a and b\n");
-      } else if (input.role === "line_examiner") {
-        exit = { kind: "completed", result: '{"verdict":"approved","findings":[]}' };
-      }
-      return { agentId: input.agentId, exit: Promise.resolve(exit) };
-    },
-    cancel: async () => undefined,
-    status: async () => "started",
-  });
-  const held = new Map([
-    ["claude", harness("claude")],
-    ["codex", harness("codex")],
-  ]);
-  return { get: (name) => held.get(name) };
 };
 
 // --- running an owner ---------------------------------------------------------------------
@@ -576,12 +579,12 @@ afterEach(async () => {
 
 /** Runs one owner generation as its machine's runner does, until the runner exits. */
 const ownerFor = async (
-  dispatch: LineDispatch,
-  hooks: Parameters<typeof planeFor>[2] = {},
-  launches: Launch[] = [],
+  run: { readonly runId: string; readonly dispatch: Dispatch },
+  hooks: Parameters<typeof planeFor>[3] = {},
 ) => {
-  const linePlane = planeFor(plane, dispatch, hooks);
-  const machine = lineMachine(plane, origin, dispatch);
+  const { generation } = run.dispatch;
+  const linePlane = planeFor(plane, run, generation, hooks);
+  const machine = lineMachine(plane, origin, run.runId, generation);
   const uploads = join(origin.root, "uploads");
   mkdirSync(uploads, { recursive: true });
   const code = await runRunner({
@@ -599,106 +602,95 @@ const ownerFor = async (
     lineWork: (context) =>
       runLineOwner(context, {
         git: nodeGitRunner,
-        ids: createCountingIdGenerator(5_000 + dispatch.generation * 1_000),
+        ids: createCountingIdGenerator(5_000 + generation * 1_000),
         clock: systemClock,
         paths: { scratch: (checkout) => join(dirname(checkout), "scratch") },
         upload: async ({ url, file }) => {
           const key = new URL(url).pathname.slice(1);
-          const stored = join(uploads, `${plane.bundles.size}-${dispatch.generation}.pack`);
+          const stored = join(uploads, `${plane.bundles.size}-${generation}.pack`);
           copyFileSync(file, stored);
           plane.bundles.set(key, new Uint8Array(readFileSync(stored)));
         },
-        createHarnesses: () => scriptedHarnesses(launches),
         idleSeconds: IDLE_SECONDS,
         pollMs: 500,
       }),
   });
-  return { code, linePlane, machine, launches };
+  return { code, linePlane, machine };
 };
 
 describe("the project line, end to end", () => {
-  it("composes two programs onto the line, repairs a later conflict, publishes it and idles out", async () => {
+  it("composes two programs onto the line, parks a later conflict with its reason, publishes it and idles out", async () => {
     const { commits } = origin;
     // Both programs land and publish their program branch: each range is queued
-    // and one line dispatch is requested.
+    // and one run of the line program is started.
     await plane.land("a", commits.a1, commits.base);
     await plane.land("b", commits.b1, commits.base);
     expect(origin.refOf("refs/heads/program/a")).toBe(commits.a1);
     expect(origin.refOf("refs/heads/program/b")).toBe(commits.b1);
     const queued = await plane.lineRecord();
     expect(queued.queue.map((entry) => entry.upTo).sort()).toEqual([commits.a1, commits.b1].sort());
-    const requested = await plane.lineDispatch();
-    expect(requested.status).toBe("provisioning");
-    expect(plane.provisioned).toEqual([1]);
+    const started = await plane.lineRun();
+    expect(started.dispatch.status).toBe("provisioning");
+    expect(started.dispatch.input.branch).toBe(LINE);
+    expect(plane.provisioned).toEqual([{ runId: started.runId, generation: 1 }]);
     expect(origin.refOf(LINE_REF)).toBe(commits.base);
 
-    // The owner boots for that dispatch. When its first push is published, a
-    // later landing of program a arrives: it conflicts with program b's work.
+    // The owner boots for that run. When its first push is published, a later
+    // landing of program a arrives: it conflicts with program b's work.
     let later: Promise<void> | undefined;
-    const launches: Launch[] = [];
-    const { code, linePlane } = await ownerFor(
-      requested,
-      {
-        afterSettle: async ({ pushed }) => {
-          if (pushed && later === undefined) {
-            expect(origin.refOf(LINE_REF)).not.toBe(commits.base);
-            later = plane.land("a", commits.a2, commits.a1);
-            await later;
-          }
-        },
+    const { code, linePlane } = await ownerFor(started, {
+      afterSettle: async ({ pushed }) => {
+        if (pushed && later === undefined) {
+          expect(origin.refOf(LINE_REF)).not.toBe(commits.base);
+          later = plane.land("a", commits.a2, commits.a1);
+          await later;
+        }
       },
-      launches,
-    );
+    });
     expect(code).toBe(0);
     expect(later).toBeDefined();
 
-    // The line on the git server holds both programs and main, repaired.
+    // The line on the git server holds both programs and main; the conflicting
+    // range was parked, not repaired.
     const head = origin.refOf(LINE_REF);
     expect(head).toBeDefined();
     if (head === undefined) return;
     expect(origin.show(head, "a.txt")).toBe("a");
     expect(origin.show(head, "b.txt")).toBe("b");
-    expect(origin.show(head, "shared.txt")).toBe("from a and b");
-    for (const included of [commits.base, commits.a1, commits.b1, commits.a2]) {
+    expect(origin.show(head, "shared.txt")).toBe("from b");
+    for (const included of [commits.base, commits.a1, commits.b1]) {
       expect(origin.isAncestor(included, head)).toBe(true);
     }
+    expect(origin.isAncestor(commits.a2, head)).toBe(false);
     expect(origin.refOf("refs/heads/main")).toBe(commits.base);
-    // The line moved by two pushes: the first composition and the repaired one.
-    expect(origin.linePushes).toHaveLength(2);
-    expect(origin.linePushes.at(-1)).toBe(head);
+    // The line moved once: the first composition.
+    expect(origin.linePushes).toEqual([head]);
 
-    // The line record: compositions pushed, a resolver's decision, nothing left.
+    // The line record: one composition pushed, the conflicting range parked with
+    // its reason, no agent's or decision's record, nothing left to do.
     const record = await plane.lineRecord();
     expect(record.queue).toEqual([]);
     expect(record.batch).toBeUndefined();
-    expect(record.parked).toEqual([]);
     expect(record.head).toBe(head);
     expect(record.push).toMatchObject({ head, status: "published" });
-    expect(record.compositions).toHaveLength(2);
-    expect(record.compositions.every((composition) => composition.pushed !== undefined)).toBe(true);
-    const repaired = record.compositions.at(-1);
-    expect(repaired?.commit).toBe(head);
-    expect(repaired?.resolver).toBeDefined();
+    expect(record.compositions).toHaveLength(1);
+    expect(record.compositions[0]?.commit).toBe(head);
+    expect(record.compositions[0]?.pushed).toBeDefined();
     expect(record.compositions[0]?.resolver).toBeUndefined();
-    expect(record.decisions).toHaveLength(1);
-    expect(record.decisions?.[0]).toMatchObject({ authority: "line", generation: 1 });
+    expect(record.parked).toHaveLength(1);
+    expect(record.parked[0]?.ranges).toEqual([
+      { program: plane.programs.a.scope.programId, upTo: commits.a2, from: commits.a1 },
+    ]);
+    expect(record.parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
+    expect(record.decisions ?? []).toEqual([]);
 
-    // The agents were announced on the line dispatch, the examiner on another model.
-    const dispatch = await plane.lineDispatch();
-    const roles = (dispatch.agents ?? []).map((agent) => agent.role);
-    expect(roles).toEqual(expect.arrayContaining(["line_resolver", "line_examiner"]));
-    expect(dispatch.agents).toHaveLength(launches.length);
-    const resolver = launches.find((launch) => launch.role === "line_resolver");
-    const examiner = launches.find((launch) => launch.role === "line_examiner");
-    expect(resolver).toBeDefined();
-    expect(examiner).toBeDefined();
-    expect(examiner?.model).not.toBe(resolver?.model);
-
-    // The owner idled out, and the dispatch ended stopped, with no failure.
+    // The owner idled out: the dispatch ended stopped with no failure, and its run with it.
+    const { dispatch, runId } = await plane.lineRun();
     expect(dispatch.status).toBe("stopped");
     expect(dispatch.failure).toBeUndefined();
     expect(dispatch.generation).toBe(1);
-    expect(plane.provisioned).toEqual([1]);
+    expect(plane.provisioned).toEqual([{ runId, generation: 1 }]);
+    expect(await plane.lineRuns()).toEqual([{ runId, status: "succeeded" }]);
     expect(linePlane.settles.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -710,9 +702,9 @@ describe("the project line, end to end", () => {
     await plane.land("a", commits.a1, commits.base);
     const record0 = await plane.lineRecord();
     expect(record0.head).toBeUndefined();
-    const requested = await plane.lineDispatch();
+    const requested = await plane.lineRun();
 
-    const { code } = await ownerFor(requested, {});
+    const { code } = await ownerFor(requested);
     expect(code).toBe(0);
 
     const head = origin.refOf(LINE_REF);
@@ -736,7 +728,7 @@ describe("the project line, end to end", () => {
     const { commits } = origin;
     await plane.land("a", commits.a1, commits.base);
     await plane.land("b", commits.b1, commits.base);
-    const first = await plane.lineDispatch();
+    const first = await plane.lineRun();
 
     // Generation 1 takes the batch and its machine is lost before it settles.
     let lost = false;
@@ -750,22 +742,26 @@ describe("the project line, end to end", () => {
     expect(gen1.code).not.toBe(0);
     expect(gen1.linePlane.settles).toEqual([]);
     const held = (await plane.lineRecord()).batch;
-    expect(held).toMatchObject({ generation: 1 });
+    expect(held).toMatchObject({ generation: 1, runId: first.runId });
     expect((await plane.lineRecord()).queue).toEqual([]);
     expect(origin.linePushes).toEqual([]);
-    expect((await plane.lineDispatch()).status).toBe("running");
+    expect((await plane.lineRun()).dispatch.status).toBe("running");
 
     // Its lease lapses; a replacement generation is admitted.
-    const stale = await plane.lineDispatch();
+    const stale = (await plane.lineRun()).dispatch;
     plane.clock.at += 20 * 60_000;
     expect(leaseLost(stale, plane.clock.now())).toBe(true);
-    await plane.stores.lineDispatches.update(plane.projectId, LINE, (current) =>
-      beginReplacement(current, "lease_lost", new Date(plane.clock.now()).toISOString()),
+    await plane.stores.dispatches.put(
+      beginReplacement(stale, "lease_lost", new Date(plane.clock.now()).toISOString()),
     );
-    await plane.deps.dispatcher?.provisionLine?.({ projectId: plane.projectId, branch: LINE });
-    const replacement = await plane.lineDispatch();
-    expect(replacement.generation).toBe(2);
-    expect(plane.provisioned).toEqual([1, 2]);
+    await plane.deps.dispatcher?.provision({
+      projectId: plane.projectId,
+      programId: lineProgramId(plane.projectId, LINE),
+      runId: first.runId as never,
+    });
+    const replacement = await plane.lineRun();
+    expect(replacement.dispatch.generation).toBe(2);
+    expect(plane.provisioned.map((entry) => entry.generation)).toEqual([1, 2]);
 
     const gen2 = await ownerFor(replacement);
     expect(gen2.code).toBe(0);
@@ -790,6 +786,6 @@ describe("the project line, end to end", () => {
     expect(origin.show(head, "shared.txt")).toBe("from b");
     expect(origin.isAncestor(commits.base, head)).toBe(true);
     expect(record.push).toMatchObject({ head, status: "published", generation: 2 });
-    expect((await plane.lineDispatch()).status).toBe("stopped");
+    expect((await plane.lineRun()).dispatch.status).toBe("stopped");
   });
 });

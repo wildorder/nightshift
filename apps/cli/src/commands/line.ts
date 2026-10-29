@@ -66,7 +66,7 @@ const describeParked = (parked: LineParked, names: ReadonlyMap<string, string>):
 
 /** The whole of `line status` for one view, a line per entry. */
 export const describeLine = (view: LineView): string[] => {
-  const { record, dispatch, usage } = view;
+  const { record, usage } = view;
   const names = new Map<string, string>(view.programs.map((p) => [p.program, p.branch]));
   const lines: string[] = [];
 
@@ -82,11 +82,16 @@ export const describeLine = (view: LineView): string[] => {
     );
   }
 
-  if (dispatch === undefined) {
+  if (
+    view.runId === undefined ||
+    view.dispatchStatus === undefined ||
+    view.generation === undefined ||
+    view.meteredUsd === undefined
+  ) {
     lines.push("line owner: none started");
   } else {
     lines.push(
-      `line owner: ${dispatch.status}, generation ${dispatch.generation}, metered ${usd(dispatch.spend.meteredUsd)}`,
+      `line owner: ${view.dispatchStatus}, generation ${view.generation}, metered ${usd(view.meteredUsd)}`,
     );
   }
 

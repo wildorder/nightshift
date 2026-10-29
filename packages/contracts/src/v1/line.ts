@@ -478,7 +478,13 @@ export type LineHeartbeatResponse = z.infer<typeof LineHeartbeatResponseSchema>;
 /** `GET …/line?branch=`. */
 export const LineViewSchema = z.strictObject({
   record: LineRecordSchema,
-  dispatch: LineDispatchSchema.optional(),
+  /** The line's program, whose runs are the line's owner sessions. */
+  programId: ProgramIdSchema,
+  /** The line program's latest run, with its dispatch's status, generation and metered spend; absent while the line has had none. */
+  runId: RunIdSchema.optional(),
+  dispatchStatus: DispatchStatusSchema.optional(),
+  generation: z.int().min(1).optional(),
+  meteredUsd: z.number().min(0).optional(),
   usage: ProjectSelfStartedUsageSchema.optional(),
   /** The policy the line's agents route under; absent while the org has no config. */
   policy: EffectivePolicySchema.optional(),

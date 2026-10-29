@@ -1,4 +1,4 @@
-import { type LineRecord, MAX_LINE_DECISIONS, type ProgramId } from "@nightshift/contracts";
+import type { LineRecord, ProgramId } from "@nightshift/contracts";
 import { describe, expect, it } from "vitest";
 import {
   createFixtures,
@@ -9,7 +9,6 @@ import {
 } from "../testing/factories.js";
 import { beginReplacement, leaseLost, runnerStopped, transitionDispatch } from "./dispatch.js";
 import {
-  announceLineAgent,
   appendQueueEntry,
   capReached,
   chargeDispatchUsage,
@@ -24,11 +23,9 @@ import {
   lineQueueOwed,
   MAX_LINE_BATCH_ENTRIES,
   meterProjectUsage,
-  newLineDispatch,
   occupiesComputeSlot,
   parkBatch,
   previousMonthOf,
-  recordLineDecision,
   requestPush,
   resolvePush,
   settleBatch,
@@ -446,46 +443,6 @@ describe("charging a dispatch to the project's usage", () => {
   });
 });
 
-describe("a line dispatch", () => {
-  const machine = {
-    tier: "good",
-    instanceType: "c8id.2xlarge",
-    usdPerHour: 0.5,
-    amiVersion: "1.0.0",
-  } as const;
-  const base = {
-    projectId: f.scope.projectId,
-    branch: "nightshift/develop",
-    engineAgentId: f.ids.next("agent"),
-    machine,
-    at: AT,
-  };
-
-  it("starts at generation 1, requested, estimated for one composition hour", () => {
-    const first = newLineDispatch(base);
-    expect(first).toMatchObject({
-      generation: 1,
-      status: "requested",
-      version: 1,
-    });
-    expect(first.spend.estimatedUsd).toBeCloseTo(0.5);
-    expect(first.attempts).toEqual([{ generation: 1, reason: "dispatch", startedAt: AT }]);
-  });
-
-  it("continues the generation across dispatches, never back to 1", () => {
-    const first = newLineDispatch(base);
-    const second = newLineDispatch({ ...base, previous: first });
-    const third = newLineDispatch({ ...base, previous: second });
-    expect([first.generation, second.generation, third.generation]).toEqual([1, 2, 3]);
-    expect(
-      newLineDispatch({
-        ...base,
-        previous: makeLineDispatch(f, { generation: 7 }),
-      }).generation,
-    ).toBe(8);
-  });
-});
-
 describe("lineQueueOwed", () => {
   const dispatchWith = (publication: Record<string, unknown>) =>
     makeDispatch(f, { publication: { intents: [], ...publication } });
@@ -730,74 +687,8 @@ describe("settleBatch", () => {
   });
 });
 
-describe("recordLineDecision and announceLineAgent", () => {
-  const decisionBody = (overrides: Record<string, unknown> = {}) =>
-    ({
-      generation: 1,
-      authority: "line",
-      unit: { kind: "main", commit: "a".repeat(40) },
-      base: "b".repeat(40),
-      commit: "c".repeat(40),
-      context: "c",
-      alternatives: [],
-      choice: "x",
-      rationale: "r",
-      reversibility: "reversible",
-      resolverModel: "m",
-      examinerModel: "n",
-      attempts: 1,
-      verificationId: "ver_00000000000000000000000001",
-      decidedAt: AT,
-      ...overrides,
-    }) as never;
-
-  it("exports the idle wait", () => {
+describe("the line's idle wait", () => {
+  it("is exported", () => {
     expect(LINE_IDLE_SECONDS).toBe(600);
-  });
-
-  it("records a decision once per (commit, unit), keeps the newest, and refuses a stale generation", () => {
-    const record = makeLineRecord(createFixtures());
-    const first = recordLineDecision(record, decisionBody(), "dec_1", 1, AT);
-    if (!first.ok) throw new Error("refused");
-    expect(first.record.decisions).toHaveLength(1);
-    const again = recordLineDecision(first.record, decisionBody(), "dec_2", 1, AT);
-    expect(again.ok && again.record).toBe(first.record);
-    let held = first.record;
-    for (let n = 0; n < MAX_LINE_DECISIONS + 5; n += 1) {
-      const next = recordLineDecision(
-        held,
-        decisionBody({ commit: n.toString(16).padStart(40, "0") }),
-        `dec_n${n}`,
-        1,
-        AT,
-      );
-      if (!next.ok) throw new Error("refused");
-      held = next.record;
-    }
-    expect(held.decisions).toHaveLength(MAX_LINE_DECISIONS);
-    expect(held.decisions?.at(-1)?.decisionId).toBe(`dec_n${MAX_LINE_DECISIONS + 4}`);
-    expect(recordLineDecision(record, decisionBody(), "dec_x", 2, AT)).toMatchObject({
-      ok: false,
-      reason: "stale_generation",
-    });
-  });
-
-  it("announces an agent once per agentId and refuses a stale generation", () => {
-    const dispatch = makeLineDispatch(createFixtures());
-    const agent = {
-      agentId: "agent_01M5XW8F0SCAAWKGW76RXXZQ98",
-      generation: dispatch.generation,
-      role: "line_examiner",
-      model: { harness: "h", provider: "p", model: "m" },
-      announcedAt: AT,
-    } as never;
-    const first = announceLineAgent(dispatch, agent, AT);
-    if (!first.ok) throw new Error("refused");
-    expect(first.dispatch.agents).toHaveLength(1);
-    const again = announceLineAgent(first.dispatch, agent, AT);
-    expect(again.ok && again.dispatch).toBe(first.dispatch);
-    expect(
-      announceLineAgent(dispatch, { ...(agent as object), generation: 99 } as never, AT),
-    ).toMatchObject({ ok: false, reason: "stale_generation" });
   });
 });

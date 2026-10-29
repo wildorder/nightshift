@@ -49,14 +49,8 @@ import { getGateHealth, putGateHealth } from "./operations/gate-health.js";
 import { deleteOrgGithub, getGithubApp, getOrgGithub, putOrgGithub } from "./operations/github.js";
 import { getJobContract, listJobContracts, putJobContract } from "./operations/jobs.js";
 import {
-  cancelLineDispatch,
   createLineBundleUploadUrl,
   getLine,
-  lineHeartbeat,
-  postLineAgent,
-  postLineComposition,
-  postLineDecision,
-  postLineParked,
   postLinePush,
   postLineSettle,
   takeLineBatch,
@@ -151,34 +145,6 @@ export const ROUTES: readonly Route[] = [
   },
   {
     method: "POST",
-    path: `${LINE}/compositions`,
-    operation: "line.compose",
-    query: LINE_QUERY,
-    handler: postLineComposition,
-  },
-  {
-    method: "POST",
-    path: `${LINE}/decisions`,
-    operation: "line.decide",
-    query: LINE_QUERY,
-    handler: postLineDecision,
-  },
-  {
-    method: "POST",
-    path: `${LINE}/agents`,
-    operation: "line.announce",
-    query: LINE_QUERY,
-    handler: postLineAgent,
-  },
-  {
-    method: "POST",
-    path: `${LINE}/parked`,
-    operation: "line.park",
-    query: LINE_QUERY,
-    handler: postLineParked,
-  },
-  {
-    method: "POST",
     path: `${LINE}/settle`,
     operation: "line.settle",
     query: LINE_QUERY,
@@ -197,20 +163,6 @@ export const ROUTES: readonly Route[] = [
     operation: "line.createBundleUploadUrl",
     query: LINE_QUERY,
     handler: createLineBundleUploadUrl,
-  },
-  {
-    method: "POST",
-    path: `${LINE}/heartbeat`,
-    operation: "line.heartbeat",
-    query: LINE_QUERY,
-    handler: lineHeartbeat,
-  },
-  {
-    method: "POST",
-    path: `${LINE}/dispatch/cancel`,
-    operation: "line.cancel",
-    query: LINE_QUERY,
-    handler: cancelLineDispatch,
   },
 
   // An organisation's routing and examination policy (P8, D-P8-02).
@@ -739,7 +691,6 @@ export const handleRequest = async (deps: ApiDeps, request: ApiRequest): Promise
       memberships: deps.stores.memberships,
       nodes: deps.stores.executionNodes,
       dispatches: deps.stores.dispatches,
-      lineDispatches: deps.stores.lineDispatches,
       programContracts: deps.stores.programContracts,
       runs: deps.stores.runs,
       projectOrgs:

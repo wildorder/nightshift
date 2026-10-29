@@ -30,7 +30,6 @@ import {
   type ExecutionNodeStore,
   isLineProgram,
   isRunTerminal,
-  type LineDispatchStore,
   type MembershipStore,
   type NodeRelation,
   type Operation,
@@ -174,8 +173,6 @@ export interface EnforceOptions {
    * current, and `authorize` compares the two.
    */
   readonly dispatches: Pick<DispatchStore, "get">;
-  /** The project line's dispatch, read to hold a line owner's write to its current generation. */
-  readonly lineDispatches: Pick<LineDispatchStore, "get">;
   /** The caller's program contract, read to place an engine's line request on its line branch. */
   readonly programContracts: Pick<ProgramContractStore, "get">;
   /** The caller's run, read to learn whether it is still live (the line's current owner). */
@@ -254,23 +251,6 @@ export const enforce = async (options: EnforceOptions): Promise<Principal> => {
     ...targetFrom(params, options.body),
     ...(requested === undefined ? {} : { requestedNodeStatus: requested }),
   };
-
-  // The line owner's write is held to the line dispatch's current generation,
-  // a stored fact, read only for a request inside its own project and branch.
-  if (principal.kind === "line") {
-    let placed: AuthorizationTarget = target;
-    if (
-      target.projectId === principal.projectId &&
-      target.branch === principal.branch &&
-      !READ_OPERATIONS.has(operation)
-    ) {
-      const dispatch = await options.lineDispatches.get(principal.projectId, principal.branch);
-      if (dispatch !== undefined) placed = { ...target, currentGeneration: dispatch.generation };
-    }
-    const decision = authorize(principal, operation, placed);
-    if (!decision.allowed) throw new HttpError(403, decision.reason, decision.detail);
-    return principal;
-  }
 
   if (!isUserToken(principal)) {
     // Only an orchestrator's table has a reach that depends on the tree, and

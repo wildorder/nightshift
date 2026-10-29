@@ -41,7 +41,7 @@ export {
   workerLaunchEnv,
 } from "./role.js";
 export { examinationServices, routeJob } from "./routing.js";
-export { LINE_TAGS } from "./runner/bootstrap.js";
+export { LINE_TAG } from "./runner/bootstrap.js";
 export {
   auditOnMachine,
   auditThenRoot,

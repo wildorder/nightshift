@@ -38,15 +38,12 @@ import type {
   ExecutionNode,
   ExecutionRole,
   ExecutionTokenClaims,
-  LineDispatch,
-  LineTokenClaims,
   ProgramContract,
   Run,
 } from "@nightshift/contracts";
 import {
   EXECUTION_TOKEN_AUDIENCE,
   ExecutionTokenClaimsSchema,
-  LineTokenClaimsSchema,
   MAX_EXECUTION_TOKEN_SECONDS,
 } from "@nightshift/contracts";
 import { ENGINE_TOKEN_SECONDS } from "@nightshift/core";
@@ -217,7 +214,7 @@ export const mintExecutionToken = async (
   return signClaims(signer, claims);
 };
 
-const signClaims = async <C extends ExecutionTokenClaims | LineTokenClaims>(
+const signClaims = async <C extends ExecutionTokenClaims>(
   signer: ExecutionTokenSigner,
   claims: C,
 ): Promise<{ readonly token: string; readonly claims: C; readonly expiresAt: string }> => {
@@ -282,46 +279,5 @@ export const mintEngineToken = async (
     iat: issuedAt,
     exp: issuedAt + lifetime,
   } satisfies ExecutionTokenClaims);
-  return signClaims(signer, claims);
-};
-
-export interface MintLineTokenInput {
-  readonly dispatch: LineDispatch;
-  readonly issuer: string;
-  readonly now: number;
-}
-
-export interface MintedLineToken {
-  readonly token: string;
-  readonly claims: LineTokenClaims;
-  readonly expiresAt: string;
-}
-
-/**
- * The line owner's token (Pipkin M1b): a `line` principal for the project and
- * branch, under the dispatch's engine identity and bound to its generation.
- * Same signer and audience as the engine's, and the same life: an hour, renewed
- * by the heartbeat. The line has no run, so no wall clock shortens it.
- */
-export const mintLineToken = async (
-  signer: ExecutionTokenSigner,
-  input: MintLineTokenInput,
-): Promise<MintedLineToken> => {
-  const { dispatch, issuer, now } = input;
-  const issuedAt = Math.floor(now / 1000);
-  const claims = LineTokenClaimsSchema.parse({
-    iss: issuer,
-    sub: dispatch.engineAgentId,
-    aud: EXECUTION_TOKEN_AUDIENCE,
-    nightshift: {
-      kind: "line",
-      projectId: dispatch.projectId,
-      branch: dispatch.branch,
-      agentId: dispatch.engineAgentId,
-      generation: dispatch.generation,
-    },
-    iat: issuedAt,
-    exp: issuedAt + ENGINE_TOKEN_SECONDS,
-  } satisfies LineTokenClaims);
   return signClaims(signer, claims);
 };

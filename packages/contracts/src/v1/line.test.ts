@@ -14,7 +14,6 @@ import {
   LineViewSchema,
   TakeLineBatchBodySchema,
 } from "./line.js";
-import { LinePrincipalSchema, LineTokenClaimsSchema, TokenClaimsSchema } from "./principal.js";
 import { ProgramContractSchema } from "./program-contract.js";
 
 const PROJECT = "proj_01J0000000000000000000000A";
@@ -241,7 +240,19 @@ describe("the line's request bodies and view", () => {
     expect(
       LineViewSchema.safeParse({
         record,
+        programId: "prog_01J0000000000000000000000B",
         programs: [{ program: PROGRAM, branch: "program/x" }],
+      }).success,
+    ).toBe(true);
+    expect(
+      LineViewSchema.safeParse({
+        record,
+        programId: "prog_01J0000000000000000000000B",
+        runId: "run_01J0000000000000000000000A",
+        dispatchStatus: "running",
+        generation: 2,
+        meteredUsd: 0.5,
+        programs: [],
       }).success,
     ).toBe(true);
   });
@@ -284,33 +295,5 @@ describe("the line dispatch", () => {
         failure: { code: "input_refused", message: "m" },
       }).success,
     ).toBe(false);
-  });
-});
-
-describe("the line principal and its token", () => {
-  const principal = {
-    kind: "line",
-    projectId: PROJECT,
-    branch: "nightshift/develop",
-    agentId: AGENT,
-    generation: 2,
-  };
-
-  it("is a principal with a generation and no run", () => {
-    expect(LinePrincipalSchema.safeParse(principal).success).toBe(true);
-    expect(LinePrincipalSchema.safeParse({ ...principal, runId: "x" }).success).toBe(false);
-  });
-
-  it("is an alternative in the token claims", () => {
-    const claims = {
-      iss: "https://api.example",
-      sub: AGENT,
-      aud: "nightshift-api",
-      nightshift: principal,
-      iat: 1,
-      exp: 2,
-    };
-    expect(LineTokenClaimsSchema.safeParse(claims).success).toBe(true);
-    expect(TokenClaimsSchema.safeParse(claims).success).toBe(true);
   });
 });

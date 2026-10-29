@@ -13,11 +13,8 @@ import type {
   CommitSha,
   Dispatch,
   DispatchStatus,
-  LineAgent,
   LineBatch,
   LineCompositionBody,
-  LineDecisionBody,
-  LineDispatch,
   LineParkBody,
   LinePushBody,
   LinePushStatus,
@@ -30,14 +27,7 @@ import type {
   ProjectSelfStartedUsage,
   RunId,
 } from "@nightshift/contracts";
-import {
-  type AgentId,
-  type ComputeTier,
-  MAX_LINE_AGENTS,
-  MAX_LINE_COMPOSITIONS,
-  MAX_LINE_DECISIONS,
-  MAX_LINE_PARKED,
-} from "@nightshift/contracts";
+import { MAX_LINE_COMPOSITIONS, MAX_LINE_PARKED } from "@nightshift/contracts";
 
 /** What the plane's own starts may spend on one project's line per month, unless the config says. */
 export const DEFAULT_LINE_MONTHLY_USD = 25;
@@ -451,85 +441,6 @@ export const resolvePush = (
   };
 };
 
-/**
- * Records a resolver's decision on the line record. The same (commit, unit)
- * again is the same decision and is stored once; a generation other than the
- * current one is refused.
- */
-export const recordLineDecision = (
-  record: LineRecord,
-  body: LineDecisionBody,
-  decisionId: string,
-  generation: number,
-  at: string,
-): LineChange => {
-  if (body.generation !== generation) {
-    return refuse({
-      reason: "stale_generation",
-      detail: `this decision is from generation ${body.generation}; the line's dispatch is at ${generation}`,
-    });
-  }
-  const decisions = record.decisions ?? [];
-  const key = unitKey(body.unit);
-  if (decisions.some((held) => held.commit === body.commit && unitKey(held.unit) === key)) {
-    return { ok: true, record };
-  }
-  const { generation: _generation, ...decision } = body;
-  return {
-    ok: true,
-    record: {
-      ...record,
-      decisions: newest(
-        [...decisions, { ...decision, decisionId, generation }],
-        MAX_LINE_DECISIONS,
-      ),
-      updatedAt: at,
-    },
-  };
-};
-
-const unitKey = (unit: LineDecisionBody["unit"]): string =>
-  unit.kind === "main"
-    ? `main:${unit.commit}`
-    : `range:${unit.range.program}:${unit.range.from ?? ""}:${unit.range.upTo}`;
-
-/** A line dispatch with one more announced agent, or a refusal as a value. */
-export type LineAgentChange =
-  | { readonly ok: true; readonly dispatch: LineDispatch }
-  | {
-      readonly ok: false;
-      readonly reason: "stale_generation";
-      readonly detail: string;
-    };
-
-/**
- * Appends an announced agent to the dispatch. Idempotent per `agentId`; refused
- * when `agent.generation` is not the dispatch's current generation.
- */
-export const announceLineAgent = (
-  dispatch: LineDispatch,
-  agent: LineAgent,
-  at: string,
-): LineAgentChange => {
-  if (agent.generation !== dispatch.generation) {
-    return {
-      ok: false,
-      reason: "stale_generation",
-      detail: `this announcement is from generation ${agent.generation}; the line's dispatch is at ${dispatch.generation}`,
-    };
-  }
-  const agents = dispatch.agents ?? [];
-  if (agents.some((held) => held.agentId === agent.agentId)) return { ok: true, dispatch };
-  return {
-    ok: true,
-    dispatch: {
-      ...dispatch,
-      agents: newest([...agents, agent], MAX_LINE_AGENTS),
-      updatedAt: at,
-    },
-  };
-};
-
 /** Whether the line has anything left for an owner to do: a queue, a batch, or a push to resolve. */
 export const lineHasWork = (record: LineRecord): boolean =>
   record.queue.length > 0 || record.batch !== undefined || record.push?.status === "pending";
@@ -677,55 +588,6 @@ export const capReached = (
   month: CalendarMonth,
   capUsd: number,
 ): boolean => usage !== undefined && usage.month === month && usage.meteredUsd >= capUsd;
-
-/** The machine a line owner is asked for, until provisioning (J5) settles it. */
-export interface LineMachineSpec {
-  readonly tier: ComputeTier;
-  readonly instanceType: string;
-  readonly usdPerHour: number;
-  readonly amiVersion: string;
-  readonly workspace?: LineDispatch["workspace"];
-}
-
-/**
- * A requested dispatch of the line. The generation continues from `previous`
- * (plus one, never back to 1), so an owner of an older dispatch stays fenced.
- */
-export const newLineDispatch = (input: {
-  readonly projectId: ProjectId;
-  readonly branch: string;
-  readonly previous?: Pick<LineDispatch, "generation"> | undefined;
-  readonly engineAgentId: AgentId;
-  readonly machine: LineMachineSpec;
-  readonly at: string;
-}): LineDispatch => {
-  const generation = (input.previous?.generation ?? 0) + 1;
-  const { machine } = input;
-  return {
-    schemaVersion: 1,
-    projectId: input.projectId,
-    branch: input.branch,
-    version: 1,
-    status: "requested",
-    tier: machine.tier,
-    instanceType: machine.instanceType,
-    usdPerHour: machine.usdPerHour,
-    ...(machine.workspace === undefined ? {} : { workspace: machine.workspace }),
-    amiVersion: machine.amiVersion,
-    generation,
-    engineAgentId: input.engineAgentId,
-    attempts: [{ generation, reason: "dispatch", startedAt: input.at }],
-    spend: {
-      estimatedUsd: (LINE_COMPOSITION_SECONDS / 3600) * machine.usdPerHour,
-      ceilingSeconds: LINE_COMPOSITION_SECONDS,
-      meteredUsd: 0,
-      meteredSeconds: 0,
-    },
-    cleanup: { volumeDeleted: false, failures: [] },
-    requestedAt: input.at,
-    updatedAt: input.at,
-  };
-};
 
 const SLOT_STATUSES: readonly DispatchStatus[] = ["provisioning", "ready", "running", "stopping"];
 

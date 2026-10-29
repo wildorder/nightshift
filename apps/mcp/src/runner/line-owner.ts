@@ -2,13 +2,13 @@
  * The line owner on its machine (Pipkin M1b, S-04): what runs between `ready`
  * and the stop on a machine tagged as a line's.
  *
- * It reports `running`, waits for the GitHub read token and the provider
- * credentials the heartbeat brings, keeps a mirror and a checkout of the line's
+ * It reports `running`, waits for the GitHub read token the heartbeat brings, keeps a mirror and a checkout of the line's
  * repository on the workspace, and prepares the project's environment as a run
  * does. Then it builds S-03's ports over the plane and the checkout and loops:
  * wait out a push left pending (an earlier generation's), take the whole queue
  * as one batch, fetch every head it names, compose and publish it
- * (`drainLine`), and compose again when a push was rejected. When the queue has
+ * (`drainLine`), and compose again when a push was rejected. A range that
+ * conflicts or is red is parked with its reason: the owner launches no agent. When the queue has
  * been empty with no push pending for `LINE_IDLE_SECONDS` it ends, and the
  * runner's last heartbeat is `stopped` with no failure; the plane's own stop and
  * cleanup take the machine away.
@@ -19,15 +19,11 @@
 import { writeFile } from "node:fs/promises";
 import {
   type CommitSha,
-  DEFAULT_EXAMINATION_POLICY,
-  DEFAULT_ROUTING_POLICY,
-  type EffectivePolicy,
   type LineRecord,
   type LineView,
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
   NightshiftConfigSchema,
-  type Provider,
 } from "@nightshift/contracts";
 import { type Clock, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
 import {
@@ -41,18 +37,14 @@ import {
   type LineComposerPorts,
   type LinePublisherPort,
   type LineQueuePort,
-  type LineResolverAgentPort,
-  lineWorktreeRoot,
   packCommits,
-  resolveLineFailure,
+  parkLineFailure,
   type ScratchPaths,
   tryGit,
 } from "@nightshift/execution";
-import { commandAs, type Harness, type RunAs } from "@nightshift/harness";
+import { commandAs, type RunAs } from "@nightshift/harness";
 import type { StepInvocation } from "@nightshift/verification";
-import { createLineAgents } from "./line-agents.js";
 import { awaitGithubToken, type LineRunnerContext, type RunnerWorkEnd } from "./main.js";
-import { awaitProviderCredentials } from "./root.js";
 import { gitWithToken, prepareProject } from "./workspace.js";
 
 /** How often the owner reads the line while it waits for work or for a push to resolve. */
@@ -74,17 +66,6 @@ export interface LineOwnerOptions {
     readonly contentType: string;
     readonly file: string;
   }) => Promise<void>;
-  /** The harnesses by `RouteTarget.harness`, given the environment the agents run in. */
-  readonly createHarnesses: (env: Readonly<Record<string, string>>) => {
-    get(harness: string): Harness | undefined;
-  };
-  /**
-   * Places the provider credentials where their harnesses read them and
-   * answers the variables naming them (`placeProviderCredentials`).
-   */
-  readonly placeCredentials?: (
-    credentials: Partial<Record<Provider, string>>,
-  ) => Promise<Readonly<Record<string, string>>>;
   /**
    * The project user's execution context, as the run root's workers get it,
    * given the project environment it runs in (known once the checkout is prepared).
@@ -106,12 +87,6 @@ export interface LineOwnerOptions {
 class LineStopped extends Error {
   override readonly name = "LineStopped";
 }
-
-const DEFAULT_POLICY: EffectivePolicy = {
-  routingPolicy: DEFAULT_ROUTING_POLICY,
-  examinationPolicy: DEFAULT_EXAMINATION_POLICY,
-  orgConfigVersion: 0,
-};
 
 /** `https://github.com/o/r` is cloned as `…/r.git`; anything else (a path in a test) as it is. */
 const cloneUrlOf = (repositoryUrl: string): string =>
@@ -161,16 +136,12 @@ const ownLine = async (
   // The plane hands the org's provider keys to a running engine and to
   // nothing else, on the next beat; the read token comes on the beats before.
   heartbeat.report("running");
-  const providers = await awaitProviderCredentials(heartbeat, machine, credentialTimeoutMs);
-  ensureRunning();
   await awaitGithubToken(heartbeat, machine, credentialTimeoutMs);
   const githubToken = (): string => {
     const token = heartbeat.last?.credentials?.github;
     if (token === undefined) throw new Error("the plane sent no GitHub credential");
     return token;
   };
-  const providerEnv = await (options.placeCredentials?.(providers) ??
-    Promise.resolve<Readonly<Record<string, string>>>({}));
 
   // The repository: a mirror of GitHub and a checkout of it, on the workspace.
   const view0 = await plane.line();
@@ -335,22 +306,13 @@ const ownLine = async (
     Object.assign(stepEnv, secretsOf(config), prepared.environment);
   };
 
-  const agentEnv: Record<string, string> = {};
-  for (const name of ["PATH", "HOME", "LANG", "TERM", "USER", "LOGNAME"]) {
-    const value = options.parentEnv?.[name];
-    if (value !== undefined && value !== "") agentEnv[name] = value;
-  }
-  Object.assign(agentEnv, prepared.environment, providerEnv);
-  const harnesses = options.createHarnesses(agentEnv);
   const runAs = options.runAs?.(prepared.environment);
 
   // --- S-03's ports -------------------------------------------------------------------
 
-  let lastView = view0;
   const heads = async (): Promise<{ lineHead: string; mainHead: string }> => {
     ensureRunning();
-    lastView = await plane.line();
-    const fetched = await fetchHeads(lastView);
+    const fetched = await fetchHeads(await plane.line());
     await refreshGates(fetched.lineHead);
     return fetched;
   };
@@ -439,62 +401,10 @@ const ownLine = async (
         }),
   });
 
-  // An agent runs as the project user in a worktree the engine made: the user
-  // is given the whole path, its temporary parent included, for the launch,
-  // and the engine takes it back before it merges, verifies or closes it.
-  // Built per use: the policy is the line's as last read.
-  const rawAgents = (): LineResolverAgentPort =>
-    createLineAgents({
-      harnesses,
-      policy: lastView.policy ?? DEFAULT_POLICY,
-      ids: options.ids,
-      env: agentEnv,
-      ...(runAs === undefined ? {} : { runAs }),
-      announce: async ({ agentId, role, target }) => {
-        await plane.announce({
-          agentId,
-          role,
-          model: target,
-          announcedAt: new Date(options.clock.now()).toISOString(),
-        });
-      },
-    });
-  const handedToProject = async <T>(
-    worktree: { readonly path: string },
-    launch: () => Promise<T>,
-  ): Promise<T> => {
-    if (runAs === undefined) return launch();
-    const root = lineWorktreeRoot(worktree.path);
-    try {
-      await runAs.grant(root);
-      return await launch();
-    } finally {
-      await options.reclaim?.(root);
-    }
-  };
-  const agents: LineResolverAgentPort = {
-    resolve: (input) => handedToProject(input.worktree, () => rawAgents().resolve(input)),
-    examine: (input) => handedToProject(input.worktree, () => rawAgents().examine(input)),
-  };
-
-  const resolve: LineComposerPorts["resolve"] = (failure) =>
-    resolveLineFailure(
-      {
-        checkout,
-        verifier,
-        agents,
-        decisions: {
-          record: async (decision) => {
-            await plane.decide(decision);
-          },
-        },
-        clock: options.clock,
-        ...(options.limits?.attempts === undefined
-          ? {}
-          : { limits: { attempts: options.limits.attempts } }),
-      },
-      failure,
-    );
+  // The line owner launches no agent: an agent without a recorded identity is
+  // not allowed to run (A-04), and a line has none to record. A range that
+  // conflicts or is red is parked with its reason.
+  const resolve: LineComposerPorts["resolve"] = async (failure) => parkLineFailure(failure);
 
   const ports: LineComposerPorts = {
     queue,

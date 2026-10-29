@@ -133,12 +133,15 @@ export const createRunnerPlane: PlaneFactory = (endpoint, tokens) => {
 
 /**
  * The line owner's view of the control plane (Pipkin M1b, S-04), over the line
- * routes. Every call carries the dispatch generation the plane fences on.
+ * routes and its run's dispatch heartbeat. Every call carries the dispatch
+ * generation the plane fences on.
  */
 export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target) => {
   const transport = createFetchTransport({ endpoint, tokens });
-  const { projectId, branch, generation } = target;
+  const { projectId, branch, scope, generation } = target;
+  const dispatches = createHttpStores({ transport }).dispatches;
   return {
+    dispatch: () => dispatches.get(scope),
     line: async () =>
       LineViewSchema.parse(
         await send(transport, { method: "GET", path: routes.line(projectId, branch) }),
@@ -162,7 +165,7 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
       HeartbeatResponseSchema.parse(
         await send(transport, {
           method: "POST",
-          path: routes.lineHeartbeat(projectId, branch),
+          path: routes.dispatchHeartbeat(scope),
           body,
         }),
       ),
@@ -173,20 +176,6 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
         body: { generation, id },
       })) as { uploadUrl: string; key: string; contentType: string };
       return { uploadUrl: signed.uploadUrl, key: signed.key, contentType: signed.contentType };
-    },
-    decide: async (decision) => {
-      await send(transport, {
-        method: "POST",
-        path: routes.lineDecisions(projectId, branch),
-        body: { ...decision, generation },
-      });
-    },
-    announce: async (agent) => {
-      await send(transport, {
-        method: "POST",
-        path: routes.lineAgents(projectId, branch),
-        body: { generation, agent },
-      });
     },
   };
 };

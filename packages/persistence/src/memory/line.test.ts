@@ -1,16 +1,12 @@
-import type { LineDispatch, LineRecord, OrgComputeUsage, ProgramId } from "@nightshift/contracts";
+import type { LineDispatch, LineRecord, ProgramId } from "@nightshift/contracts";
 import {
   appendQueueEntry,
-  createCountingIdGenerator,
   createFixtures,
-  ensureLineDispatch,
-  type LineMachineSpec,
   lineAdmission,
   makeLineDispatch,
   makeLineRecord,
   makeProject,
   meterProjectUsage,
-  newLineDispatch,
 } from "@nightshift/core";
 import { describe, expect, it } from "vitest";
 import { createInMemoryStores } from "./index.js";
@@ -221,14 +217,7 @@ describe("projectSelfStartedUsage", () => {
   });
 });
 
-describe("ensureLineDispatch", () => {
-  const machine: LineMachineSpec = {
-    tier: "good",
-    instanceType: "c8id.2xlarge",
-    usdPerHour: 0.5,
-    amiVersion: "1.0.0",
-  };
-
+describe("lineAdmission", () => {
   const setup = async () => {
     const { f, stores, projectId } = world();
     const project = makeProject(f);
@@ -237,97 +226,8 @@ describe("ensureLineDispatch", () => {
     await stores.lines.update(projectId, OTHER_BRANCH, () =>
       makeLineRecord(f, { projectId, branch: OTHER_BRANCH }),
     );
-    const started: string[] = [];
-    const deps = {
-      stores,
-      clock,
-      ids: createCountingIdGenerator(),
-      startMachine: async (target: { projectId: string; branch: string }) => {
-        started.push(target.branch);
-      },
-    };
-    return { f, stores, project, projectId, deps, started };
+    return { f, stores, project, projectId };
   };
-
-  it("starts the machine once, and says live to a second ask", async () => {
-    const { deps, started, projectId, stores } = await setup();
-    expect(
-      await ensureLineDispatch(deps, { projectId, branch: BRANCH, capUsd: 25, machine }),
-    ).toEqual({ kind: "started" });
-    expect(
-      await ensureLineDispatch(deps, { projectId, branch: BRANCH, capUsd: 25, machine }),
-    ).toEqual({ kind: "live" });
-    expect(started).toEqual([BRANCH]);
-    const dispatch = await stores.lineDispatches.get(projectId, BRANCH);
-    expect(dispatch).toMatchObject({
-      generation: 1,
-      status: "requested",
-      instanceType: "c8id.2xlarge",
-    });
-  });
-
-  it("refuses once the PROJECT ledger is at its cap, even for another branch, and records waiting", async () => {
-    const { deps, started, projectId, stores } = await setup();
-    await stores.projectSelfStartedUsage.update(projectId, MONTH, (current) =>
-      meterProjectUsage(
-        current,
-        { projectId, month: MONTH, deltaUsd: 25, capUsd: 25 },
-        "2026-10-27T09:00:00.000Z",
-      ),
-    );
-    for (const branch of [BRANCH, OTHER_BRANCH]) {
-      expect(await ensureLineDispatch(deps, { projectId, branch, capUsd: 25, machine })).toEqual({
-        kind: "waiting",
-        reason: "monthly_cap",
-      });
-      expect(await stores.lineDispatches.get(projectId, branch)).toBeUndefined();
-      const line = await stores.lines.get(projectId, branch);
-      expect(line?.waiting).toMatchObject({
-        reason: "monthly_cap",
-        since: "2026-10-27T10:00:00.000Z",
-      });
-    }
-    expect(started).toEqual([]);
-  });
-
-  it("refuses at the org's monthly ceiling, and starts again once there is room, clearing waiting", async () => {
-    const { deps, started, projectId, stores, project } = await setup();
-    const ledger: OrgComputeUsage = {
-      schemaVersion: 1,
-      orgId: project.orgId,
-      month: MONTH,
-      meteredUsd: 1_000_000,
-      updatedAt: "2026-10-27T09:00:00.000Z",
-    };
-    await stores.computeLedger.put(ledger);
-    expect(
-      await ensureLineDispatch(deps, { projectId, branch: BRANCH, capUsd: 25, machine }),
-    ).toEqual({
-      kind: "waiting",
-      reason: "org_month_ceiling",
-    });
-    expect((await stores.lines.get(projectId, BRANCH))?.waiting?.reason).toBe("org_month_ceiling");
-    await stores.computeLedger.put({ ...ledger, meteredUsd: 0 });
-    expect(
-      await ensureLineDispatch(deps, { projectId, branch: BRANCH, capUsd: 25, machine }),
-    ).toEqual({ kind: "started" });
-    expect((await stores.lines.get(projectId, BRANCH))?.waiting).toBeUndefined();
-    expect(started).toEqual([BRANCH]);
-  });
-
-  it("starts the next dispatch at the next generation once the last has settled", async () => {
-    const { deps, projectId, stores } = await setup();
-    await ensureLineDispatch(deps, { projectId, branch: BRANCH, capUsd: 25, machine });
-    await stores.lineDispatches.update(projectId, BRANCH, (current) => ({
-      ...current,
-      status: "stopped",
-      cleanup: { ...current.cleanup, settledAt: "2026-10-27T10:30:00.000Z" },
-    }));
-    expect(
-      await ensureLineDispatch(deps, { projectId, branch: BRANCH, capUsd: 25, machine }),
-    ).toEqual({ kind: "started" });
-    expect((await stores.lineDispatches.get(projectId, BRANCH))?.generation).toBe(2);
-  });
 
   it("reads the ledgers by get alone", async () => {
     const { stores, projectId, project } = await setup();
@@ -357,19 +257,5 @@ describe("ensureLineDispatch", () => {
       ),
     ).toEqual({ ok: true });
     expect(calls.sort()).toEqual(["computeLedger.get", "orgConfigs.get", "usage.get"]);
-  });
-
-  it("builds a dispatch that parses, with the generation continuing from the previous", () => {
-    const f = createFixtures();
-    const previous = makeLineDispatch(f, { generation: 4 });
-    const next = newLineDispatch({
-      projectId: f.scope.projectId,
-      branch: BRANCH,
-      previous,
-      engineAgentId: f.ids.next("agent"),
-      machine,
-      at: "2026-10-27T10:00:00.000Z",
-    });
-    expect(next.generation).toBe(5);
   });
 });

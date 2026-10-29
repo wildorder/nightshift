@@ -17,6 +17,7 @@ import {
 import {
   createFixedClock,
   createFixtures,
+  lineProgramId,
   lineQueueOwed,
   makeDispatch,
   makeLineRecord,
@@ -33,6 +34,7 @@ import { createInMemoryStores, type InMemoryStores } from "@nightshift/persisten
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type GitHttpServer, startGitHttpServer } from "../github/git-http-server.js";
 import { ZERO_OID } from "../github/smart-http.js";
+import type { ApiDeps } from "../http.js";
 import {
   type BundleStore,
   type GitRemote,
@@ -107,7 +109,9 @@ interface World {
   readonly f: ReturnType<typeof createFixtures>;
   readonly bundles: Map<string, Uint8Array>;
   readonly deps: Parameters<typeof publishAll>[0];
-  readonly started: { projectId: string; branch: string }[];
+  /** The runs the line's plane was asked to provision. */
+  readonly started: { projectId: string; programId: string; runId: string }[];
+  readonly plane: ApiDeps;
   readonly dispatch: () => Promise<Dispatch>;
   readonly intend: (head: string, predecessor: string, pack: Uint8Array) => Promise<void>;
 }
@@ -157,7 +161,20 @@ const world = async (options: { line?: boolean; remote?: GitRemote } = {}): Prom
       return found;
     },
   };
-  const started: { projectId: string; branch: string }[] = [];
+  const started: { projectId: string; programId: string; runId: string }[] = [];
+  const plane: ApiDeps = {
+    stores,
+    clock: createFixedClock(Date.parse(NOW)),
+    github: {
+      branchHead: async (_id: number, _repository: string, branch: string) =>
+        branch === "main" || branch === PROGRAM_REF.slice("refs/heads/".length) ? base : undefined,
+    } as never,
+    dispatcher: {
+      provision: async (scope: { projectId: string; programId: string; runId: string }) => {
+        started.push(scope);
+      },
+    } as never,
+  };
   const deps: Parameters<typeof publishAll>[0] = {
     stores,
     clock: createFixedClock(Date.parse(NOW)),
@@ -165,9 +182,7 @@ const world = async (options: { line?: boolean; remote?: GitRemote } = {}): Prom
     bundles: bundleStore,
     remote: options.remote ?? smartHttpRemote,
     remoteUrlOf: () => `${server.url}/line.git`,
-    startLineMachine: async (target) => {
-      started.push(target);
-    },
+    plane,
   };
   const dispatch = async () => {
     const found = await stores.dispatches.get(f.scope);
@@ -184,11 +199,11 @@ const world = async (options: { line?: boolean; remote?: GitRemote } = {}): Prom
     );
     await stores.dispatches.put(next);
   };
-  return { stores, f, bundles, deps, started, dispatch, intend };
+  return { stores, f, bundles, deps, started, plane, dispatch, intend };
 };
 
 describe("queueing a published range on the line", () => {
-  it("queues a published push once, starts one line dispatch, and not twice on a repeat", async () => {
+  it("queues a published push once, starts one run of the line program, and not twice on a repeat", async () => {
     const w = await world();
     const next = commit(work, "b.txt", "two\n", "second");
     await w.intend(next, base, await packOf(work, next, base));
@@ -205,10 +220,20 @@ describe("queueing a published range on the line", () => {
     expect(after.publication.lineOwed).toBe(true);
     expect(after.publication.lineQueuedUpTo).toBe(next);
     expect(lineQueueOwed(after)).toBe(false);
-    expect(w.started).toEqual([{ projectId: w.f.scope.projectId, branch: LINE }]);
-    expect((await w.stores.lineDispatches.get(w.f.scope.projectId, LINE))?.status).toBe(
-      "requested",
-    );
+    const lineProgram = lineProgramId(w.f.scope.projectId, LINE);
+    expect(w.started.map(({ projectId, programId }) => ({ projectId, programId }))).toEqual([
+      { projectId: w.f.scope.projectId, programId: lineProgram },
+    ]);
+    const started = w.started[0];
+    expect(
+      (
+        await w.stores.dispatches.get({
+          projectId: w.f.scope.projectId,
+          programId: lineProgram,
+          runId: started?.runId as never,
+        })
+      )?.status,
+    ).toBe("requested");
 
     await publishAll(w.deps, w.f.scope);
     expect((await w.stores.lines.get(w.f.scope.projectId, LINE))?.queue).toHaveLength(1);
@@ -248,7 +273,6 @@ describe("queueing a published range on the line", () => {
     await w.intend(next, base, await packOf(work, next, base));
     expect(await publishAll(w.deps, w.f.scope)).toEqual({ published: 1, nothing_pending: 1 });
     expect(await w.stores.lines.get(w.f.scope.projectId, LINE)).toBeUndefined();
-    expect(await w.stores.lineDispatches.get(w.f.scope.projectId, LINE)).toBeUndefined();
     expect((await w.dispatch()).publication.lineOwed).toBeUndefined();
     expect(w.started).toEqual([]);
   });
@@ -283,7 +307,7 @@ describe("a failure in the line path", () => {
     expect(w.started).toHaveLength(1);
   });
 
-  it("does not change the run's counts, intents or block when starting the machine fails", async () => {
+  it("does not change the run's counts, intents or block when starting the line's run fails", async () => {
     const w = await world();
     const next = commit(work, "g.txt", "seven\n", "seventh");
     await w.intend(next, base, await packOf(work, next, base));
@@ -292,8 +316,13 @@ describe("a failure in the line path", () => {
       {
         ...w.deps,
         log: (line) => logs.push(line),
-        startLineMachine: async () => {
-          throw new Error("lambda unavailable");
+        plane: {
+          ...w.plane,
+          github: {
+            branchHead: async () => {
+              throw new Error("github unavailable");
+            },
+          } as never,
         },
       },
       w.f.scope,
@@ -303,7 +332,7 @@ describe("a failure in the line path", () => {
     expect(after.publication.intents.map((intent) => intent.status)).toEqual(["published"]);
     expect(after.publication.blocked).toBeUndefined();
     expect(after.publication.lineQueuedUpTo).toBe(next);
-    expect(logs.some((line) => line.includes("lambda unavailable"))).toBe(true);
+    expect(logs.some((line) => line.includes("github unavailable"))).toBe(true);
   });
 });
 

@@ -10,7 +10,6 @@ import { userInfo } from "node:os";
 import { createUlidIdGenerator, systemClock } from "@nightshift/core";
 import { createEventOutbox, nodeGitRunner, recordArtifact } from "@nightshift/execution";
 import {
-  createLineHarnesses,
   createLineRunnerPlane,
   createLineScratchPaths,
   createRunnerPlane,
@@ -52,7 +51,7 @@ runRunner({
   // The engine's token, first and renewed, where the root's processes read it (D-P10-20).
   onToken: (token, scope) => installTokenFile(scope.runId, token),
   // The line owner's token, where a run's is: the machine's layout is the same.
-  onLineToken: (token, identity) => installTokenFile(identity.engineAgentId, token),
+  onLineToken: (token, identity) => installTokenFile(identity.scope.runId, token),
   readCachedToken: async (scope) => {
     try {
       return await readFile(tokenFile(scope.runId), "utf8");
@@ -65,7 +64,7 @@ runRunner({
   lineWork: async (context) => {
     const projectUser = process.env.NIGHTSHIFT_PROJECT_USER;
     const user = projectUser === undefined || projectUser === "" ? undefined : projectUser;
-    const agentId = context.identity.engineAgentId;
+    const agentId = context.identity.scope.runId;
     return runLineOwner(context, {
       git: nodeGitRunner,
       ids: createUlidIdGenerator(),
@@ -83,22 +82,6 @@ runRunner({
           throw new Error(`the bundle upload answered ${response.status}`);
         }
       },
-      createHarnesses: createLineHarnesses,
-      placeCredentials: (credentials) =>
-        placeProviderCredentials(agentId, credentials, {
-          ...(user === undefined ? {} : { user }),
-          grant: async (granted, path) => {
-            const owned = await context.machine.exec("sudo", [
-              "chown",
-              "-R",
-              `${granted}:${granted}`,
-              path,
-            ]);
-            if (owned.exitCode !== 0)
-              throw new Error(`chown ${path} to ${granted}: ${owned.stderr}`);
-          },
-          reclaim: createReclaim(userInfo().username),
-        }),
       ...(user === undefined
         ? {}
         : {

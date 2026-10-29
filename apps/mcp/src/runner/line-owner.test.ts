@@ -6,8 +6,6 @@ import {
   type CommitSha,
   type HeartbeatBody,
   type HeartbeatResponse,
-  type LineAgentBody,
-  type LineDecisionBody,
   type LineRecord,
   type LineSettleBody,
   NIGHTSHIFT_CONFIG_FILE,
@@ -17,7 +15,8 @@ import {
   appendQueueEntry,
   createCountingIdGenerator,
   createFixtures,
-  makeLineDispatch,
+  lineProgramId,
+  makeDispatch,
   makeLineRecord,
   resolvePush,
   settleBatch,
@@ -25,9 +24,8 @@ import {
   takeBatch,
 } from "@nightshift/core";
 import { nodeGitRunner } from "@nightshift/execution";
-import type { Harness, HarnessExit } from "@nightshift/harness";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BootstrapError, IMDS, LINE_TAGS, readIdentity } from "./bootstrap.js";
+import { BootstrapError, IMDS, LINE_TAG, RUNNER_TAGS, readIdentity } from "./bootstrap.js";
 import { runLineOwner } from "./line-owner.js";
 import type { CommandResult, Machine } from "./machine.js";
 import { runRunner } from "./main.js";
@@ -35,7 +33,6 @@ import type { LineRunnerPlane } from "./plane.js";
 
 const f = createFixtures();
 const LINE = "nightshift/develop";
-const AGENT = f.ids.next("agent");
 const GENERATION = 2;
 const GITHUB_TOKEN = "gh-read-token";
 const ok = (stdout = ""): CommandResult => ({ exitCode: 0, stdout, stderr: "" });
@@ -128,13 +125,13 @@ const lineMachine = (): FakeMachine => {
   const commands: string[] = [];
   const files = new Map<string, string>();
   const tags: Record<string, string> = {
-    [LINE_TAGS.kind]: "line",
-    [LINE_TAGS.project]: f.scope.projectId,
-    [LINE_TAGS.line]: LINE,
-    [LINE_TAGS.agent]: AGENT,
-    [LINE_TAGS.generation]: String(GENERATION),
-    [LINE_TAGS.stage]: "dev",
-    [LINE_TAGS.api]: "https://api.dev.nightshift.invalid",
+    [LINE_TAG]: LINE,
+    [RUNNER_TAGS.project]: f.scope.projectId,
+    [RUNNER_TAGS.program]: f.scope.programId,
+    [RUNNER_TAGS.run]: f.scope.runId,
+    [RUNNER_TAGS.generation]: String(GENERATION),
+    [RUNNER_TAGS.stage]: "dev",
+    [RUNNER_TAGS.api]: "https://api.dev.nightshift.invalid",
   };
   let parameterPresent = true;
   let now = Date.parse("2026-10-01T12:00:00.000Z");
@@ -202,8 +199,6 @@ interface FakePlane extends LineRunnerPlane {
   readonly events: string[];
   readonly heartbeats: { body: HeartbeatBody; at: number }[];
   readonly settles: { body: LineSettleBody; at: number }[];
-  readonly decisions: Omit<LineDecisionBody, "generation">[];
-  readonly announced: LineAgentBody["agent"][];
   readonly uploads: Map<string, string>;
   reads: number;
   /** Queues a range for the line. */
@@ -285,8 +280,6 @@ const makePlane = (
     events: [],
     heartbeats: [],
     settles: [],
-    decisions: [],
-    announced: [],
     uploads: new Map(),
     reads: 0,
     enqueue(program, upTo) {
@@ -304,10 +297,15 @@ const makePlane = (
       }
       return {
         record: plane.record,
-        dispatch: makeLineDispatch(f, { generation: GENERATION }),
+        programId: lineProgramId(f.scope.projectId, LINE),
+        runId: f.scope.runId,
+        dispatchStatus: "running",
+        generation: GENERATION,
+        meteredUsd: 0,
         programs,
       };
     },
+    dispatch: async () => makeDispatch(f, { generation: GENERATION }),
     takeBatch: async () => {
       plane.events.push("takeBatch");
       const taken = takeBatch(plane.record, GENERATION, { batchId: ids.next("comp") }, iso());
@@ -353,13 +351,6 @@ const makePlane = (
       key: `bundles/${id}`,
       contentType: "application/octet-stream",
     }),
-    decide: async (decision) => {
-      plane.decisions.push(decision);
-    },
-    announce: async (agent) => {
-      plane.events.push(`announce:${agent.agentId}`);
-      plane.announced.push(agent);
-    },
   };
   if (options.resolveAfterReads !== undefined) pendingResolveAt = options.resolveAfterReads;
   return plane;
@@ -369,36 +360,6 @@ const makePlane = (
 
 const notRun = () => {
   throw new Error("this is a line machine: the run plane is not used");
-};
-
-const harnessesFor = (
-  events: string[],
-  resolveTo: string | undefined,
-): { get(harness: string): Harness | undefined } => {
-  const harness = (id: string): Harness => ({
-    id,
-    capabilities: { usage: true },
-    start: async () => {
-      throw new Error("the run path is not used by the line");
-    },
-    startLine: async (input) => {
-      events.push(`launch:${input.agentId}`);
-      let exit: HarnessExit = { kind: "completed", result: "done" };
-      if (input.role === "line_resolver" && resolveTo !== undefined) {
-        writeFileSync(join(input.worktree, "shared.txt"), resolveTo);
-      } else if (input.role === "line_examiner") {
-        exit = { kind: "completed", result: '{"verdict":"approved","findings":[]}' };
-      }
-      return { agentId: input.agentId, exit: Promise.resolve(exit) };
-    },
-    cancel: async () => undefined,
-    status: async () => "started",
-  });
-  const held = new Map([
-    ["claude", harness("claude")],
-    ["codex", harness("codex")],
-  ]);
-  return { get: (name) => held.get(name) };
 };
 
 let world: World;
@@ -414,7 +375,6 @@ const own = (
   plane: FakePlane,
   options: {
     readonly idleSeconds?: number;
-    readonly resolveTo?: string;
     readonly log?: string[];
     /** Runs everything as a project user and records the grants and reclaims in `plane.events`. */
     readonly asProject?: boolean;
@@ -433,6 +393,7 @@ const own = (
       expect(target).toEqual({
         projectId: f.scope.projectId,
         branch: LINE,
+        scope: f.scope,
         generation: GENERATION,
       });
       return plane;
@@ -448,7 +409,6 @@ const own = (
           copyFileSync(file, stored);
           plane.uploads.set(`bundles/${url.split("/").at(-1)}`, stored);
         },
-        createHarnesses: () => harnessesFor(plane.events, options.resolveTo),
         idleSeconds: options.idleSeconds ?? 3,
         pollMs: 500,
         ...(options.asProject !== true
@@ -470,14 +430,14 @@ const own = (
 const lastBeat = (plane: FakePlane) => plane.heartbeats.at(-1);
 
 describe("a line machine's bootstrap", () => {
-  it("reads a line identity from the tags and takes its first token from the engine agent's parameter", async () => {
+  it("reads a line identity from the run's tags and takes its first token from the run's parameter", async () => {
     const machine = lineMachine();
     const identity = await readIdentity(machine);
     expect(identity).toEqual({
       kind: "line",
       projectId: f.scope.projectId,
       branch: LINE,
-      engineAgentId: AGENT,
+      scope: f.scope,
       generation: GENERATION,
       stage: "dev",
       apiEndpoint: "https://api.dev.nightshift.invalid",
@@ -487,10 +447,10 @@ describe("a line machine's bootstrap", () => {
     const code = await own(machine, plane, { idleSeconds: 1 });
     expect(code).toBe(0);
     expect(machine.commands).toContain(
-      `aws ssm get-parameter --name /nightshift/dev/dispatch/${AGENT}/${GENERATION} --with-decryption --query Parameter.Value --output text`,
+      `aws ssm get-parameter --name /nightshift/dev/dispatch/${f.scope.runId}/${GENERATION} --with-decryption --query Parameter.Value --output text`,
     );
     expect(machine.commands).toContain(
-      `aws ssm delete-parameter --name /nightshift/dev/dispatch/${AGENT}/${GENERATION}`,
+      `aws ssm delete-parameter --name /nightshift/dev/dispatch/${f.scope.runId}/${GENERATION}`,
     );
   });
 
@@ -498,13 +458,13 @@ describe("a line machine's bootstrap", () => {
     const machine = lineMachine();
     const http = machine.http;
     machine.http = async (method, url, headers) =>
-      url.endsWith(`tags/instance/${LINE_TAGS.generation}`)
+      url.endsWith(`tags/instance/${RUNNER_TAGS.generation}`)
         ? { status: 200, text: "zero" }
         : http(method, url, headers);
     await expect(readIdentity(machine)).rejects.toBeInstanceOf(BootstrapError);
   });
 
-  it("heartbeats on the line route with its generation, reports running, and receives credentials", async () => {
+  it("heartbeats on the run's dispatch route with its generation, reports running, and receives credentials", async () => {
     const machine = lineMachine();
     const plane = makePlane(world, machine);
     const log: string[] = [];
@@ -595,29 +555,23 @@ describe("composing and publishing", () => {
   });
 });
 
-describe("resolving", () => {
-  it("announces each agent before it launches, and posts the resolver's decision", async () => {
+describe("a range that conflicts", () => {
+  it("is parked with its reason, and no agent is launched", async () => {
     const machine = lineMachine();
     const plane = makePlane(world, machine);
     plane.enqueue(world.programs.c, world.head(world.branches.c));
     plane.enqueue(world.programs.d, world.head(world.branches.d));
 
-    expect(await own(machine, plane, { resolveTo: "from c and d\n" })).toBe(0);
+    expect(await own(machine, plane)).toBe(0);
 
-    const launches = plane.events.filter((event) => event.startsWith("launch:"));
-    expect(launches.length).toBeGreaterThanOrEqual(2);
-    for (const launch of launches) {
-      const id = launch.slice("launch:".length);
-      const announcedAt = plane.events.indexOf(`announce:${id}`);
-      expect(announcedAt).toBeGreaterThanOrEqual(0);
-      expect(announcedAt).toBeLessThan(plane.events.indexOf(launch));
-    }
-    expect(plane.announced.map((agent) => agent.role)).toEqual(
-      expect.arrayContaining(["line_resolver", "line_examiner"]),
-    );
-    expect(plane.decisions).toHaveLength(1);
-    expect(plane.decisions[0]).toMatchObject({ authority: "line", choice: expect.any(String) });
-    expect(git(world.origin, "show", `${world.head(LINE)}:shared.txt`)).toBe("from c and d");
+    expect(plane.events.filter((event) => /^(launch|announce):/.test(event))).toEqual([]);
+    const settle = plane.settles[0]?.body;
+    expect(settle?.composition?.ranges.map((range) => range.program)).toEqual([world.programs.c]);
+    expect(settle?.parked).toHaveLength(1);
+    expect(settle?.parked[0]?.ranges.map((range) => range.program)).toEqual([world.programs.d]);
+    expect(settle?.parked[0]?.reason).toMatch(/the merge conflicted in shared\.txt/);
+    expect(plane.record.parked).toHaveLength(1);
+    expect(git(world.origin, "show", `${world.head(LINE)}:shared.txt`)).toBe("from c");
   });
 });
 
@@ -712,36 +666,17 @@ describe("a replacement generation", () => {
 });
 
 describe("project code runs as the project user (D-P10-30)", () => {
-  it("grants each worktree with its parent before an agent launches and before verifying, reclaims it before it is used again, and wraps every step", async () => {
+  it("wraps every setup and landing step, and reclaims what it granted", async () => {
     const machine = lineMachine();
     const plane = makePlane(world, machine);
-    plane.enqueue(world.programs.c, world.head(world.branches.c));
-    plane.enqueue(world.programs.d, world.head(world.branches.d));
-    expect(await own(machine, plane, { resolveTo: "from c and d\n", asProject: true })).toBe(0);
+    plane.enqueue(world.programs.a, world.head(world.branches.a));
+    expect(await own(machine, plane, { asProject: true })).toBe(0);
 
-    const trace = plane.events.filter((e) => /^(grant|reclaim|launch):/.test(e));
-    const rootOf = (event: string | undefined): string => (event ?? "").replace(/^[a-z]+:/, "");
-    const launches = trace.flatMap((event, at) => (event.startsWith("launch:") ? [at] : []));
-    expect(launches.length).toBeGreaterThanOrEqual(2);
-    for (const at of launches) {
-      // The nearest grant before the launch is the worktree's temporary parent.
-      const grant = trace
-        .slice(0, at)
-        .map((e) => e.startsWith("grant:"))
-        .lastIndexOf(true);
-      expect(grant).toBeGreaterThanOrEqual(0);
-      const root = rootOf(trace[grant]);
-      expect(root).toMatch(/nightshift-line-[^/\\]+$/);
-      // ...and it is reclaimed after the launch, before the next grant or launch.
-      const rest = trace.slice(at + 1);
-      const next = rest.findIndex((e) => e.startsWith("grant:") || e.startsWith("launch:"));
-      expect(rest.slice(0, next < 0 ? undefined : next)).toContain(`reclaim:${root}`);
-    }
+    const trace = plane.events.filter((e) => /^(grant|reclaim):/.test(e));
+    const rootOf = (event: string): string => event.replace(/^[a-z]+:/, "");
     // Every grant of a worktree root (the scratch is a deeper path) is reclaimed after it.
-    const roots = trace.filter((e) => e.startsWith("grant:") && /nightshift-line-[^/\\]+$/.test(e));
-    for (const grant of roots) {
-      const at = trace.indexOf(grant);
-      expect(trace.slice(at + 1)).toContain(`reclaim:${rootOf(grant)}`);
+    for (const grant of trace.filter((e) => e.startsWith("grant:"))) {
+      expect(trace.slice(trace.indexOf(grant) + 1)).toContain(`reclaim:${rootOf(grant)}`);
     }
     // Setup and landing steps were handed to `sudo -u project`, not run as the engine: the
     // sandbox has no such user, so each failed on the wrapper, and the composition parked.

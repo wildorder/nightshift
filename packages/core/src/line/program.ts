@@ -5,7 +5,6 @@
  * writes one. Its id is derived from the project and the branch, so two
  * requests racing to make it make the same one.
  */
-import { createHash } from "node:crypto";
 import {
   type LineConfig,
   type ProgramContract,
@@ -15,6 +14,7 @@ import {
 } from "@nightshift/contracts";
 import { ProgramContractExistsError } from "../errors.js";
 import type { ProjectStores } from "../ports/stores.js";
+import { sha256Bytes } from "./sha256.js";
 
 /** Crockford base32, the ULID alphabet. */
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -25,7 +25,7 @@ export const LINE_PROGRAM_CRITERION =
 
 /** The line program's identifier for a project's line branch: stable, and valid. */
 export const lineProgramId = (projectId: ProjectId, branch: string): ProgramId => {
-  const digest = createHash("sha256").update(`line\n${projectId}\n${branch}`).digest();
+  const digest = sha256Bytes(`line\n${projectId}\n${branch}`);
   let bits = 0;
   let acc = 0;
   let out = "";

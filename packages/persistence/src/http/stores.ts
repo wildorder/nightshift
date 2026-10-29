@@ -580,15 +580,16 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     getOrUndefined(transport, LineViewSchema, routes.line(projectId, branch));
   const lines: LineStore = {
     get: async (projectId, branch) => (await lineView(projectId, branch))?.record,
-    update: planeOwns("line record", "the line routes (batch, compositions, parked, settle, push)"),
+    update: planeOwns("line record", "the line routes (batch, settle, push)"),
     listWithWork: async () => {
       throw new Error("listing lines with work is the reconciler's read; no route serves it");
     },
   };
   const lineDispatches: LineDispatchStore = {
-    get: async (projectId, branch) => (await lineView(projectId, branch))?.dispatch,
+    // The line's owner is a run of its line program now: the view names that run.
+    get: async () => undefined,
     start: planeOwns("line dispatch", "the plane's own start of the line owner"),
-    update: planeOwns("line dispatch", "the line's heartbeat or cancel"),
+    update: planeOwns("line dispatch", "the line run's dispatch heartbeat"),
     listByStatus: async () => {
       throw new Error(
         "listing line dispatches by status is the reconciler's read; no route serves it",
@@ -601,7 +602,7 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
         `a project's self-started usage for ${month} is read in the line view (${projectId}), not by month`,
       );
     },
-    update: planeOwns("self-started usage ledger", "the line's heartbeat"),
+    update: planeOwns("self-started usage ledger", "the line run's heartbeat"),
   };
 
   const computeUtilizations: ComputeUtilizationStore = {
