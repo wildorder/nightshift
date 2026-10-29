@@ -17,7 +17,13 @@
  * The rules are `core`'s (`rules/line.ts`); this is only the records.
  */
 import { z } from "zod";
-import { AgentIdSchema, ProgramIdSchema, VerificationIdSchema } from "../ids.js";
+import {
+  AgentIdSchema,
+  JobContractIdSchema,
+  ProgramIdSchema,
+  RunIdSchema,
+  VerificationIdSchema,
+} from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, projectScoped } from "./common.js";
 import { ComputeTierSchema } from "./compute.js";
 import { CalendarMonthSchema } from "./compute-usage.js";
@@ -109,6 +115,13 @@ export const LineResolverSchema = z.strictObject({
 });
 export type LineResolver = z.infer<typeof LineResolverSchema>;
 
+/** The repair job that ran for a range: the line's run and the job contract that did the repairing. */
+export const LineRepairRefSchema = z.strictObject({
+  runId: RunIdSchema,
+  jobContractId: JobContractIdSchema,
+});
+export type LineRepairRef = z.infer<typeof LineRepairRefSchema>;
+
 export const LineCompositionSchema = z.strictObject({
   compositionId: z.string().min(1),
   commit: CommitShaSchema,
@@ -116,6 +129,7 @@ export const LineCompositionSchema = z.strictObject({
   ranges: z.array(LineRangeSchema).min(1),
   verification: LineVerificationSchema,
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
   composedAt: IsoTimestampSchema,
   /** Set once the publisher has moved the line to this composition's commit. */
   pushed: z.strictObject({ at: IsoTimestampSchema }).optional(),
@@ -129,6 +143,7 @@ export const LineParkedSchema = z.strictObject({
   commit: CommitShaSchema.optional(),
   verification: LineVerificationSchema.optional(),
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
   parkedAt: IsoTimestampSchema,
 });
 export type LineParked = z.infer<typeof LineParkedSchema>;
@@ -371,6 +386,7 @@ export const LineCompositionBodySchema = z.strictObject({
   ranges: z.array(LineRangeSchema).min(1),
   verification: LineVerificationSchema,
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
 });
 export type LineCompositionBody = z.infer<typeof LineCompositionBodySchema>;
 
@@ -382,6 +398,7 @@ export const LineParkBodySchema = z.strictObject({
   commit: CommitShaSchema.optional(),
   verification: LineVerificationSchema.optional(),
   resolver: LineResolverSchema.optional(),
+  repair: LineRepairRefSchema.optional(),
 });
 export type LineParkBody = z.infer<typeof LineParkBodySchema>;
 

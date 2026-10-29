@@ -360,6 +360,8 @@ export const ProgramContractSchema = z
     compute: ComputeChoiceSchema.optional(),
     /** The project line this program's landed work is composed onto; inherited from `nightshift.config.json`. Absent means off. */
     line: LineConfigSchema.optional(),
+    /** Set only by the control plane, on a project's line program; a client may not send it. */
+    kind: z.literal("line").optional(),
     createdAt: IsoTimestampSchema,
     /**
      * The planned part (P7, `./plan.ts`). Every field is optional and absent

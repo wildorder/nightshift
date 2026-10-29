@@ -14,6 +14,7 @@ import {
 } from "@nightshift/contracts";
 import {
   checkPlan,
+  ensureLineProgram,
   explainCorrection,
   isPlanned,
   nowIso,
@@ -138,6 +139,30 @@ const assertCorrectable = async (deps: ApiDeps, contract: ProgramContract): Prom
   }
 };
 
+/** The plane alone makes a line program; a client's contract that says it is one is refused. */
+export const refuseClientLineProgram = (contract: ProgramContract): void => {
+  if (contract.kind === "line") {
+    throw new HttpError(
+      400,
+      "validation_failed",
+      'a contract of kind "line" is made by the control plane, not sent to it',
+    );
+  }
+};
+
+/** After a contract that names a line is stored, the line's program exists (idempotent). */
+export const ensureLineProgramFor = async (
+  deps: ApiDeps,
+  contract: ProgramContract,
+): Promise<void> => {
+  if (contract.line === undefined || contract.kind === "line") return;
+  await ensureLineProgram(deps.stores, {
+    projectId: contract.projectId,
+    naming: contract,
+    createdAt: nowIso(deps.clock),
+  });
+};
+
 /** What a ratification is made from, whichever way it was asked for. */
 export interface RatificationInput {
   readonly scope: ProgramScope;
@@ -213,6 +238,7 @@ export const prepareRatification = async (
   input: RatificationInput,
 ): Promise<PreparedRatification> => {
   const { scope, contract } = input;
+  refuseClientLineProgram(contract);
   if (!isPlanned(contract)) {
     throw new HttpError(
       422,
@@ -306,6 +332,15 @@ export const prepareRatification = async (
  * change, so prerequisites written meanwhile are carried.
  */
 export const writeRatification = async (
+  deps: ApiDeps,
+  prepared: PreparedRatification,
+): Promise<{ readonly status: 200 | 201; readonly body: ProgramContract }> => {
+  const written = await storeRatification(deps, prepared);
+  await ensureLineProgramFor(deps, written.body);
+  return written;
+};
+
+const storeRatification = async (
   deps: ApiDeps,
   prepared: PreparedRatification,
 ): Promise<{ readonly status: 200 | 201; readonly body: ProgramContract }> => {

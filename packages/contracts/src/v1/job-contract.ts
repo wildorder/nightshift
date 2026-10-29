@@ -20,7 +20,7 @@ import { StrandIdSchema } from "./plan.js";
 import { JobKindSchema, TestabilitySchema } from "./routing-policy.js";
 
 /** `red_base`: the gate was red when the run started. `flaky`: a check failed and then passed on a rerun on the same commit. */
-export const RepairCauseSchema = z.enum(["red_base", "flaky"]);
+export const RepairCauseSchema = z.enum(["red_base", "flaky", "line_conflict", "line_red"]);
 export type RepairCause = z.infer<typeof RepairCauseSchema>;
 
 /**

@@ -1673,6 +1673,8 @@ const renderDepartures = (strands: readonly StrandReport[]): string[] => {
 const CAUSE_WORD: Readonly<Record<RepairCause, string>> = {
   red_base: "red base",
   flaky: "flaky",
+  line_conflict: "line conflict",
+  line_red: "line red",
 };
 
 const renderSteps = (title: string, steps: readonly { id: string; command: string }[]) => [
