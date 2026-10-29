@@ -54,7 +54,7 @@ import { ApiGatewayv2DomainProperties } from "aws-cdk-lib/aws-route53-targets";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
-import { EVENT_SEQUENCE_INDEX_NAME, NODE_INDEX_NAME } from "./data-stack.js";
+import { NODE_INDEX_NAME } from "./data-stack.js";
 import { apiHostnameFor, type HostnamesMode, studioOriginsFor, ZONE_NAME } from "./hostnames.js";
 import { GITHUB_APP_SECRET_NAME, runnerExportName } from "./runner-stack.js";
 import {
@@ -263,28 +263,16 @@ export class NightshiftApiStack extends Stack {
     // --- The control-plane API function ------------------------------------------
     const apiLogs = this.logGroup("ApiFunctionLogs");
     const apiRole = this.executionRole("ApiFunctionRole", apiLogs, [
-      // Exactly what the adapters call: gets, puts and deletes (including those
-      // inside TransactWriteItems, which IAM authorises per item: a run that ends
-      // deletes the program's live-run marker), the condition checks inside them
-      // (the one-live-run guard, A-66), and queries on the table and its two
-      // indexes. No update: the API never issues one.
+      // Exactly what the adapters call: gets and puts (including the puts inside
+      // TransactWriteItems, which IAM authorises per item) and queries on the
+      // table and its one index. No update or delete: the API never issues one.
       new iam.PolicyStatement({
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:ConditionCheckItem",
-        ],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
         resources: [tableArn],
       }),
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
-        resources: [
-          tableArn,
-          `${tableArn}/index/${NODE_INDEX_NAME}`,
-          // A run's events by sequence (2026-10-22): every events listing reads it.
-          `${tableArn}/index/${EVENT_SEQUENCE_INDEX_NAME}`,
-        ],
+        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       // `s3:PutObject` on the bucket's objects, for **signing only** (T2, A-08).
       // The presigned-upload route computes a signature from the credentials the
@@ -329,9 +317,9 @@ export class NightshiftApiStack extends Stack {
       }),
       // P10 (D-P10-23): the credentials table, gets, puts and queries, and no
       // other principal in any stack holds any action on it. The stream it does
-      // not have cannot be granted. A-62: and deletes, for a project's secret.
+      // not have cannot be granted.
       new iam.PolicyStatement({
-        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:DeleteItem"],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
         resources: [credentialsTableArn],
       }),
       // P10 (D-P10-23): a data key per secret, and its unwrapping, under the one
@@ -483,13 +471,7 @@ export class NightshiftApiStack extends Stack {
       // Reads of the event and counter, the counter's first put, and the
       // transactional updates that advance it and stamp the event.
       new iam.PolicyStatement({
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          // Any writer of the table may meet the shared adapter's condition checks.
-          "dynamodb:ConditionCheckItem",
-        ],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
         resources: [tableArn],
       }),
     ]);

@@ -25,16 +25,16 @@ import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
-import { EVENT_SEQUENCE_INDEX_NAME, NODE_INDEX_NAME } from "./data-stack.js";
+import { NODE_INDEX_NAME } from "./data-stack.js";
 import { apiHostnameFor } from "./hostnames.js";
 import {
   containmentComponent,
   IMAGE_ARCHITECTURES,
   type ImageArchitecture,
-  PROJECT_USER,
   RUNNER_TOOLCHAIN,
   runnerComponent,
   toolchainComponent,
+  WORKER_USERS,
 } from "./runner-image.js";
 import { assertValidStage, type NightshiftStackProps, stackNameFor } from "./stack-props.js";
 
@@ -68,11 +68,12 @@ export type RunnerExportKey = (typeof RUNNER_EXPORT_KEYS)[number];
 export const runnerExportName = (stage: string, key: RunnerExportKey): string =>
   `nightshift-${stage}-runner-${key}`;
 
-/** Canonical's Ubuntu 24.04 LTS server AMIs, resolved at image-recipe deployment. */
-export const UBUNTU_PARAMETERS: Readonly<Record<ImageArchitecture, string>> = {
-  arm64: "/aws/service/canonical/ubuntu/server/noble/stable/current/arm64/hvm/ebs-gp3/ami-id",
-  x86_64: "/aws/service/canonical/ubuntu/server/noble/stable/current/amd64/hvm/ebs-gp3/ami-id",
+/** The latest Amazon Linux 2023 AMI per architecture, resolved by CloudFormation at deploy time. */
+export const AL2023_PARAMETERS: Readonly<Record<ImageArchitecture, string>> = {
+  arm64: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64",
+  x86_64: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64",
 };
+export const AL2023_ARM64_PARAMETER = AL2023_PARAMETERS.arm64;
 /** The instance each image is built on: its own architecture. */
 const BUILDER_INSTANCE_TYPES: Readonly<Record<ImageArchitecture, string>> = {
   arm64: "m7g.large",
@@ -208,11 +209,11 @@ export class NightshiftRunnerStack extends Stack {
       const recipe = new imagebuilder.CfnImageRecipe(this, `RunnerRecipe${suffix}`, {
         name: `nightshift-${stage}-runner${nameSuffix}`,
         version: imageVersion,
-        parentImage: `{{resolve:ssm:${UBUNTU_PARAMETERS[architecture]}}}`,
+        parentImage: `{{resolve:ssm:${AL2023_PARAMETERS[architecture]}}}`,
         components: components.map((component) => ({ componentArn: component.attrArn })),
         blockDeviceMappings: [
           {
-            deviceName: "/dev/sda1",
+            deviceName: "/dev/xvda",
             ebs: { volumeSize: 40, volumeType: "gp3", deleteOnTermination: true },
           },
         ],
@@ -364,19 +365,8 @@ export class NightshiftRunnerStack extends Stack {
     const dispatchLogs = this.logGroup("DispatchFunctionLogs");
     const dispatchRole = this.executionRole("DispatchFunctionRole", dispatchLogs, [
       new iam.PolicyStatement({
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:ConditionCheckItem",
-          "dynamodb:Query",
-        ],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
         resources: [tableArn],
-      }),
-      // Provisioning counts the live run dispatches and line dispatches by
-      // status, which is a query on the node index.
-      new iam.PolicyStatement({
-        actions: ["dynamodb:Query"],
-        resources: [`${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       // Launch a machine from the one template, create its volume (from a
       // snapshot or empty), and tag what it makes. `RunInstances` needs the
@@ -457,15 +447,8 @@ export class NightshiftRunnerStack extends Stack {
 
     const reconcilerLogs = this.logGroup("ReconcilerFunctionLogs");
     const reconcilerRole = this.executionRole("ReconcilerFunctionRole", reconcilerLogs, [
-      // DeleteItem: a line run whose dispatch is refused ends, which releases
-      // the program's live-run marker inside the run's transaction (A-66).
       new iam.PolicyStatement({
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:ConditionCheckItem",
-        ],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
         resources: [tableArn],
       }),
       // The reconciler's one cross-project read, every dispatch by status, is a
@@ -473,12 +456,7 @@ export class NightshiftRunnerStack extends Stack {
       // found the grant stopped at the table.
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
-        resources: [
-          tableArn,
-          `${tableArn}/index/${NODE_INDEX_NAME}`,
-          // A run's events by sequence (2026-10-22): every events listing reads it.
-          `${tableArn}/index/${EVENT_SEQUENCE_INDEX_NAME}`,
-        ],
+        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       new iam.PolicyStatement({
         // T6: a replacement attaches the run's volume to its new machine.
@@ -568,24 +546,12 @@ export class NightshiftRunnerStack extends Stack {
         actions: ["kms:Sign"],
         resources: [imported("ExecutionTokenKeyArn")],
       }),
-      // Starting a line run verifies the line's base through the GitHub App,
-      // which is read here and not written (the publisher alone pushes).
-      new iam.PolicyStatement({
-        actions: ["secretsmanager:GetSecretValue"],
-        resources: [
-          `arn:${Aws.PARTITION}:secretsmanager:${Aws.REGION}:${Aws.ACCOUNT_ID}:secret:${GITHUB_APP_SECRET_NAME}-*`,
-        ],
-      }),
     ]);
     const reconcilerFunction = this.nodeFunction("ReconcilerFunction", {
       entry: RECONCILER_ENTRY,
       role: reconcilerRole,
       logGroup: reconcilerLogs,
-      environment: {
-        ...environment,
-        ...machineEnvironment,
-        NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME,
-      },
+      environment: { ...environment, ...machineEnvironment },
       timeout: Duration.seconds(50),
       memorySize: 512,
     });
@@ -596,22 +562,9 @@ export class NightshiftRunnerStack extends Stack {
 
     const publisherLogs = this.logGroup("PublisherFunctionLogs");
     const publisherRole = this.executionRole("PublisherFunctionRole", publisherLogs, [
-      // DeleteItem: a line run whose dispatch is refused ends, which releases
-      // the program's live-run marker inside the run's transaction (A-66).
       new iam.PolicyStatement({
-        actions: [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:ConditionCheckItem",
-        ],
+        actions: ["dynamodb:GetItem", "dynamodb:PutItem"],
         resources: [tableArn],
-      }),
-      // Starting a line run reads the line's programs and the org's live
-      // dispatches by status (the node index), as the API does.
-      new iam.PolicyStatement({
-        actions: ["dynamodb:Query"],
-        resources: [tableArn, `${tableArn}/index/${NODE_INDEX_NAME}`],
       }),
       // The bundles the engine uploaded, read back to push (D-P10-22).
       new iam.PolicyStatement({
@@ -630,34 +583,13 @@ export class NightshiftRunnerStack extends Stack {
       entry: PUBLISHER_ENTRY,
       role: publisherRole,
       logGroup: publisherLogs,
-      environment: {
-        ...environment,
-        NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME,
-        // Recorded on the dispatch of a line run the publisher starts.
-        NIGHTSHIFT_RUNNER_AMI_VERSION: imageVersion,
-      },
+      environment: { ...environment, NIGHTSHIFT_GITHUB_APP_SECRET: GITHUB_APP_SECRET_NAME },
       timeout: Duration.minutes(5),
       memorySize: 1024,
       // One push at a time per run (D-P10-22) is a lock row in the table, not
       // reserved concurrency: a new account's concurrency quota leaves nothing
       // to reserve, and a lock works at any quota.
     });
-    // The reconciler asks the publisher again for any intent still pending: a
-    // passing push failure is retried, and a run's last landing is never left
-    // waiting for a next one that will not come.
-    publisherFunction.grantInvoke(reconcilerRole);
-    // The reconciler also starts a line owner for a line with work and no live
-    // dispatch, and the publisher starts one when it queues a range (Pipkin M1b).
-    dispatchFunction.grantInvoke(reconcilerRole);
-    dispatchFunction.grantInvoke(publisherRole);
-    publisherFunction.addEnvironment(
-      "NIGHTSHIFT_DISPATCH_FUNCTION_ARN",
-      dispatchFunction.functionArn,
-    );
-    reconcilerFunction.addEnvironment(
-      "NIGHTSHIFT_PUBLISHER_FUNCTION_ARN",
-      publisherFunction.functionArn,
-    );
 
     // --- Outputs ------------------------------------------------------------------
     new CfnOutput(this, "ImagePipelineArn", { value: pipeline.attrArn });
@@ -685,7 +617,7 @@ export class NightshiftRunnerStack extends Stack {
       value: publisherFunction.functionArn,
       exportName: runnerExportName(stage, "PublisherFunctionArn"),
     });
-    new CfnOutput(this, "ProjectUser", { value: PROJECT_USER });
+    new CfnOutput(this, "WorkerUsers", { value: String(WORKER_USERS) });
     new CfnOutput(this, "Toolchain", { value: JSON.stringify(RUNNER_TOOLCHAIN) });
   }
 

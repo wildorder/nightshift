@@ -10,7 +10,6 @@ import {
   DELIVERY_LOG_EVENT_SOURCE,
   DELIVERY_LOG_LEVEL,
   DELIVERY_LOG_RETENTION,
-  EVENT_SEQUENCE_INDEX_NAME,
   EXPLICIT_AUTH_FLOWS,
   executionTokenKeyAlias,
   INVITATION_SUBJECT,
@@ -198,7 +197,7 @@ describe("NightshiftDataStack", () => {
       }
     });
 
-    it("has two GSIs, gsi_node and gsi_event_sequence, both projecting all attributes", () => {
+    it("has exactly one GSI, gsi_node, projecting all attributes", () => {
       const table = tableNamed("Table");
       expect(table).toBeDefined();
       const indexes = ((table as CfnResource).Properties as { GlobalSecondaryIndexes: unknown[] })
@@ -209,14 +208,6 @@ describe("NightshiftDataStack", () => {
           KeySchema: [
             { AttributeName: "GSI1PK", KeyType: "HASH" },
             { AttributeName: "GSI1SK", KeyType: "RANGE" },
-          ],
-          Projection: { ProjectionType: "ALL" },
-        },
-        {
-          IndexName: EVENT_SEQUENCE_INDEX_NAME,
-          KeySchema: [
-            { AttributeName: "SEQPK", KeyType: "HASH" },
-            { AttributeName: "SEQ", KeyType: "RANGE" },
           ],
           Projection: { ProjectionType: "ALL" },
         },
