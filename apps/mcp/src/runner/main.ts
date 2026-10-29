@@ -42,6 +42,7 @@ import type {
 } from "./plane.js";
 import { ProjectSetupStatusSchema } from "./project-setup.js";
 import { recoverLocalWorkspace } from "./recovery.js";
+import type { RunnerLog, RunnerLogRecorder } from "./runner-log.js";
 import { createSampler } from "./sampler.js";
 import { type SidecarSync, startSidecarSync } from "./sidecar.js";
 import { findLocalDisk, mountWorkspace } from "./volume.js";
@@ -83,6 +84,18 @@ export interface RunnerOptions {
   readonly linePlane?: LinePlaneFactory;
   /** What a line owner does between `ready` and the stop: `runLineOwner`. Absent, it waits. */
   readonly lineWork?: (context: LineRunnerContext) => Promise<RunnerWorkEnd | undefined>;
+  /**
+   * The runner's own log (S-02). Once the engine token and the run's identity
+   * are known, and before any checkout or setup, `runnerLogRecorder` is
+   * attached and the periodic upload begins; every ending uploads once more.
+   */
+  readonly runnerLog?: RunnerLog;
+  /** Records the log's bytes under the run's root node, over the standard stores and the engine token. */
+  readonly runnerLogRecorder?: (
+    endpoint: string,
+    tokens: EngineTokens,
+    scope: RunScope,
+  ) => RunnerLogRecorder;
   /** Told the line owner's every engine token, first and renewed. */
   readonly onLineToken?: (token: string, identity: LineIdentity) => Promise<void>;
 }
@@ -401,6 +414,15 @@ const runMode = (options: RunnerOptions, identity: RunnerIdentity | LineIdentity
 };
 
 export const runRunner = async (options: RunnerOptions): Promise<number> => {
+  try {
+    return await runMachine(options);
+  } finally {
+    // Every ending uploads the log once more; it never fails the run.
+    await options.runnerLog?.finish().catch(() => undefined);
+  }
+};
+
+const runMachine = async (options: RunnerOptions): Promise<number> => {
   const { machine, log } = options;
   const identity = await readIdentity(machine);
   const mode = runMode(options, identity);
@@ -419,6 +441,13 @@ export const runRunner = async (options: RunnerOptions): Promise<number> => {
     onToken,
   );
   await onToken?.(await token.provider.idToken());
+  // The log is kept from here on, before the mount, checkout or setup can fail.
+  if (options.runnerLog !== undefined && options.runnerLogRecorder !== undefined) {
+    options.runnerLog.attach(
+      options.runnerLogRecorder(identity.apiEndpoint, token.provider, identity.scope),
+    );
+    options.runnerLog.start();
+  }
   const plane = mode.connect(token.provider);
   const startedAt = await plane.startedAt();
   const sample = createSampler(machine, options.workspace).sample;

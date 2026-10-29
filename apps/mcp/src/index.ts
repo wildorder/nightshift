@@ -55,7 +55,7 @@ export { createLineRepair, lineRepairBrief } from "./runner/line-repair.js";
 export type { CommandResult, Machine } from "./runner/machine.js";
 export { runRunner } from "./runner/main.js";
 export type { LineRunnerPlane } from "./runner/plane.js";
-export { createRunnerLog } from "./runner/runner-log.js";
+export { createRunnerLog, runnerLogRecorder } from "./runner/runner-log.js";
 export {
   type CreateServerInput,
   createNightshiftServer,

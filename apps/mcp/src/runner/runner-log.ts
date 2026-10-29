@@ -12,6 +12,9 @@ import type { RunScope } from "@nightshift/core";
 import { createEventOutbox, recordArtifact } from "@nightshift/execution";
 import type { Runtime } from "../compose.js";
 
+/** What recording the log needs of a runtime: stores, bodies, clock and ids. */
+export type RunnerLogRuntime = Pick<Runtime, "stores" | "bodies" | "clock" | "ids">;
+
 export const RUNNER_LOG_INTERVAL_MS = 10 * 60_000;
 export const RUNNER_LOG_FINAL_TIMEOUT_MS = 20_000;
 
@@ -23,7 +26,7 @@ export type RunnerLogRecorder = (bytes: Uint8Array) => Promise<void>;
  * through the runtime the run uses. The run's record must exist.
  */
 export const runnerLogRecorder =
-  (getRuntime: () => Promise<Runtime>, scope: RunScope): RunnerLogRecorder =>
+  (getRuntime: () => Promise<RunnerLogRuntime>, scope: RunScope): RunnerLogRecorder =>
   async (bytes) => {
     const runtime = await getRuntime();
     const run = await runtime.stores.runs.get(scope, scope.runId);
