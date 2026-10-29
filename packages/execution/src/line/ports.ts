@@ -70,6 +70,8 @@ export interface LineCheckoutPort {
   ): Promise<string[]>;
   head(wt: LineWorktree): Promise<CommitSha>;
   isAncestor(ancestor: CommitSha, descendant: CommitSha): Promise<boolean>;
+  /** Whether `commit` is present in the local repository (`git cat-file -e`); absent: assumed present. */
+  hasCommit?(commit: CommitSha): Promise<boolean>;
   sameTree(a: CommitSha, b: CommitSha): Promise<boolean>;
   close(wt: LineWorktree): Promise<void>;
 }
@@ -198,4 +200,6 @@ export interface LineBatchOutcome {
   composed: LineRange[];
   parked: { ranges: LineRange[]; reason: string }[];
   published?: { status: string; detail?: string };
+  /** Things worth saying in the owner's log, e.g. a repair commit that was not present locally. */
+  notes?: string[];
 }

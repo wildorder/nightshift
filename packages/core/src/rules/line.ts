@@ -483,6 +483,7 @@ export const resolvePush = (
               upTo: range.upTo,
               enqueuedAt: unpushed.composedAt,
               ...(range.repairs === undefined ? {} : { repairs: range.repairs }),
+              ...(range.repaired === undefined ? {} : { repaired: range.repaired }),
             })),
           ...record.queue,
         ];

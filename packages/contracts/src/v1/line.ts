@@ -45,6 +45,8 @@ export const LineRangeSchema = z.strictObject({
   from: CommitShaSchema.optional(),
   upTo: CommitShaSchema,
   repairs: LineRepairsSchema.optional(),
+  /** The commit of the repair that succeeded for this range, kept until its composition is published. */
+  repaired: CommitShaSchema.optional(),
 });
 export type LineRange = z.infer<typeof LineRangeSchema>;
 
@@ -54,6 +56,8 @@ export const LineQueueEntrySchema = z.strictObject({
   upTo: CommitShaSchema,
   enqueuedAt: IsoTimestampSchema,
   repairs: LineRepairsSchema.optional(),
+  /** The successful repair commit for this range, composed first when the range returns. */
+  repaired: CommitShaSchema.optional(),
 });
 export type LineQueueEntry = z.infer<typeof LineQueueEntrySchema>;
 

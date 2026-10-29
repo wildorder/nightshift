@@ -40,11 +40,13 @@ const entry = (
   upTo: CommitSha,
   minute: number,
   repairs?: number,
+  repaired?: CommitSha,
 ): LineQueueEntry => ({
   program,
   upTo,
   enqueuedAt: new Date(START + minute * 60_000).toISOString(),
   ...(repairs === undefined ? {} : { repairs }),
+  ...(repaired === undefined ? {} : { repaired }),
 });
 
 interface Deferred {
@@ -60,6 +62,8 @@ interface Harness {
   settled: LineSettlement[];
   repairs: Deferred[];
   released: { program: ProgramId; upTo: CommitSha }[][];
+  /** Pushes still to be rejected; a rejection requeues the composition's ranges as the plane does. */
+  reject: number;
 }
 
 const setup = async (
@@ -82,6 +86,7 @@ const setup = async (
     settled: [],
     repairs: [],
     released: [],
+    reject: 0,
   } as unknown as Harness;
   const composed: Record<string, CommitSha> = {};
   let batchNo = 0;
@@ -119,6 +124,20 @@ const setup = async (
     publisher: {
       stage: async (input) => ({ bundleKey: `bundles/${input.head}` }),
       outcome: async ({ head }) => {
+        if (h.reject > 0) {
+          h.reject--;
+          const rejected = h.settled.at(-1)?.composition;
+          h.queue.unshift(
+            ...(rejected?.ranges ?? []).map((range) => ({
+              program: range.program,
+              upTo: range.upTo,
+              enqueuedAt: new Date(START).toISOString(),
+              ...(range.repairs === undefined ? {} : { repairs: range.repairs }),
+              ...(range.repaired === undefined ? {} : { repaired: range.repaired }),
+            })),
+          );
+          return { status: "rejected", detail: "the line moved" };
+        }
         await git(nodeGitRunner, ["update-ref", "refs/heads/line", head], { cwd: lr.repo });
         return { status: "published" };
       },
@@ -215,7 +234,7 @@ describe("the line composer", () => {
     const second = await h.composer.step();
     expect(second.outcome?.composed.map((r) => r.program)).toEqual([P1, P3]);
     const composition = h.settled[1]?.composition;
-    expect(composition?.ranges[0]).toEqual({ program: P1, upTo: p1, repairs: 1 });
+    expect(composition?.ranges[0]).toEqual({ program: P1, upTo: p1, repairs: 1, repaired: fixed });
     expect(composition?.repair).toEqual(REF);
     const line2 = await lr.tip("line");
     expect(await lr.readFileAtCommit(line2, "other.txt")).toBe("o\n");
@@ -305,7 +324,7 @@ describe("the line composer", () => {
 
     const out = await h.composer.step();
     expect(out.outcome?.composed).toEqual([
-      { program: P1, upTo: a, repairs: 1 },
+      { program: P1, upTo: a, repairs: 1, repaired: fixed },
       { program: P1, from: a, upTo: b },
     ]);
     const head = await lr.tip("line");
@@ -313,6 +332,101 @@ describe("the line composer", () => {
     expect(await lr.readFileAtCommit(head, "extra.txt")).toBe("extra\n");
     expect(h.composer.idle()).toBe(true);
     assertSchemas(h);
+  });
+
+  /** Two failed repairs and a third that succeeds, composed, with the push rejected. */
+  const thirdRepairRejected = async (h: Harness) => {
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    h.queue.push(entry(P1, p1, 1));
+    await h.composer.step();
+    for (const attempt of [0, 1]) {
+      h.repairs[attempt]?.resolve({ kind: "failed", words: "no" });
+      await h.composer.repairSettled();
+      await h.composer.step();
+    }
+    expect(h.repairs).toHaveLength(3);
+    const request = h.repairs[2]?.request as LineRepairRequest;
+    expect(request.attempt).toBe(3);
+    await git(nodeGitRunner, ["branch", "repair", request.base], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "resolved\n" });
+    h.repairs[2]?.resolve({ kind: "repaired", commit: fixed, repair: REF });
+    await h.composer.repairSettled();
+    h.reject = 1;
+    const rejected = await h.composer.step();
+    expect(rejected.outcome?.published?.status).toBe("rejected");
+    return { p1, fixed };
+  };
+
+  it("recomposes the repair commit after a rejected push without spending a repair", async () => {
+    const h = await setup();
+    const { p1, fixed } = await thirdRepairRejected(h);
+    expect(h.settled.at(-1)?.composition?.ranges).toEqual([
+      { program: P1, upTo: p1, repairs: 3, repaired: fixed },
+    ]);
+    expect(h.composer.idle()).toBe(false);
+
+    const again = await h.composer.step();
+    expect(again.outcome?.published?.status).toBe("published");
+    expect(again.outcome?.parked).toEqual([]);
+    expect(h.repairs).toHaveLength(3);
+    const composition = h.settled.at(-1)?.composition;
+    // The plane's newest composition of the program is the rejected one, so `from` is its upTo.
+    expect(composition?.ranges).toEqual([
+      { program: P1, from: p1, upTo: p1, repairs: 3, repaired: fixed },
+    ]);
+    expect(composition?.repair).toEqual(REF);
+    expect(await h.lr.readFileAtCommit(await h.lr.tip("line"), "shared.txt")).toBe("resolved\n");
+    expect(h.settled.flatMap((s) => s.parked)).toEqual([]);
+    expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
+  });
+
+  it("keeps the reservation of a repaired lineage until its composition is published", async () => {
+    const h = await setup();
+    const { fixed } = await thirdRepairRejected(h);
+    // Rejected: the lineage is still held by the composer (not idle), the repair commit kept.
+    expect(h.composer.idle()).toBe(false);
+    h.reject = 1;
+    const again = await h.composer.step();
+    expect(again.outcome?.published?.status).toBe("rejected");
+    expect(again.outcome?.composed[0]?.repaired).toBe(fixed);
+    expect(h.composer.idle()).toBe(false);
+    const last = await h.composer.step();
+    expect(last.outcome?.published?.status).toBe("published");
+    expect(h.composer.idle()).toBe(true);
+  });
+
+  it("a fresh composer composes the repair commit an entry carries, spending no repair", async () => {
+    const h = await setup();
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    // A repair made on the line head, as a previous owner's would have been.
+    await git(nodeGitRunner, ["branch", "repair", await lr.tip("line")], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "resolved\n" });
+    h.queue.push(entry(P1, p1, 1, 3, fixed));
+    const out = await h.composer.drain();
+    expect(out[0]?.published?.status).toBe("published");
+    expect(out[0]?.parked).toEqual([]);
+    expect(h.repairs).toHaveLength(0);
+    expect(await lr.readFileAtCommit(await lr.tip("line"), "shared.txt")).toBe("resolved\n");
+    expect(h.composer.idle()).toBe(true);
+  });
+
+  it("composes the original range when the repair commit is not present locally", async () => {
+    const h = await setup();
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    const p1 = await lr.commit("p1", { "shared.txt": "p1\n" });
+    const gone = "f".repeat(40) as CommitSha;
+    h.queue.push(entry(P1, p1, 1, 3, gone));
+    const out = await h.composer.drain();
+    expect(out[0]?.notes?.[0]).toContain("not present locally");
+    expect(out[0]?.parked).toHaveLength(1);
+    expect(out[0]?.parked[0]?.reason).toContain("not present locally");
+    expect(h.repairs).toHaveLength(0);
   });
 
   it("is not idle on a fresh composer until it has released the held entries it finds", async () => {

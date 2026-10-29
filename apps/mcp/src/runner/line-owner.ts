@@ -525,6 +525,7 @@ const ownLine = async (
           `batch ${outcome.batchId}: composed ${outcome.composed.length}, parked ${outcome.parked.length}` +
             (outcome.published === undefined ? "" : `, push ${outcome.published.status}`),
         );
+        for (const note of outcome.notes ?? []) log(note);
       }
       // A rejected push ends the drain: the line is read again and the ranges
       // the plane gave back are composed onto its new head. A repair still in

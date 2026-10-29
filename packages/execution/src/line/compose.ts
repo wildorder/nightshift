@@ -144,9 +144,17 @@ const groupRanges = async (
     // A parked (spent) range is not on the line, so the next one does not follow it.
     if (unit.released?.owner.state !== "spent") chain.set(unit.program, upTo);
     if (await ports.checkout.isAncestor(upTo, lineHead)) continue;
+    const repaired =
+      unit.released?.range.repaired ??
+      unit.entries.find((entry) => entry.repairs === unit.repairs && entry.repaired)?.repaired;
     grouped.push({
       range: withRepairs(
-        { program: unit.program, ...(from === undefined ? {} : { from }), upTo },
+        {
+          program: unit.program,
+          ...(from === undefined ? {} : { from }),
+          upTo,
+          ...(repaired === undefined ? {} : { repaired }),
+        },
         unit.repairs,
       ),
       entries: unit.entries,
@@ -171,7 +179,8 @@ interface Lineage {
   candidate: CommitSha;
   lineHead: CommitSha;
   landedFrom: number;
-  repaired?: { commit: CommitSha; repair: LineRepairRef };
+  /** The successful repair; `repair` is absent when recovered from a queue entry. */
+  repaired?: { commit: CommitSha; repair?: LineRepairRef };
   lastWords?: string;
   lastRepair?: LineRepairRef;
 }
@@ -225,6 +234,8 @@ export const createLineComposer = (
   const landed: LineRange[] = [];
   /** Held items released to the queue, until the batch that carries them settles. */
   const pendingRelease: HeldItem[] = [];
+  /** Repaired lineages whose composition is awaiting its push; kept until it is published. */
+  const awaiting = new Set<Lineage>();
 
   let recovered = false;
 
@@ -365,13 +376,26 @@ export const createLineComposer = (
     };
     const parkedParts: ParkPart[] = [];
     const newHeld: HeldItem[] = [];
+    /** Ranges whose repair commit this machine does not have, with what to say of it. */
+    const missing = new Map<string, string>();
+    const rangeKey = (range: LineRange) => `${range.program}:${range.upTo}`;
     const park = (range: LineRange, reason: string, extra: Partial<ParkPart> = {}) => {
-      parkedParts.push({ ranges: [range], reason, ...extra });
-      outcome.parked.push({ ranges: [range], reason });
+      const note = missing.get(rangeKey(range));
+      const said = note === undefined ? reason : `${reason}; ${note}`;
+      const { repaired: _kept, ...plain } = range;
+      parkedParts.push({ ranges: [plain], reason: said, ...extra });
+      outcome.parked.push({ ranges: [plain], reason: said });
+    };
+    awaiting.clear();
+    const composedRange = (range: LineRange, own: Lineage | undefined): LineRange => {
+      if (!own) return range;
+      awaiting.add(own);
+      const spent = withRepairs(range, own.repairs);
+      return own.repaired === undefined ? spent : { ...spent, repaired: own.repaired.commit };
     };
     const entriesByRange = new Map<LineRange, LineQueueEntry[]>();
     const entriesOf = (range: LineRange, repairs: number): LineQueueEntry[] =>
-      (entriesByRange.get(range) ?? []).map(({ repairs: _old, ...entry }) =>
+      (entriesByRange.get(range) ?? []).map(({ repairs: _old, repaired: _stale, ...entry }) =>
         repairs > 0 ? { ...entry, repairs } : entry,
       );
 
@@ -386,6 +410,7 @@ export const createLineComposer = (
       held.push(...newHeld);
       // A released lineage whose unit this batch has handled (composed, parked or held behind another) is over.
       for (const item of pendingRelease.splice(0)) {
+        if (awaiting.has(item.owner)) continue;
         if (item.owner.state === "repaired" || item.owner.state === "spent") {
           dropLineage(item.owner);
         }
@@ -400,13 +425,48 @@ export const createLineComposer = (
       return outcome;
     }
 
-    const lineageOf = (range: LineRange): Lineage | undefined =>
+    const lineageFor = (range: LineRange): Lineage | undefined =>
       lineages.find(
         (lineage) =>
           lineage.range.program === range.program &&
           lineage.range.upTo === range.upTo &&
           (lineage.state === "repaired" || lineage.state === "spent"),
       );
+
+    const lineageOf = lineageFor;
+    // A range that arrives with its repair commit (requeued after a rejected push, or
+    // recovered by a new generation) composes that commit first, spending no repair.
+    for (const range of ranges) {
+      const repairedCommit = range.repaired;
+      if (repairedCommit === undefined || lineageFor(range) !== undefined) continue;
+      if (checkout.hasCommit !== undefined && !(await checkout.hasCommit(repairedCommit))) {
+        delete range.repaired;
+        const say = `${rangeLabel(range)}: the repair commit ${repairedCommit} was not present locally; composing the original range`;
+        outcome.notes = [...(outcome.notes ?? []), say];
+        missing.set(
+          rangeKey(range),
+          `the repair commit ${repairedCommit} was not present locally, so the original range was composed`,
+        );
+        continue;
+      }
+      const { repaired: _repaired, ...plainRange } = range;
+      const lineage: Lineage = {
+        range: plainRange,
+        repairs: range.repairs ?? 0,
+        commit: repairedCommit,
+        paths: new Set(),
+        state: "repaired",
+        fresh: false,
+        cause: "line_conflict",
+        causePaths: [],
+        checks: [],
+        candidate: repairedCommit,
+        lineHead,
+        landedFrom: landed.length,
+        repaired: { commit: repairedCommit },
+      };
+      lineages.push(lineage);
+    }
 
     const mainMessage = `Merge main ${mainHead} into the line`;
     const rangeMessage = (range: LineRange) => `Merge program ${rangeLabel(range)} into the line`;
@@ -460,9 +520,13 @@ export const createLineComposer = (
         result.status === "published"
           ? { status: result.status }
           : { status: result.status, detail: result.detail };
+      // The repaired lineages keep their commit and reservation until the line has it.
+      const unpublished = [...awaiting];
+      awaiting.clear();
       if (result.status === "published") {
         outcome.head = head;
         landed.push(...composed);
+        for (const lineage of unpublished) dropLineage(lineage);
       }
       return outcome;
     };
@@ -613,9 +677,8 @@ export const createLineComposer = (
         if (merged.kind === "conflict") {
           failure = { cause: "line_conflict", paths: merged.paths, checks: [] };
         } else if (merged.head === head) {
-          composed.push(own ? withRepairs(range, own.repairs) : range);
+          composed.push(composedRange(range, own));
           if (own) lastRepair = own.repaired?.repair ?? lastRepair;
-          if (own) dropLineage(own);
           continue;
         } else {
           const result = await verifier.verify({
@@ -631,11 +694,8 @@ export const createLineComposer = (
           if (result.verification.outcome === "passed") {
             head = merged.head;
             headVerification = result.verification;
-            composed.push(own ? withRepairs(range, own.repairs) : range);
-            if (own) {
-              lastRepair = own.repaired?.repair ?? lastRepair;
-              dropLineage(own);
-            }
+            composed.push(composedRange(range, own));
+            if (own) lastRepair = own.repaired?.repair ?? lastRepair;
             continue;
           }
           failure = { cause: "line_red", candidate: merged.head, checks: result.logs };
@@ -736,6 +796,8 @@ export const createLineComposer = (
     if (batch === undefined) {
       // Nothing came back for what was released: those lineages are over.
       for (const item of pendingRelease.splice(0)) dropLineage(item.owner);
+      // A repaired lineage whose composition was rejected and never came back is over.
+      for (const lineage of lineages.filter((l) => l.state === "repaired")) dropLineage(lineage);
       return { idle: idle() };
     }
     const { lineHead, mainHead } = await heads();

@@ -141,6 +141,11 @@ export const createLineCheckout = (options: LineCheckoutOptions): LineCheckoutPo
     head,
     isAncestor,
 
+    async hasCommit(commit) {
+      const result = await tryGit(runner, ["cat-file", "-e", `${commit}^{commit}`], { cwd: repo });
+      return result.exitCode === 0;
+    },
+
     async sameTree(a, b) {
       return (await tree(a)) === (await tree(b));
     },

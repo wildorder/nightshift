@@ -786,6 +786,57 @@ describe("held entries", () => {
     expect(resolved.record.queue[0]).toMatchObject({ program: P1, upTo: A, repairs: 3 });
   });
 
+  it("keeps the repaired commit through settle, a rejected push, held and a new generation", () => {
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const composed = composeBatch(
+      batched,
+      compositionBody("b", {
+        ranges: [{ program: P1, upTo: A, repairs: 3, repaired: B }],
+      }) as never,
+      "comp-1",
+      AT,
+    );
+    if (!composed.ok) throw new Error("expected ok");
+    expect(composed.record.compositions[0]?.ranges).toEqual([
+      { program: P1, upTo: A, repairs: 3, repaired: B },
+    ]);
+    const pushed = requestPush(
+      composed.record,
+      { head: C, expectedPredecessor: A, bundleKey: "k" },
+      1,
+      AT,
+    );
+    if (!pushed.ok) throw new Error("expected ok");
+    const resolved = resolvePush(pushed.record, C, "conflict", "no", LATER);
+    if (!resolved.ok) throw new Error("expected ok");
+    expect(resolved.record.queue[0]).toMatchObject({
+      program: P1,
+      upTo: A,
+      repairs: 3,
+      repaired: B,
+    });
+
+    // Taken again and held behind another repair, it keeps the commit through a generation change.
+    const retaken = takeBatch(resolved.record, 1, { batchId: "b2" }, LATER).record;
+    const entry = retaken.batch?.entries.find((e) => e.program === P1);
+    if (entry === undefined) throw new Error("no entry");
+    expect(entry).toMatchObject({ repairs: 3, repaired: B });
+    const held = settleBatch(
+      retaken,
+      { batchId: "b2", parked: [], held: [entry] } as never,
+      { parkedIds: [] },
+      1,
+      LATER,
+    );
+    if (!held.ok) throw new Error("expected ok");
+    expect(held.record.held[0]).toMatchObject({ repaired: B });
+    const replaced = takeBatch(held.record, 2, { batchId: "b3" }, LATER).record;
+    expect(replaced.batch?.entries.find((e) => e.program === P1)).toMatchObject({
+      repairs: 3,
+      repaired: B,
+    });
+  });
+
   it("stores the repair ref from a composition and from parked bodies", () => {
     const repair = { runId: f.ids.next("run"), jobContractId: f.ids.next("job") };
     const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
