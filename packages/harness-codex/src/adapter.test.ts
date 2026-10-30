@@ -577,6 +577,36 @@ describe("cancel (D-P5-02)", () => {
 });
 
 describe("running as another user (P10, D-P10-25)", () => {
+  it("gives the model's commands the user's PATH, the project's runtime first, not this process's (2026-10-30)", async () => {
+    const world = fakes();
+    const events: HookEvent[] = [];
+    const harness = createCodexHarness({
+      spawn: world.spawn,
+      fs: world.fs,
+      env: { ...PARENT_ENV, PATH: "/usr/local/bin:/usr/bin" },
+      platform: "linux",
+    });
+    const handle = await harness.start({
+      ...startInput(events),
+      runAs: {
+        user: "project",
+        env: {
+          PATH: "/workspace/stores/runtimes/installs/node/26.13.0/bin:/usr/local/bin:/usr/bin",
+        },
+        grant: async () => undefined,
+      },
+    });
+    const call = world.calls[0];
+    const policy = call?.args.find((arg) => arg.startsWith("shell_environment_policy.set="));
+    expect(policy).toMatch(
+      /nightshift-codex-[^:]+:\/workspace\/stores\/runtimes\/installs\/node\/26\.13\.0\/bin:\/usr\/local\/bin:\/usr\/bin/,
+    );
+    // Not this process's PATH after the guard.
+    expect(policy).not.toMatch(/nightshift-codex-[^:]+:\/usr\/local\/bin:\/usr\/bin"/);
+    world.children[0]?.close(0);
+    await handle.exit;
+  });
+
   it("grants the git guard to the user and spawns codex through sudo", async () => {
     const world = fakes();
     const events: HookEvent[] = [];

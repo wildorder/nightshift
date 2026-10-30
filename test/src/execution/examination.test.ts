@@ -371,13 +371,18 @@ interface RigOptions {
   readonly whenIndependentUnavailable?: "wait" | "strongest";
   /** The prerequisites as the control plane would answer them, read on every verification. */
   readonly prerequisites?: () => readonly Prerequisite[];
+  /** What every agent writes to its transcript path, so the kept transcripts can be counted. */
+  readonly transcript?: string;
 }
 
 const rig = async (scenario: Scenario, options: RigOptions = {}) => {
   let world: World | undefined;
   const seen: Seen = { roles: [], tasks: [], resumes: [], checkouts: [], examinerModels: [] };
   const made = await createWorld({
-    harness: createFakeHarness({ script: play(() => world as World, scenario, seen) }),
+    harness: createFakeHarness({
+      script: play(() => world as World, scenario, seen),
+      ...(options.transcript === undefined ? {} : { transcript: options.transcript }),
+    }),
     ...(options.program === undefined ? {} : { program: options.program }),
     ...(options.whenIndependentUnavailable === undefined
       ? {}
@@ -510,6 +515,21 @@ describe("examination beside the merge queue (D-P8-09)", () => {
     expect(events.filter((event) => event.type === "examination.completed")).toHaveLength(1);
     const routes = await world.stores.routingDecisions.listByNode(world.scope, nodeId);
     expect(routes.map((route) => route.purpose ?? "work").sort()).toEqual(["examine", "work"]);
+  });
+
+  it("keeps the examiner's transcript as an artifact of the examined node, as the worker's is (2026-10-30)", async () => {
+    const { world, engine, nodeId } = await rig(
+      { risk: "high" },
+      { transcript: '{"type":"system"}\n{"type":"result"}\n' },
+    );
+    expect(await settledIdle(world, engine, nodeId)).toBe("integrated");
+    const artifacts = await world.stores.artifacts.listByRun(world.scope);
+    const transcripts = artifacts.items.filter((artifact) => artifact.kind === "transcript");
+    // One for the worker, one for the examiner, both on the node that was examined.
+    expect(transcripts).toHaveLength(2);
+    expect(new Set(transcripts.map((artifact) => artifact.executionNodeId))).toEqual(
+      new Set([nodeId]),
+    );
   });
 
   it("runs the program's setup in the examination's fresh checkout before checking it", async () => {

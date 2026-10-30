@@ -38,7 +38,7 @@
  * one of the job's attempts.
  */
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
   Agent,
@@ -1573,7 +1573,37 @@ export const runHelper = async (
   recorder.recordExit(exit);
   // A resume's baseline is read from what this launch left in the summary.
   await recorder.drain();
+  // The helper's transcript is evidence as a worker's is: kept as an artifact
+  // of the examined node. Until 2026-10-30 an examiner's reasoning was never
+  // recorded, and a finding about the environment it judged in could not be checked.
+  await recordHelperTranscript(environment, input, transcript);
   return exit;
+};
+
+const recordHelperTranscript = async (
+  environment: ExecutionEnvironment,
+  input: HelperInput,
+  path: string,
+): Promise<void> => {
+  let bytes: Uint8Array;
+  try {
+    bytes = await readFile(path);
+  } catch {
+    // No transcript is not a failure: an adapter need not keep one.
+    return;
+  }
+  if (bytes.byteLength === 0) return;
+  try {
+    await recordArtifact(environment, {
+      scope: input.session.scope,
+      nodeId: input.node.executionNodeId,
+      kind: "transcript",
+      contentType: "application/x-ndjson",
+      bytes,
+    });
+  } catch {
+    // Evidence, not the examination: a failed upload does not fail the helper.
+  }
 };
 
 /** A helper agent's ending, with the session it kept, once. */
