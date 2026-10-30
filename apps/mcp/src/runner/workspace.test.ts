@@ -111,6 +111,28 @@ describe("repository runtimes resolved on the machine", () => {
     expect(projectEnvironment(layout, toolchain).PATH).toContain("node/22.11.0/bin");
   });
 
+  it("leaves Node to the image when only engines.node is declared and the image's Node satisfies it (2026-10-30)", async () => {
+    const machine = fakeMachine({
+      exec: (file, args) =>
+        file === "mise" && args[0] === "ls-remote" ? ok("20.19.0\n22.11.0\n26.13.0\n") : undefined,
+    });
+    machine.files.set(
+      `${layout.checkout}/package.json`,
+      JSON.stringify({ engines: { node: ">=20" } }),
+    );
+    // The fake's own node is v22.11.0: it satisfies the range, so nothing is pinned or installed.
+    expect(await resolveProjectRuntimes(machine, layout)).toEqual([]);
+    expect(machine.commands.some((command) => command.startsWith("mise ls-remote"))).toBe(false);
+    // A range the image's Node does not satisfy is still resolved to a release that does.
+    machine.files.set(
+      `${layout.checkout}/package.json`,
+      JSON.stringify({ engines: { node: ">=26" } }),
+    );
+    expect(await resolveProjectRuntimes(machine, layout)).toEqual([
+      { runtime: "node", version: "26.13.0", source: pin("package.json#engines.node", ">=26") },
+    ]);
+  });
+
   it("uses exact declarations without a version lookup, and image defaults when undeclared", async () => {
     const machine = fakeMachine();
     expect(await resolveProjectRuntimes(machine, layout)).toEqual([]);

@@ -451,6 +451,16 @@ export const resolveProjectRuntimes = async (
   const toolchain: RuntimeVersion[] = [];
   for (const pin of resolution.pins) {
     if (!(PINNED_RUNTIMES as readonly string[]).includes(pin.runtime)) continue;
+    // `engines.node` is compatibility, not a choice (pins.ts). When the image's
+    // own Node satisfies it, that Node is the project's: resolving the range
+    // to the newest release gave every machine whichever Node was newest that
+    // day (26.12.1 one day, 26.13.0 the next) and the agents' own CLIs another
+    // (2026-10-30). A range the image's Node does not satisfy is resolved as before.
+    if (pin.source === "package.json#engines.node") {
+      const own = await machine.exec("node", ["--version"]);
+      const version = parseRuntimeVersion("node", own.stdout);
+      if (own.exitCode === 0 && version !== undefined && satisfiesPin(version, pin.spec)) continue;
+    }
     const source = { kind: "pin" as const, file: pin.source, spec: pin.spec };
     let version = pin.spec.replace(/^v(?=\d)/, "");
     if (pin.runtime === "rust" && /^(stable|beta|nightly)(?:-\d{4}-\d{2}-\d{2})?$/.test(version)) {

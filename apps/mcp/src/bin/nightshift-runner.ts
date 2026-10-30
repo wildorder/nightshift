@@ -117,7 +117,11 @@ runRunner({
       git: nodeGitRunner,
       ids: createUlidIdGenerator(),
       clock: systemClock,
-      paths: createLineScratchPaths(process.env),
+      // The composer's scratch (each step's TMPDIR) lives under the run's
+      // directory on the workspace, as the engine's does, where the project
+      // user can write: under the engine's home it could not, and every
+      // landing check on foodfly's line failed `EACCES mkdir` (2026-10-30).
+      paths: createLineScratchPaths({ ...process.env, NIGHTSHIFT_STATE_DIR: context.layout.run }),
       parentEnv: process.env,
       placeCredentials: async (credentials) => {
         const providerKeys = await placeProviderCredentials(context.scope.runId, credentials, {

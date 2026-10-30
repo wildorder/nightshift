@@ -208,16 +208,16 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
    * worker's Nightshift MCP server inherits that, and it is the one process that
    * must reach the real `git`. A machine with no `git` has nothing to guard.
    */
-  const installGitGuard = (state: RunState): string | undefined => {
+  const installGitGuard = (state: RunState, agentPath: string | undefined): string | undefined => {
     if (platform === "win32") return undefined;
-    const realGit = fs.findExecutable("git", state.env.PATH);
+    const realGit = fs.findExecutable("git", agentPath);
     if (realGit === undefined) return undefined;
     const guardDir = fs.makeTempDir("nightshift-codex-");
     state.guardDir = guardDir;
     // POSIX spelling on purpose: the guard exists only there, and a test that
     // injects `platform` must read the same path on a Windows CI leg.
     fs.writeExecutable(posix.join(guardDir, "git"), buildGitGuard(realGit));
-    return `${guardDir}${posix.delimiter}${state.env.PATH ?? ""}`;
+    return `${guardDir}${posix.delimiter}${agentPath ?? ""}`;
   };
 
   const launch = async (input: Launch): Promise<HarnessHandle> => {
@@ -293,9 +293,14 @@ export const createCodexHarness = (options: CodexHarnessOptions = {}): Harness =
       return handle;
     };
 
+    // The PATH the model's commands run under is the project's when the agent
+    // runs as the project user (D-P10-30): with the pinned runtime first. It
+    // was this process's own, the image's, so every Codex agent on a machine
+    // built and tested on the image's Node whatever the project pinned, and an
+    // examiner judged a gate red on a Node the project never ran (2026-10-30).
     let shellPath: string | undefined;
     try {
-      shellPath = installGitGuard(state);
+      shellPath = installGitGuard(state, input.runAs?.env?.PATH ?? state.env.PATH);
     } catch (error) {
       return failToLaunch(`could not write the git guard: ${messageOf(error)}`);
     }
