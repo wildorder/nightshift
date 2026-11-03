@@ -39,6 +39,25 @@ describe("publicationPathsAllowed", () => {
     );
   });
 
+  it("holds the files to the programs directory the contract names", () => {
+    const files = ["planning/p21-plans/plan.md", "planning/p21-plans/report.md"];
+    expect(publicationPathsAllowed(name, files, "planning")).toBe(true);
+    expect(publicationPathsAllowed(name, files)).toBe(false);
+    expect(publicationPathsAllowed(name, ["docs/programs/p21-plans/plan.md"], "planning")).toBe(
+      false,
+    );
+    expect(publicationPathsAllowed(name, ["a/b.c/p21-plans/plan.md"], "a/b.c")).toBe(true);
+  });
+
+  it("refuses a programs directory that could climb or reach into .git", () => {
+    for (const directory of ["..", "../out", "/abs", "docs/", ".git", "docs/./programs", ""]) {
+      expect(
+        publicationPathsAllowed(name, [`${directory}/p21-plans/plan.md`], directory),
+        directory,
+      ).toBe(false);
+    }
+  });
+
   it("refuses a program name that is not one directory name", () => {
     expect(publicationPathsAllowed("..", ["docs/programs/../plan.md"])).toBe(false);
     expect(publicationPathsAllowed("a/b", ["docs/programs/a/b/plan.md"])).toBe(false);

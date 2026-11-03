@@ -1,6 +1,7 @@
 /**
- * A program's documents on disk (P7, D-P7-03): `docs/programs/{id}/plan.md` and
- * `contract.json`, in the same place for every program of a product's life.
+ * A program's documents on disk (P7, D-P7-03): `{programsDirectory}/{id}/plan.md`
+ * and `contract.json`, in the same place for every program of a product's life:
+ * `docs/programs/` unless `nightshift.config.json` names another directory.
  *
  * The contract a command works with is the **merged** one: what the authored
  * `contract.json` states, over the project's defaults in `nightshift.config.json`.
@@ -14,9 +15,9 @@ import {
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
   NightshiftConfigSchema,
-  PROGRAMS_DIRECTORY,
   type ProgramContract,
   ProgramContractSchema,
+  programsDirectoryOf,
 } from "@nightshift/contracts";
 import { CONVERSATION_FILE, keepsConversation } from "@nightshift/core";
 import { UsageError } from "./failures.js";
@@ -63,7 +64,7 @@ export const readConfig = async (repoPath: string): Promise<NightshiftConfig | u
 };
 
 export interface ProgramFiles {
-  /** The directory name under `docs/programs/`. */
+  /** The directory name under the programs directory. */
   readonly id: string;
   /** Repository-relative, with forward slashes: what git is asked about. */
   readonly directory: string;
@@ -76,17 +77,19 @@ export interface ProgramFiles {
   readonly conversationText?: string;
 }
 
-/** Reads and validates `docs/programs/{id}/`. A `ZodError` from here is the contract's. */
+/** Reads and validates `{programsDirectory}/{id}/`. A `ZodError` from here is the contract's. */
 export const readProgramFiles = async (repoPath: string, id: string): Promise<ProgramFiles> => {
+  const config = await readConfig(repoPath);
+  const programs = programsDirectoryOf(config);
   if (!isProgramDirectoryName(id)) {
     throw new UsageError(
       `\`${id}\` is not a program id`,
-      `A program id is the name of its directory under ${PROGRAMS_DIRECTORY}/, for example \`p1-billing\`.`,
+      `A program id is the name of its directory under ${programs}/, for example \`p1-billing\`.`,
     );
   }
-  const directory = `${PROGRAMS_DIRECTORY}/${id}`;
-  const contractPath = join(repoPath, PROGRAMS_DIRECTORY, id, CONTRACT_FILE);
-  const planPath = join(repoPath, PROGRAMS_DIRECTORY, id, PLAN_FILE);
+  const directory = `${programs}/${id}`;
+  const contractPath = join(repoPath, directory, CONTRACT_FILE);
+  const planPath = join(repoPath, directory, PLAN_FILE);
 
   const contractText = await readText(contractPath);
   if (contractText === undefined) {
@@ -103,11 +106,10 @@ export const readProgramFiles = async (repoPath: string, id: string): Promise<Pr
     );
   }
 
-  const config = await readConfig(repoPath);
   const authored = parseJson(contractPath, contractText);
   const contract = ProgramContractSchema.parse(mergeProgramFiles(authored, config));
   const conversationText = keepsConversation(contract)
-    ? await readText(join(repoPath, PROGRAMS_DIRECTORY, id, CONVERSATION_FILE))
+    ? await readText(join(repoPath, directory, CONVERSATION_FILE))
     : undefined;
   return {
     id,

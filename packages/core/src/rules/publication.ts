@@ -2,11 +2,12 @@
  * What a finished planned run may publish onto its program branch (P21, D-03).
  *
  * At finish the engine commits the program's contract, plan, conversation and
- * report into `docs/programs/{name}/` as history. The commit is not verified,
+ * report into `{programsDirectory}/{name}/` as history. The commit is not verified,
  * so this rule is what keeps it from carrying anything else.
  */
+import { DEFAULT_PROGRAMS_DIRECTORY, ProgramsDirectorySchema } from "@nightshift/contracts";
 
-/** The four files a publication may hold, directly inside `docs/programs/{name}/`. */
+/** The four files a publication may hold, directly inside `{programsDirectory}/{name}/`. */
 export const PUBLICATION_FILES = [
   "contract.json",
   "plan.md",
@@ -16,8 +17,11 @@ export const PUBLICATION_FILES = [
 
 export type PublicationFile = (typeof PUBLICATION_FILES)[number];
 
-/** `docs/programs/{name}` with no trailing slash. */
-export const publicationDirectory = (programName: string): string => `docs/programs/${programName}`;
+/** `{programsDirectory}/{name}` with no trailing slash; `docs/programs` unless the contract names another. */
+export const publicationDirectory = (
+  programName: string,
+  programsDirectory: string = DEFAULT_PROGRAMS_DIRECTORY,
+): string => `${programsDirectory}/${programName}`;
 
 /** Whether `programName` is a single safe directory name (no separators, no climbing). */
 const isDirectoryName = (name: string): boolean =>
@@ -25,14 +29,18 @@ const isDirectoryName = (name: string): boolean =>
 
 /**
  * Whether every changed path is one of the publication's four files under
- * `docs/programs/{programName}/`. Paths are repository-relative with `/`; a path
+ * `{programsDirectory}/{programName}/`. Paths are repository-relative with `/`; a path
  * that climbs, is absolute, or names any other file or directory is refused.
  * An empty list is allowed: nothing changed, nothing outside.
  */
-export const publicationPathsAllowed = (programName: string, paths: readonly string[]): boolean => {
+export const publicationPathsAllowed = (
+  programName: string,
+  paths: readonly string[],
+  programsDirectory: string = DEFAULT_PROGRAMS_DIRECTORY,
+): boolean => {
   if (!isDirectoryName(programName)) return false;
-  const allowed = new Set<string>(
-    PUBLICATION_FILES.map((file) => `${publicationDirectory(programName)}/${file}`),
-  );
+  if (!ProgramsDirectorySchema.safeParse(programsDirectory).success) return false;
+  const directory = publicationDirectory(programName, programsDirectory);
+  const allowed = new Set<string>(PUBLICATION_FILES.map((file) => `${directory}/${file}`));
   return paths.every((path) => allowed.has(path));
 };

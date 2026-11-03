@@ -105,6 +105,15 @@ describe("the working tree", () => {
     expect(await isDirty(nodeGitRunner, repo)).toBe(true);
   });
 
+  it("does not count the untracked report a run wrote, in the programs directory it was given", async () => {
+    const { repo } = await repository();
+    await mkdir(join(repo, "planning", "p1"), { recursive: true });
+    await writeFile(join(repo, "planning", "p1", "report.md"), "# report\n", "utf8");
+    expect(await isDirty(nodeGitRunner, repo, "planning")).toBe(false);
+    // Anywhere else it is somebody's file.
+    expect(await isDirty(nodeGitRunner, repo)).toBe(true);
+  });
+
   it("does not count an ignored file as dirty", async () => {
     const { repo } = await repository();
     await mkdir(join(repo, "ignored"), { recursive: true });

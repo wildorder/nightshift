@@ -50,6 +50,33 @@ export const PathGlobSchema = z
   });
 export type PathGlob = z.infer<typeof PathGlobSchema>;
 
+/** Where a project's program documents live when its config does not say (D-P7-03). */
+export const DEFAULT_PROGRAMS_DIRECTORY = "docs/programs";
+
+/** One path segment: no separators, nothing that climbs or hides. */
+const DIRECTORY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * The directory a project's programs are kept in, repository-relative with `/`
+ * and no trailing slash, for example `docs/programs` or `planning`. Every
+ * segment is a plain name, so it can neither climb out of the repository nor
+ * reach into `.git`: a finished run's publication commit is written there
+ * unverified, and this is part of what holds it in place.
+ */
+export const ProgramsDirectorySchema = z
+  .string()
+  .min(1)
+  .refine((value) => value.split("/").every((segment) => DIRECTORY_SEGMENT.test(segment)), {
+    message:
+      "must be a repository-relative directory such as docs/programs: plain names joined by /, no leading or trailing /, no . or ..",
+  });
+export type ProgramsDirectory = z.infer<typeof ProgramsDirectorySchema>;
+
+/** The programs directory a config or contract names, or the default. */
+export const programsDirectoryOf = (source?: {
+  readonly programsDirectory?: string | undefined;
+}): string => source?.programsDirectory ?? DEFAULT_PROGRAMS_DIRECTORY;
+
 /**
  * Until the owner's ruling of 2026-10-09 an execution node and a Job Contract
  * carried a path scope, and a job was refused, confined or failed for the paths

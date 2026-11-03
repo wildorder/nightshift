@@ -1,7 +1,8 @@
 /**
  * `nightshift.config.json` — a repository's project-wide defaults (P7, D-P7-03).
  *
- * A product runs many programs over its life, each in `docs/programs/{id}/`.
+ * A product runs many programs over its life, each in `{programsDirectory}/{id}/`
+ * (`docs/programs/{id}/` unless the config names another directory).
  * What is true of every one of them is stated once, here, and a program's
  * contract **inherits what it does not state**: a contract that names its own
  * `verification` keeps it, one that does not gets the project's. Not a record
@@ -10,7 +11,7 @@
  */
 import { z } from "zod";
 import { ProjectIdSchema } from "../ids.js";
-import { RiskLevelSchema } from "./common.js";
+import { DEFAULT_PROGRAMS_DIRECTORY, ProgramsDirectorySchema, RiskLevelSchema } from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
 import { LineConfigSchema } from "./line-config.js";
 import {
@@ -32,14 +33,17 @@ import { SecretNameSchema } from "./secrets.js";
 
 export const NIGHTSHIFT_CONFIG_FILE = "nightshift.config.json";
 
-/** Where a program's documents live, relative to the repository root (D-P7-03). */
-export const PROGRAMS_DIRECTORY = "docs/programs";
-
 export const NightshiftConfigSchema = z.strictObject({
   schemaVersion: z.literal(1),
   projectId: ProjectIdSchema,
   /** The product vision `plan-program` reads first. Repository-relative. */
   visionPath: z.string().min(1).optional(),
+  /**
+   * Where this project's programs keep their documents, repository-relative:
+   * `{programsDirectory}/{id}/`. Absent means `docs/programs`. Inherited by
+   * every contract, so a finished run publishes where the project keeps them.
+   */
+  programsDirectory: ProgramsDirectorySchema.optional(),
   /** Other documents every plan should be written in the light of. */
   contextDocs: z.array(z.string().min(1)),
   /** What makes a checkout of this repository usable; see `SetupStepSchema`. */
@@ -58,7 +62,7 @@ export const NightshiftConfigSchema = z.strictObject({
   routing: RoutingNarrowingSchema.optional(),
   /**
    * P14 (D-P14-06): keep each program's planning conversation, a summary and
-   * verbatim excerpts, in `docs/programs/{id}/conversation.md`, committed and
+   * verbatim excerpts, in `{programsDirectory}/{id}/conversation.md`, committed and
    * uploaded at ratification. On unless this says `false`.
    */
   keepConversation: z.boolean().optional(),
@@ -91,6 +95,7 @@ export const INHERITED_CONTRACT_FIELDS = [
   "defaultRisk",
   "routing",
   "keepConversation",
+  "programsDirectory",
   "secrets",
 ] as const;
 
@@ -129,9 +134,11 @@ export const inheritFromConfig = (contract: unknown, config: NightshiftConfig): 
   return merged;
 };
 
-/** A program's authored contract, repository-relative: `docs/programs/{id}/contract.json` (D-P7-03). */
-export const programContractPath = (id: string): string =>
-  `${PROGRAMS_DIRECTORY}/${id}/contract.json`;
+/** A program's authored contract, repository-relative: `{programsDirectory}/{id}/contract.json` (D-P7-03). */
+export const programContractPath = (
+  id: string,
+  programsDirectory: string = DEFAULT_PROGRAMS_DIRECTORY,
+): string => `${programsDirectory}/${id}/contract.json`;
 
 /**
  * The contract a program's files state, exactly as `nightshift run {id}` reads

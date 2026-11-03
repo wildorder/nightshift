@@ -25,7 +25,9 @@ expensive decisions in a plan that lives in the control plane, as `plan.md` and
   `run-program` skill, from a session) checks the plan is the one that was
   ratified, runs preflight, starts an orchestrator with nobody watching, and
   publishes `docs/programs/{id}/` (plan, contract, conversation, report) onto
-  the program branch when it finishes.
+  the program branch when it finishes. (That is the project's programs
+  directory: `programsDirectory` in `nightshift.config.json`, `docs/programs`
+  when it names none.)
 - If the human would rather you orchestrate it from this session, they run
   `nightshift run {id} --attended` and you `run.attach` as below. Then:
   - Delegate **each ratified strand** with

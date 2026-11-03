@@ -7,7 +7,13 @@
  */
 import { z } from "zod";
 import { DecisionIdSchema, ProgramIdSchema, RunIdSchema } from "../ids.js";
-import { IsoTimestampSchema, PathGlobSchema, programScoped, RiskLevelSchema } from "./common.js";
+import {
+  IsoTimestampSchema,
+  PathGlobSchema,
+  ProgramsDirectorySchema,
+  programScoped,
+  RiskLevelSchema,
+} from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
 import { LineConfigSchema } from "./line-config.js";
 import {
@@ -376,6 +382,12 @@ export const ProgramContractSchema = z
      * Absent means kept; usually inherited from `nightshift.config.json`.
      */
     keepConversation: z.boolean().optional(),
+    /**
+     * Where the program's documents are published at finish, as
+     * `{programsDirectory}/{name}/`. Absent means `docs/programs`; usually
+     * inherited from `nightshift.config.json`.
+     */
+    programsDirectory: ProgramsDirectorySchema.optional(),
     strands: z.array(StrandSchema).optional(),
     prerequisites: z.array(PrerequisiteSchema).optional(),
     decisions: z.array(PlannedDecisionSchema).optional(),

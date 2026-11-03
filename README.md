@@ -55,6 +55,9 @@ nightshift report <id>                   # the report again, from the control pl
 nightshift decision reverse <id> <decisionId> --choice "…" --reason "…"
 ```
 
+A program's documents go in `docs/programs/<id>/` unless `nightshift.config.json`
+names another directory, for example `"programsDirectory": "planning"`.
+
 Watch the run in the Studio while it goes: the execution tree, every agent and
 its model, the timeline, each job's verifications and examinations, cost, and
 the decision graph, from which you can reverse a decision.

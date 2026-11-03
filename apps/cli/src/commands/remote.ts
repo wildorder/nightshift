@@ -22,6 +22,7 @@ import {
   OrgConfigSchema,
   type ProgramContract,
   ProjectSchema,
+  programsDirectoryOf,
   type ReferenceAudit,
 } from "@nightshift/contracts";
 import {
@@ -51,12 +52,12 @@ import { STAGE_WORDS, watchDispatch } from "./watch.js";
 /** What `--remote` says for a contract that is not a ratified planned program (D-P10-09). */
 /**
  * Not about ratification, which the plane answers: this is the argument. A
- * remote run takes a planned program's directory name under `docs/programs/`,
+ * remote run takes a planned program's directory name under the programs directory,
  * run from the repository root; a path, a contract file, or an id the checkout
  * has no directory for is refused before anything is read.
  */
 export const REMOTE_NEEDS_PLAN =
-  "remote execution runs a planned program: pass the program's directory name under docs/programs/ (not a path or a contract file), from the repository root";
+  "remote execution runs a planned program: pass the program's name, its directory under the programs directory (not a path or a contract file), from the repository root";
 
 export interface RemoteReadiness {
   readonly repositoryUrl: string;
@@ -179,7 +180,7 @@ export const assertRemoteReady = async (
   // The machine runs exactly what is pushed, and the plan is held to its hash,
   // so uncommitted work elsewhere in the checkout changes nothing about the
   // run: it is said, so nobody expects it there, and never refused (2026-10-16).
-  if (await isDirty(environment.git, repoPath)) {
+  if (await isDirty(environment.git, repoPath, programsDirectoryOf(contract))) {
     environment.err(
       "note: the checkout has uncommitted changes; they are not part of the run, which dispatches what is pushed",
     );

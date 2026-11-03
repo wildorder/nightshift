@@ -140,13 +140,14 @@ const NextStep = ({
       checkout of the repository and plan the correction from it with the owner:
     </p>
     <pre className="mt-1 rounded-md bg-background p-2 font-mono text-xs whitespace-pre-wrap text-foreground">
-      {`nightshift decision brief <program> ${decision.decisionId} --run ${decision.runId} --out docs/programs/<correction>/brief.md`}
+      {`nightshift decision brief <program> ${decision.decisionId} --run ${decision.runId} --out <programs>/<correction>/brief.md`}
     </pre>
     <p className="mt-1 text-muted-foreground">
-      <code>&lt;program&gt;</code> is the program's directory under <code>docs/programs/</code>{" "}
-      whose contract names <code>{decision.programId}</code>. Then, in a coding session, ask{" "}
-      <code>plan-program</code> to plan the correction from that brief; it is ratified and run like
-      any program.
+      <code>&lt;program&gt;</code> is the program's directory under <code>&lt;programs&gt;</code>,
+      the project's programs directory (<code>docs/programs</code> unless{" "}
+      <code>nightshift.config.json</code> names another), whose contract names{" "}
+      <code>{decision.programId}</code>. Then, in a coding session, ask <code>plan-program</code> to
+      plan the correction from that brief; it is ratified and run like any program.
     </p>
   </div>
 );

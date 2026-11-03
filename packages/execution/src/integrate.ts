@@ -26,13 +26,14 @@
  * checkout, and it refuses when the checkout is dirty rather than fast-forwarding
  * over someone's work in progress.
  */
-import type {
-  AgentId,
-  CheckpointId,
-  CommitSha,
-  Examination,
-  ExecutionNode,
-  ExecutionNodeId,
+import {
+  type AgentId,
+  type CheckpointId,
+  type CommitSha,
+  type Examination,
+  type ExecutionNode,
+  type ExecutionNodeId,
+  programsDirectoryOf,
 } from "@nightshift/contracts";
 import { isLandingEvidence, nowIso, transition } from "@nightshift/core";
 import type { LandingEnvironment, RunSession } from "./environment.js";
@@ -89,7 +90,7 @@ export const checkoutBlocked = async (
   if (branch !== programBranch) {
     return `program_checkout_wrong_branch: the checkout at ${repo} is on "${branch}", not the program branch "${programBranch}"`;
   }
-  if (await isDirty(environment.git, repo)) {
+  if (await isDirty(environment.git, repo, programsDirectoryOf(session.program))) {
     return `program_checkout_dirty: the checkout at ${repo} has uncommitted changes, and Nightshift will not fast-forward over them`;
   }
   return undefined;
@@ -106,7 +107,7 @@ const blockingReason = async (
   if (branch !== programBranch) {
     return `program_checkout_wrong_branch: the checkout at ${repo} is on "${branch}", not the program branch "${programBranch}"`;
   }
-  if (await isDirty(environment.git, repo)) {
+  if (await isDirty(environment.git, repo, programsDirectoryOf(input.session.program))) {
     return `program_checkout_dirty: the checkout at ${repo} has uncommitted changes, and Nightshift will not fast-forward over them`;
   }
   const head = await revParse(environment.git, repo, programBranch);

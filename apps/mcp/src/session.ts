@@ -204,7 +204,7 @@ const configuredProject = (config: unknown): ProjectId | undefined => {
  * Every program this repository belongs to: the single authored contract file
  * of an unplanned program, and each plan draft the control plane holds for the
  * project of `nightshift.config.json` (P21: a planned program's plan is on the
- * plane, not under `docs/programs/`). Only the identifiers are taken; the
+ * plane, not under the programs directory). Only the identifiers are taken; the
  * **record** is the authority for the contract's content (§4.5).
  */
 const repositoryPrograms = async (state: OrchestratorSession): Promise<ProgramRef[]> => {
@@ -230,8 +230,8 @@ const repositoryPrograms = async (state: OrchestratorSession): Promise<ProgramRe
 };
 
 /**
- * The name a planned program has on the plane (its directory name under
- * `docs/programs/`), from its plan draft. `undefined` for a program with no
+ * The name a planned program has on the plane (its directory name under the
+ * programs directory), from its plan draft. `undefined` for a program with no
  * draft or a draft with no name: such a run publishes nothing.
  */
 export const programNameOf = async (

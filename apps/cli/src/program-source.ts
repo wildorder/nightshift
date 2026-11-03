@@ -4,7 +4,7 @@
  * `findProgram` is `readProgramFiles` with the plane as the home: it finds the
  * program's draft by its name among the project's drafts and reads the documents
  * of the version asked for by sha256. A program planned before P21, with only
- * `docs/programs/{name}/` committed, is put on the plane once (the import) and
+ * `{programsDirectory}/{name}/` committed, is put on the plane once (the import) and
  * found there from then on. `readProgramFiles` stays as the importer's reader.
  */
 import { readFile } from "node:fs/promises";
@@ -13,10 +13,10 @@ import {
   mergeProgramFiles,
   type PlanDraft,
   type PlanDraftVersion,
-  PROGRAMS_DIRECTORY,
   type ProgramContract,
   ProgramContractSchema,
   ProjectIdSchema,
+  programsDirectoryOf,
 } from "@nightshift/contracts";
 import { isPlanned, type ProgramScope } from "@nightshift/core";
 import { createHttpPlanning, type PlanningClient } from "@nightshift/persistence/http";
@@ -32,7 +32,7 @@ import {
 import type { Session } from "./session.js";
 
 export interface FindProgramOptions {
-  /** Where `nightshift.config.json` and, for the import, `docs/programs/` are. */
+  /** Where `nightshift.config.json` and, for the import, the programs directory are. */
   readonly repoPath: string;
   /** The program's name: its directory name. */
   readonly name: string;
@@ -80,7 +80,7 @@ const projectOf = async (
   if (config !== undefined) return config.projectId;
   // A program planned before P21 in a repository with no config states its project itself.
   const committed = await readFile(
-    join(repoPath, PROGRAMS_DIRECTORY, options.name, CONTRACT_FILE),
+    join(repoPath, programsDirectoryOf(config), options.name, CONTRACT_FILE),
     "utf8",
   ).catch(() => undefined);
   const stated = ProjectIdSchema.safeParse(
@@ -144,13 +144,13 @@ const importCommitted = async (
   };
   if (committed.contract.projectId !== projectId) {
     throw new UsageError(
-      `docs/programs/${options.name}/contract.json is for project ${committed.contract.projectId}, not ${projectId}`,
+      `${committed.directory}/contract.json is for project ${committed.contract.projectId}, not ${projectId}`,
     );
   }
   const existing = await planning.getDraft(scope);
   if (existing === undefined) {
     environment.err(
-      `importing docs/programs/${options.name}/ into the plane as version 1 of \`${options.name}\``,
+      `importing ${committed.directory}/ into the plane as version 1 of \`${options.name}\``,
     );
   }
   await planning.putVersion(
@@ -208,7 +208,6 @@ export const findProgram = async (
     throw new UsageError(`the plane has no version of \`${options.name}\``);
   }
   const version = latest.version;
-  const directory = `docs/programs/${options.name}`;
 
   const recorded = await session.stores.programContracts.get(projectId, draft.programId);
   // A contract with no strands is run as it stands and never ratified; what a run
@@ -230,7 +229,7 @@ export const findProgram = async (
         : await readDocument(planning, scope, "conversation", contract.conversation.sha256);
     return {
       id: options.name,
-      directory,
+      directory: `${programsDirectoryOf(contract)}/${options.name}`,
       contract,
       planText,
       ...(conversationText === undefined ? {} : { conversationText }),
@@ -252,7 +251,7 @@ export const findProgram = async (
       : await readDocument(planning, scope, "conversation", version.conversation.sha256);
   return {
     id: options.name,
-    directory,
+    directory: `${programsDirectoryOf(contract)}/${options.name}`,
     contract,
     planText,
     ...(conversationText === undefined ? {} : { conversationText }),

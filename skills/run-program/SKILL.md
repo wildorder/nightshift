@@ -187,6 +187,8 @@ command prints them after the run id.
 
 ## 4. When it ends
 
+`docs/programs/` in this skill means the project's programs directory: `programsDirectory` in `nightshift.config.json`, or `docs/programs` when it names none.
+
 Attended: `run.finish` ends the run and publishes the planned run's
 `docs/programs/{id}/` (plan, contract, conversation and report) onto the program
 branch; read the report. Dark: you are notified when the command exits. `nightshift run` exits 0 when every strand succeeded, 3 when nothing failed but

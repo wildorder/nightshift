@@ -1,7 +1,7 @@
 /**
  * The kept planning conversation (P14, D-P14-05 … D-P14-07).
  *
- * `docs/programs/{id}/conversation.md` holds a **summary** of how the plan came
+ * `{programsDirectory}/{id}/conversation.md` holds a **summary** of how the plan came
  * about, written by the planning model and labelled as its own, and
  * **excerpts**: the exchanges that shaped the plan, copied from the harness's
  * transcript word for word. The skill chooses which messages by number; the CLI

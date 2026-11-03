@@ -1,6 +1,6 @@
 /**
  * The one commit a finished planned run adds to its program branch (P21, D-03):
- * the program's contract, plan, conversation and report, in `docs/programs/{name}/`,
+ * the program's contract, plan, conversation and report, in `{programsDirectory}/{name}/`,
  * as history. Not verified; so it is built in a temporary worktree, its actual
  * diff is held to `publicationPathsAllowed`, and only then does the branch move.
  */
@@ -28,8 +28,10 @@ import { type GitRunner, git, tryGit } from "./git/runner.js";
 export interface PublicationCommitInput {
   readonly repo: string;
   readonly programBranch: string;
-  /** The program's name on the plane: its directory under `docs/programs/`. */
+  /** The program's name on the plane: its directory under the programs directory. */
   readonly name: string;
+  /** The contract's `programsDirectory`; `docs/programs` when absent. */
+  readonly programsDirectory?: string | undefined;
   /** What to write; the conversation only when the contract names one. */
   readonly files: Partial<Record<PublicationFile, string>>;
   readonly message: string;
@@ -66,7 +68,7 @@ export const commitPublication = async (
   try {
     await addDetachedWorktree(runner, { repo: input.repo, path: worktree, base: previous });
     const options = { cwd: worktree, ...(input.atMs === undefined ? {} : { atMs: input.atMs }) };
-    const directory = publicationDirectory(input.name);
+    const directory = publicationDirectory(input.name, input.programsDirectory);
     const written: string[] = [];
     for (const file of PUBLICATION_FILES) {
       const text = input.files[file];
@@ -85,7 +87,7 @@ export const commitPublication = async (
 
     // The commit is not verified: what it actually changed is what is checked.
     const paths = await changedPaths(runner, worktree, previous, head);
-    if (!publicationPathsAllowed(input.name, paths)) {
+    if (!publicationPathsAllowed(input.name, paths, input.programsDirectory)) {
       throw new PublicationRefusedError(
         paths,
         `it changes ${paths.join(", ")}, outside the four files of ${directory}/`,

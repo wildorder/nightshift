@@ -15,12 +15,12 @@ import { join } from "node:path";
 import {
   mergeProgramFiles,
   type NightshiftConfig,
-  PROGRAMS_DIRECTORY,
   type ProgramContract,
   ProgramContractSchema,
   ProgramIdSchema,
   ProjectIdSchema,
   ProjectSchema,
+  programsDirectoryOf,
 } from "@nightshift/contracts";
 import {
   CONFIRMED_CLASSES,
@@ -102,7 +102,7 @@ const requireProgramId = (id: string): void => {
 /**
  * The program's id on the plane. `<id>` is that id (`prog_…`) or the program's
  * name: a name is read from the scratch's contract, else from the contract in
- * `docs/programs/<name>/` of the repository at hand, if there is one.
+ * the programs directory of the repository at hand, if there is one.
  */
 const programIdOf = async (
   environment: CliEnvironment,
@@ -111,16 +111,13 @@ const programIdOf = async (
   requireProgramId(options.id);
   const direct = ProgramIdSchema.safeParse(options.id);
   if (direct.success) return direct.data;
+  const repo = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
+  const programs = programsDirectoryOf(await readConfig(repo));
   const candidates = [
     ...(options.dir === undefined
       ? []
       : [join(resolveFrom(environment.cwd, options.dir), CONTRACT_FILE)]),
-    join(
-      resolveFrom(environment.cwd, options.repo ?? environment.cwd),
-      PROGRAMS_DIRECTORY,
-      options.id,
-      CONTRACT_FILE,
-    ),
+    join(repo, programs, options.id, CONTRACT_FILE),
   ];
   for (const path of candidates) {
     const text = await readText(path);
@@ -136,7 +133,7 @@ const programIdOf = async (
   }
   throw new UsageError(
     `\`${options.id}\` is not a program id the plane knows`,
-    "Name the program by its id (prog_…), or run from a repository that holds docs/programs/<name>/contract.json.",
+    `Name the program by its id (prog_…), or run from a repository that holds ${programs}/<name>/contract.json.`,
   );
 };
 
