@@ -112,8 +112,9 @@ keeps the planning session's summary and the exchanges that shaped the plan, wor
 for word, as the next version's conversation; the stories' quotes are checked
 against it. The project is --project, else the scratch's contract, else
 nightshift.config.json at hand, else the one project with a draft of the program.
-A <program> in the commands below is the name of its directory under docs/programs/.
-\`run <program>\` then takes it to docs/programs/<program>/report.md with nobody
+A <program> in the commands below is the name of its directory under the programs
+directory: docs/programs/ unless nightshift.config.json names another in
+"programsDirectory". \`run <program>\` then takes it to <program>/report.md there with nobody
 watching, and exits non-zero when anything was parked. --attended only creates
 the run, for your own orchestrator session to attach to. A check that needs
 something only you can supply does not stop the night: the work carries on a

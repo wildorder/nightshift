@@ -11,7 +11,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Decision, DecisionId, ProgramContract, Run } from "@nightshift/contracts";
-import { DecisionIdSchema } from "@nightshift/contracts";
+import { DecisionIdSchema, programsDirectoryOf } from "@nightshift/contracts";
 import {
   buildReversal,
   CONFIRMED_CLASSES,
@@ -154,7 +154,7 @@ export const reverseDecision = async (
     "Nothing else changed. To correct the program under your decision, write the brief and plan from it:",
   );
   environment.out(
-    `  nightshift decision brief ${options.id} ${decision.decisionId} --run ${run.runId} --out docs/programs/<correction>/brief.md`,
+    `  nightshift decision brief ${options.id} ${decision.decisionId} --run ${run.runId} --out ${programsDirectoryOf(found.files.contract)}/<correction>/brief.md`,
   );
   environment.out(
     "  then, in Claude Code, ask plan-program to plan the correction from that brief.",

@@ -5,7 +5,12 @@
  * publishes: a run that ends again commits the updated report as a new
  * publication commit, and one whose files have not changed commits nothing.
  */
-import type { ExecutionNodeId, ProgramContract, Run } from "@nightshift/contracts";
+import {
+  type ExecutionNodeId,
+  type ProgramContract,
+  programsDirectoryOf,
+  type Run,
+} from "@nightshift/contracts";
 import { gatherReport, nowIso, type RunScope, renderReport } from "@nightshift/core";
 import { commitPublication, type PublishLanding } from "@nightshift/execution";
 import type { Runtime } from "./compose.js";
@@ -81,11 +86,12 @@ export const publishPlannedRun = async (
             },
           },
     );
-    const directory = `docs/programs/${name}`;
+    const directory = `${programsDirectoryOf(program)}/${name}`;
     const result = await commitPublication(runtime.git, {
       repo: input.repoPath,
       programBranch: program.repository.programBranch,
       name,
+      programsDirectory: program.programsDirectory,
       files: {
         "contract.json": `${JSON.stringify(stored, null, 2)}\n`,
         "plan.md": plan,

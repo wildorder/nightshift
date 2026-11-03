@@ -15,7 +15,7 @@ The plan lives only in the control plane, as content-hashed versions of a draft,
 each with its author. You work on a scratch copy in a directory **outside any
 repository**, never under `docs/programs/{id}/`: nothing about planning touches
 git. (Earlier programs' published `docs/programs/{id}/` may still be read as
-history.)
+history.) `docs/programs/` in this skill means the project's programs directory: `programsDirectory` in `nightshift.config.json`, or `docs/programs` when it names none.
 
 Nothing executes until the human ratifies the plan. After that,
 `nightshift run {id}` runs it end to end with nobody watching, and reports

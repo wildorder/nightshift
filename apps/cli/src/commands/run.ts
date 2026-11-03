@@ -28,7 +28,7 @@ import { runProgram } from "./run-program.js";
 export const REMOTE_REFUSAL = REMOTE_NEEDS_PLAN;
 
 export interface RunOptions {
-  /** A program id under `docs/programs/`, or the path to an authored Program Contract. */
+  /** A program's name (its directory under the programs directory), or the path to an authored Program Contract. */
   readonly contract: string;
   /** The operator's clone. Defaults to the working directory. */
   readonly repo?: string;

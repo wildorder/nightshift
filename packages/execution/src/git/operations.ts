@@ -16,7 +16,7 @@
  */
 import { realpath, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { CommitSha } from "@nightshift/contracts";
+import { type CommitSha, DEFAULT_PROGRAMS_DIRECTORY } from "@nightshift/contracts";
 import { GitError, type GitOptions, type GitRunner, git, tryGit } from "./runner.js";
 
 const trimmed = (value: string): string => value.trim();
@@ -70,15 +70,24 @@ export const currentBranch = async (runner: GitRunner, repo: string): Promise<st
  * a fast-forward over an untracked file that the incoming commit also adds fails
  * halfway, which is the worst of both outcomes.
  */
-export const isDirty = async (runner: GitRunner, repo: string): Promise<boolean> =>
+export const isDirty = async (
+  runner: GitRunner,
+  repo: string,
+  /** The contract's `programsDirectory`, where the report is written; `docs/programs` when absent. */
+  programsDirectory: string = DEFAULT_PROGRAMS_DIRECTORY,
+): Promise<boolean> => {
+  const report = nightshiftReport(programsDirectory);
   // Every untracked file by name: by default git folds a new directory into one
   // line (`?? docs/`), which would hide what is in it.
-  trimmed(await git(runner, ["status", "--porcelain", "--untracked-files=all"], { cwd: repo }))
+  return trimmed(
+    await git(runner, ["status", "--porcelain", "--untracked-files=all"], { cwd: repo }),
+  )
     .split("\n")
-    .some((line) => line.trim() !== "" && !isNightshiftReport(line));
+    .some((line) => line.trim() !== "" && !report.test(line.trimEnd()));
+};
 
 /**
- * `nightshift run` writes `docs/programs/{id}/report.md` into the checkout (P7,
+ * `nightshift run` writes `{programsDirectory}/{id}/report.md` into the checkout (P7,
  * D-P7-03), and it is the one thing Nightshift leaves there. Untracked, it is
  * not the operator's work in progress and must not stop the next landing: found
  * when the first `nightshift resume` was refused by the report of the run it was
@@ -86,10 +95,10 @@ export const isDirty = async (runner: GitRunner, repo: string): Promise<boolean>
  * onto the program branch (P21) and the CLI no longer rewrites it there, so a
  * modified or staged report is a human's, like any other change.
  */
-const NIGHTSHIFT_REPORT = /^\?\? "?docs\/programs\/[^/]+\/report\.md"?$/;
-// (The first line of the output may have lost its leading space to a trim.)
-const isNightshiftReport = (porcelainLine: string): boolean =>
-  NIGHTSHIFT_REPORT.test(porcelainLine.trimEnd());
+// (The first line of the output may have lost its leading space to a trim.) The
+// directory is a `ProgramsDirectory`, so `.` is the only character to escape.
+const nightshiftReport = (programsDirectory: string): RegExp =>
+  new RegExp(`^\\?\\? "?${programsDirectory.replaceAll(".", "\\.")}/[^/]+/report\\.md"?$`);
 
 export interface WorktreeInput {
   readonly repo: string;

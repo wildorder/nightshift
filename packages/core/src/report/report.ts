@@ -1,5 +1,5 @@
 /**
- * `docs/programs/{id}/report.md` (P7, T4; D-P7-09, SC-P7-11).
+ * `{programsDirectory}/{id}/report.md` (P7, T4; D-P7-09, SC-P7-11).
  *
  * Written **from the control plane alone**: every fact below is a record, so the
  * same report can be produced on a machine that never saw the repository (A-06),
