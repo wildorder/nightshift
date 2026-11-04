@@ -107,6 +107,8 @@ export const CAUSE_SENTENCE: Readonly<Record<RepairCause, string>> = {
     "Main conflicted with the project line when it was merged onto it. Resolve it keeping both sides' intent, without weakening required verification.",
   line_main_red:
     "The project line was red once main was merged onto it. Fix the gates without weakening required verification.",
+  candidate_red:
+    "A candidate's full verification, every gate on the project line's head, failed. Fix it without weakening required verification.",
 };
 
 /** The paragraph Nightshift appends to every repair's objective, and the decision behind it. */

@@ -121,6 +121,7 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.cutCandidate": "forbidden",
   "line.settleCandidate": "forbidden",
   "line.deployCandidate": "forbidden",
+  "line.queueRepair": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",

@@ -79,9 +79,11 @@ export const lineRepairBrief = (request: LineRepairRequest): string => {
     `Repair the project line (attempt ${request.attempt} of ${ATTEMPTS}).`,
     "",
     `Line head: ${request.lineHead}`,
-    request.main === undefined
-      ? `Range being composed: ${rangeText(request.range)}`
-      : `Being composed: main at ${request.main}, merged onto the line before any program's range`,
+    request.candidate !== undefined
+      ? `Being qualified: candidate ${request.candidate}, the line at ${request.lineHead}`
+      : request.main === undefined
+        ? `Range being composed: ${rangeText(request.range)}`
+        : `Being composed: main at ${request.main}, merged onto the line before any program's range`,
     `Base commit (your starting point): ${request.base}`,
     `Ranges held behind it: ${rangesText(request.held)}`,
     `Landed on the line since this lineage's first failure: ${rangesText(request.landedSince)}`,
@@ -104,10 +106,13 @@ export const lineRepairBrief = (request: LineRepairRequest): string => {
     );
   } else {
     lines.push(
-      request.main === undefined
-        ? "The base is the red composition: the range composed onto the line, which fails the " +
+      request.candidate !== undefined
+        ? "The base is the line's head, which every gate was run on to qualify a candidate for " +
+            "main; the checks below failed. Make it green without weakening a gate."
+        : request.main === undefined
+          ? "The base is the red composition: the range composed onto the line, which fails the " +
             "checks below. Make it green without weakening a gate."
-        : "The base is the red composition: main merged onto the line, which fails the checks " +
+          : "The base is the red composition: main merged onto the line, which fails the checks " +
             "below. Make it green without weakening a gate.",
       `Paths ${request.main === undefined ? "the range" : "main"} changed:\n${request.paths.map((path) => `  ${path}`).join("\n")}`,
       "Failing checks:",

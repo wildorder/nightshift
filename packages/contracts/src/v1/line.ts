@@ -581,6 +581,17 @@ export const LineShipResponseSchema = z.strictObject({
 });
 export type LineShipResponse = z.infer<typeof LineShipResponseSchema>;
 
+/**
+ * `POST …/line/repair?branch=` (P25, D-P25-10): the line run queues the commit
+ * of a repair it made of the line's head, as an entry of the line's own program,
+ * so it composes, verifies and pushes like any other.
+ */
+export const LineRepairQueueBodySchema = z.strictObject({
+  generation: z.int().min(1),
+  upTo: CommitShaSchema,
+});
+export type LineRepairQueueBody = z.infer<typeof LineRepairQueueBodySchema>;
+
 /** `POST …/line/candidates?branch=`: the line run cuts a candidate at the line's head. */
 export const LineCandidateCutBodySchema = z.strictObject({
   generation: z.int().min(1),

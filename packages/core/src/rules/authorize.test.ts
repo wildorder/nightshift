@@ -200,6 +200,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.cutCandidate": "forbidden",
   "line.settleCandidate": "forbidden",
   "line.deployCandidate": "forbidden",
+  "line.queueRepair": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -613,6 +614,7 @@ const ENGINE_LINE_OPERATIONS: readonly string[] = [
   "line.createBundleUploadUrl",
   "line.cutCandidate",
   "line.settleCandidate",
+  "line.queueRepair",
 ];
 
 describe("the project line (Pipkin M1b)", () => {
@@ -631,6 +633,7 @@ describe("the project line (Pipkin M1b)", () => {
         "line.cutCandidate",
         "line.settleCandidate",
         "line.deployCandidate",
+        "line.queueRepair",
       ].sort(),
     );
   });

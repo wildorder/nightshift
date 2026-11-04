@@ -203,6 +203,13 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
           body: { generation, ...body },
         }),
       ).candidate,
+    queueRepair: async (body) => {
+      await send(transport, {
+        method: "POST",
+        path: routes.lineRepair(projectId, branch),
+        body: { generation, ...body },
+      });
+    },
     settleCandidate: async (body) =>
       LineCandidateResponseSchema.parse(
         await send(transport, {

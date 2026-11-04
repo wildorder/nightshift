@@ -33,6 +33,7 @@ import {
   type CommitSha,
   type LineRecord,
   type LineView,
+  MAX_LINE_REPAIRS,
   MAX_LINE_WORDS_CHARS,
   NIGHTSHIFT_CONFIG_FILE,
   type NightshiftConfig,
@@ -46,6 +47,7 @@ import {
   type GateDefinitions,
   type GitRunner,
   git,
+  LINE_MAIN_UNIT,
   type LineCheckoutPort,
   type LineComposerPorts,
   type LinePublisherPort,
@@ -53,6 +55,7 @@ import {
   packCommits,
   type ScratchPaths,
   tryGit,
+  verificationEvidence,
   verifySnapshot,
 } from "@nightshift/execution";
 import { commandAs, type RunAs } from "@nightshift/harness";
@@ -546,7 +549,58 @@ const ownLine = async (
       ...(failing.length === 0 ? {} : { detail: `failing gates: ${failing.join(", ")}` }),
     });
     log(`candidate ${settled.candidateId}: ${settled.state}`);
+    if (settled.state === "failed")
+      await repairCandidate(settled.candidateId, lineHead, verification);
     return true;
+  };
+
+  /**
+   * A red candidate is repaired on the line (D-P25-10): an engine repair job
+   * from the line's head, given the failing gates; its commit is queued as an
+   * entry of the line's own program, composed and pushed like any other, and
+   * the next idle point cuts a candidate at the new head. Three a run.
+   */
+  let candidateRepairs = 0;
+  const repairCandidate = async (
+    candidateId: string,
+    lineHead: string,
+    verification: Awaited<ReturnType<typeof verifySnapshot>>,
+  ): Promise<void> => {
+    if (plane.queueRepair === undefined) return;
+    if (candidateRepairs >= MAX_LINE_REPAIRS) {
+      log(`candidate ${candidateId}: the run's ${MAX_LINE_REPAIRS} candidate repairs are spent`);
+      return;
+    }
+    candidateRepairs += 1;
+    const evidence = await verificationEvidence(line.environment, verification);
+    const checks = evidence
+      .filter((step) => step.exitCode !== undefined && step.exitCode !== 0)
+      .map((step) => ({
+        stepId: step.stepId,
+        command: step.command,
+        ...(step.exitCode === undefined ? {} : { exitCode: step.exitCode }),
+        tail: step.logTail ?? "",
+      }));
+    say(`repairing candidate ${candidateId} (attempt ${candidateRepairs} of ${MAX_LINE_REPAIRS})`);
+    const outcome = await repair({
+      cause: "candidate_red",
+      candidate: candidateId,
+      range: { program: LINE_MAIN_UNIT, upTo: lineHead },
+      base: lineHead,
+      lineHead,
+      paths: [],
+      held: [],
+      checks,
+      landedSince: [],
+      recentRepairs: [],
+      attempt: candidateRepairs,
+    });
+    if (outcome.kind === "failed") {
+      log(`candidate ${candidateId}: the repair failed: ${outcome.words}`);
+      return;
+    }
+    await plane.queueRepair({ upTo: outcome.commit });
+    log(`candidate ${candidateId}: repaired at ${outcome.commit.slice(0, 12)}; queued on the line`);
   };
 
   let idleSince: number | undefined;

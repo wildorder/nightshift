@@ -1909,6 +1909,7 @@ const CAUSE_WORD: Readonly<Record<RepairCause, string>> = {
   line_red: "line red",
   line_main_conflict: "main conflict on the line",
   line_main_red: "main red on the line",
+  candidate_red: "candidate red",
 };
 
 const renderSteps = (title: string, steps: readonly { id: string; command: string }[]) => [

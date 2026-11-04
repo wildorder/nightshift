@@ -235,6 +235,7 @@ describe("the line routes", () => {
       "line.cutCandidate",
       "line.settleCandidate",
       "line.deployCandidate",
+      "line.queueRepair",
     ]);
   });
 });

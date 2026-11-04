@@ -25,6 +25,7 @@ import {
   type LineParked,
   LinePushBodySchema,
   type LineRecord,
+  LineRepairQueueBodySchema,
   LineRequeueBodySchema,
   type LineRequeueResponse,
   type LineSettleBody,
@@ -42,6 +43,7 @@ import {
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
+  appendQueueEntry,
   composedEntryOf,
   createUlidIdGenerator,
   cutCandidate,
@@ -913,4 +915,24 @@ export const postLineCandidateDeploy: Handler = async (context) => {
   if (deploying === undefined) throw new Error(`the line kept no candidate ${body.candidateId}`);
   const response: LineCandidateResponse = { candidate: deploying };
   return { status: 202, body: response };
+};
+
+/**
+ * `POST …/line/repair?branch=` (P25, D-P25-10): the line run queues the
+ * commit of its repair of a red candidate, as an entry of the line's own
+ * program, so the composer composes, verifies and pushes it.
+ */
+export const postLineRepairQueue: Handler = async (context) => {
+  const { deps, request, params } = context;
+  const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
+  const body = parseBody(LineRepairQueueBodySchema, request.body);
+  await ownerOf(context, body.generation);
+  const at = nowIso(deps.clock);
+  const program = lineProgramId(target.projectId, target.branch);
+  const record = await applyLineChange(deps, target, (latest) => ({
+    ok: true,
+    record: appendQueueEntry(latest, { program, upTo: body.upTo }, at),
+  }));
+  return { status: 200, body: { queue: record.queue } };
 };

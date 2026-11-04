@@ -398,6 +398,9 @@ const makePlane = (
       );
       return candidateOf((c) => c.commit === body.commit);
     };
+    plane.queueRepair = async (body) => {
+      plane.events.push(`queueRepair:${body.upTo}`);
+    };
     plane.settleCandidate = async (body) => {
       plane.events.push("settleCandidate");
       apply(settleCandidate(plane.record, body, iso()));
@@ -446,12 +449,20 @@ afterEach(() => {
  * its run and root node (the plane makes them before a machine exists). The
  * harness cannot launch anything: a repair job fails with that, in its words.
  */
-const lineRuntime = async (): Promise<{ stores: InMemoryStores; runtime: Runtime }> => {
+/** `endFails`: an end gate that always fails, so only a candidate's full verification is red (P25). */
+const lineRuntime = async (
+  options: { readonly endFails?: boolean } = {},
+): Promise<{ stores: InMemoryStores; runtime: Runtime }> => {
   const stores = createInMemoryStores();
   const program = makeProgramContract(f, {
     kind: "line",
     repository: { ...makeProgramContract(f).repository, programBranch: LINE },
-    verification: CONFIG.verification,
+    verification: [
+      ...CONFIG.verification,
+      ...(options.endFails === true
+        ? [{ id: "e2e", command: 'node -e "process.exit(1)"', at: "end" as const }]
+        : []),
+    ],
     examinationPolicy: {
       low: {
         required: false,
@@ -857,6 +868,27 @@ describe("candidates (P25, D-P25-09)", () => {
     expect((await stores.runs.get(f.scope, f.scope.runId))?.status).toBe("succeeded");
     // Cut once: an idle line at the same head does not cut again.
     expect(plane.events.filter((event) => event === "cutCandidate")).toHaveLength(1);
+  });
+});
+
+describe("a red candidate (P25, D-P25-10)", () => {
+  it("is repaired on the line as a candidate_red job, and a run whose candidate stays red ends failed, saying why", async () => {
+    const machine = lineMachine();
+    const plane = makePlane(world, machine, { candidates: true });
+    plane.enqueue(world.programs.a, world.head(world.branches.a));
+    const { stores, runtime } = await lineRuntime({ endFails: true });
+    expect(await own(machine, plane, { runtime })).toBe(0);
+
+    const [candidate] = plane.record.candidates ?? [];
+    expect(candidate).toMatchObject({ state: "failed", detail: "failing gates: e2e" });
+    const jobs = (await stores.jobContracts.listByRun(f.scope)).items;
+    expect(jobs.map((job) => job.repair?.cause)).toEqual(["candidate_red"]);
+    expect(jobs[0]?.repair?.gates).toEqual(["e2e"]);
+    // This test launches no agent, so the repair fails and nothing is queued.
+    expect(plane.events.some((event) => event.startsWith("queueRepair:"))).toBe(false);
+    const run = await stores.runs.get(f.scope, f.scope.runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.outcomeReason).toContain("failed its qualification: failing gates: e2e");
   });
 });
 

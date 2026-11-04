@@ -14,7 +14,11 @@ export const lineCauseText = (cause: {
   if (cause.cause === "line_conflict" || cause.cause === "line_main_conflict") {
     return `${of} conflicted in ${cause.paths.join(", ") || "paths git did not list"}`;
   }
-  const after = isMainCause(cause.cause) ? " once main was merged onto the line" : "";
+  const after = isMainCause(cause.cause)
+    ? " once main was merged onto the line"
+    : cause.cause === "candidate_red"
+      ? " in the candidate's full verification"
+      : "";
   const first = cause.checks.find((log) => log.exitCode !== 0) ?? cause.checks[0];
   return first === undefined
     ? `the landing checks failed${after}`

@@ -31,6 +31,7 @@ export const RepairCauseSchema = z.enum([
   "line_red",
   "line_main_conflict",
   "line_main_red",
+  "candidate_red",
 ]);
 export type RepairCause = z.infer<typeof RepairCauseSchema>;
 

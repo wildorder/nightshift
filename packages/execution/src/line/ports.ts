@@ -162,7 +162,13 @@ export interface LinePublisherPort {
   }): Promise<{ status: "published" } | { status: "rejected"; detail: string }>;
 }
 
-export type LineRepairCause = "line_conflict" | "line_red" | "line_main_conflict" | "line_main_red";
+export type LineRepairCause =
+  | "line_conflict"
+  | "line_red"
+  | "line_main_conflict"
+  | "line_main_red"
+  /** P25, D-P25-10: a candidate's full verification found the line's head red. */
+  | "candidate_red";
 
 /**
  * The program a repair of main names in its `range` (P25, D-P25-03): main is a
@@ -185,6 +191,8 @@ export interface LineRepairRequest {
   range: LineRange;
   /** Set for a repair of main: the main head that would not compose onto the line. */
   main?: CommitSha;
+  /** Set for a repair of a red candidate (D-P25-10): the candidate whose verification failed. */
+  candidate?: string;
   /** The candidate commit: parents (line head, range.upTo). */
   base: CommitSha;
   lineHead: CommitSha;

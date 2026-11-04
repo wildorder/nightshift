@@ -14,6 +14,7 @@ import type {
   LineCandidate,
   LineCandidateCutBody,
   LineCandidateSettleBody,
+  LineRepairQueueBody,
   LineSettleBody,
   LineView,
   ProgramContract,
@@ -72,6 +73,8 @@ export interface LineRunnerPlane {
   heartbeat(body: HeartbeatBody): Promise<HeartbeatResponse>;
   /** P25: cuts a candidate at the line's head; absent where a plane does not cut candidates. */
   cutCandidate?(body: Omit<LineCandidateCutBody, "generation">): Promise<LineCandidate>;
+  /** P25 (D-P25-10): queues the commit of a repair of the line's head. */
+  queueRepair?(body: Omit<LineRepairQueueBody, "generation">): Promise<void>;
   /** P25: settles a candidate's qualification. */
   settleCandidate?(body: Omit<LineCandidateSettleBody, "generation">): Promise<LineCandidate>;
   /** A presigned PUT for one bundle; `key` is what the push names. */

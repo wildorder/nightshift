@@ -162,6 +162,8 @@ export type Operation =
   | "line.settleCandidate"
   // P25: a person deploys a current candidate (merges its pull request).
   | "line.deployCandidate"
+  // P25: the line run queues the repair it made of a red candidate.
+  | "line.queueRepair"
   // Publication of the program branch (D-P10-22).
   | "publication.request"
   // A strand's branch, as it moves (A-60).
@@ -373,6 +375,7 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.cutCandidate": "forbidden",
   "line.settleCandidate": "forbidden",
   "line.deployCandidate": "forbidden",
+  "line.queueRepair": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -531,6 +534,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "line.cutCandidate": "forbidden",
   "line.settleCandidate": "forbidden",
   "line.deployCandidate": "forbidden",
+  "line.queueRepair": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -721,6 +725,7 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.cutCandidate": "own_project_line",
   "line.settleCandidate": "own_project_line",
   "line.deployCandidate": "forbidden",
+  "line.queueRepair": "own_project_line",
   "publication.request": "own_run",
   "publication.strand": "own_run",
   "publication.list": "own_program",

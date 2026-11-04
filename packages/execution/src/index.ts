@@ -91,6 +91,7 @@ export {
   RULING_CHOICES,
   RULING_CONTEXT_ENV,
   type RulingContext,
+  verificationEvidence,
 } from "./examine.js";
 export {
   type AuditedGate,

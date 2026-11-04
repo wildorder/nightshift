@@ -64,6 +64,7 @@ export const routes = {
     routes.line(projectId, branch, "/candidates"),
   lineCandidateSettle: (projectId: ProjectId, branch: string) =>
     routes.line(projectId, branch, "/candidates/settle"),
+  lineRepair: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/repair"),
   lineCandidateDeploy: (projectId: ProjectId, branch: string) =>
     routes.line(projectId, branch, "/candidates/deploy"),
 

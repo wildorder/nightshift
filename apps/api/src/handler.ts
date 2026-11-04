@@ -56,6 +56,7 @@ import {
   postLineCandidateDeploy,
   postLineCandidateSettle,
   postLinePush,
+  postLineRepairQueue,
   postLineRequeue,
   postLineSettle,
   postLineShip,
@@ -211,6 +212,13 @@ export const ROUTES: readonly Route[] = [
     operation: "line.deployCandidate",
     query: LINE_QUERY,
     handler: postLineCandidateDeploy,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/repair`,
+    operation: "line.queueRepair",
+    query: LINE_QUERY,
+    handler: postLineRepairQueue,
   },
 
   // An organisation's routing and examination policy (P8, D-P8-02).
