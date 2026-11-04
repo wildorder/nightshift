@@ -182,6 +182,19 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
       }
       return body.commit.sha;
     },
+    contains: async (installationId, repository, ancestor, descendant) => {
+      const { token } = await readToken(installationId, [repository]);
+      const { status, body } = await call<{ status?: string; message?: string }>(
+        `token ${token}`,
+        "GET",
+        `/repos/${repository}/compare/${ancestor}...${descendant}`,
+      );
+      if (status === 404) return undefined;
+      if (status !== 200 || body.status === undefined) {
+        throw new GitHubError(status, "compare", body.message ?? "no status");
+      }
+      return body.status === "identical" || body.status === "ahead";
+    },
     readToken,
     writeToken,
   };

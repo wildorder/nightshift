@@ -16,7 +16,16 @@
  */
 import type { LineRecord, ProgramContract, ProjectId } from "@nightshift/contracts";
 import { DispatchStatusSchema } from "@nightshift/contracts";
-import { hasPendingIntent, lineQueueOwed, runJoinsLine } from "@nightshift/core";
+import {
+  hasPendingIntent,
+  installationGranting,
+  lineProgramId,
+  lineQueueOwed,
+  nowIso,
+  repositoryNameOf,
+  runJoinsLine,
+  seeMain,
+} from "@nightshift/core";
 import type { ApiDeps } from "../http.js";
 import { cleanupStopped, enforceStop } from "./cleanup.js";
 import { followLineRun } from "./line-lifecycle.js";
@@ -129,6 +138,60 @@ export const reconcileLinesWithWork = async (
   }
 };
 
+/**
+ * Main that moved without the line (P25, D-P25-06): for each line, main's head
+ * at GitHub is compared with the line's last known head; when the line does
+ * not hold it, main is queued on the line and `reconcileLinesWithWork` starts
+ * the line's run. Each head of main is asked about once (`mainSeen`). A line
+ * that has never been pushed, or a plane without the GitHub App, is skipped.
+ */
+export const reconcileLineMain = async (deps: ReconcileDeps, count: Counter): Promise<void> => {
+  const { stores } = deps.provision;
+  const github = deps.plane.github;
+  if (github?.contains === undefined) return;
+  for (const record of await stores.lines.listAll()) {
+    const line = { projectId: record.projectId as ProjectId, branch: record.branch };
+    try {
+      if (record.head === undefined) continue;
+      const naming = await namingProgramOf(stores, line);
+      const project = await stores.projects.get(line.projectId);
+      const repository = naming === undefined ? undefined : repositoryNameOf(naming.repository.url);
+      if (naming === undefined || project === undefined || repository === undefined) continue;
+      const installation = installationGranting(
+        (await stores.orgConfigs.get(project.orgId))?.installations ?? [],
+        repository,
+      );
+      if (installation === undefined) continue;
+      const { installationId } = installation;
+      const mainHead = await github.branchHead(
+        installationId,
+        repository,
+        naming.repository.baseBranch,
+      );
+      if (mainHead === undefined || mainHead === record.mainSeen) continue;
+      const held = await github.contains(installationId, repository, mainHead, record.head);
+      if (held === undefined) continue;
+      await stores.lines.update(line.projectId, line.branch, (current) =>
+        current === undefined
+          ? undefined
+          : seeMain(
+              current,
+              {
+                mainHead: mainHead as never,
+                held,
+                lineProgram: lineProgramId(line.projectId, line.branch),
+              },
+              nowIso(deps.plane.clock),
+            ),
+      );
+      count(held ? "line-main:held" : "line-main:queued");
+    } catch (error) {
+      count("error");
+      console.error(`reconciler: line main ${line.projectId}/${line.branch}:`, error);
+    }
+  }
+};
+
 /** A program of the project that names the line's branch: the line program is made from it. */
 const namingProgramOf = async (
   stores: Pick<ProvisionDeps["stores"], "programContracts">,
@@ -155,6 +218,8 @@ export const reconcile = async (deps: ReconcileDeps): Promise<Record<string, num
     counts[key] = (counts[key] ?? 0) + 1;
   };
   await reconcileRuns(deps, count);
+  // Main moving without the line queues it before lines with work are started.
+  await reconcileLineMain(deps, count);
   await reconcileLinesWithWork(deps, count);
   return counts;
 };

@@ -544,6 +544,11 @@ export interface LineStore {
    * **reconciler's** read, like `DispatchStore.listByStatus`. No route serves it.
    */
   listWithWork(): Promise<readonly LineRecord[]>;
+  /**
+   * Every line, across projects (P25, D-P25-06): the reconciler's read, to see
+   * whether main has moved without the line. No route serves it.
+   */
+  listAll(): Promise<readonly LineRecord[]>;
 }
 
 /** What the plane's own starts have cost one project this month, against its cap. */

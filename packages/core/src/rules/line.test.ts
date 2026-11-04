@@ -29,6 +29,7 @@ import {
   requestPush,
   requeueParked,
   resolvePush,
+  seeMain,
   settleBatch,
   takeBatch,
 } from "./line.js";
@@ -951,5 +952,20 @@ describe("requeueParked (P25, D-P25-05)", () => {
       ok: false,
       reason: "nothing_parked",
     });
+  });
+});
+
+describe("seeMain (P25, D-P25-06)", () => {
+  const LINE_PROGRAM = f.ids.next("prog") as ProgramId;
+  it("queues main the line does not hold, once per head, and only records one it holds", () => {
+    const queued = seeMain(empty(), { mainHead: C, held: false, lineProgram: LINE_PROGRAM }, AT);
+    expect(queued.queue).toEqual([{ program: LINE_PROGRAM, upTo: C, enqueuedAt: AT }]);
+    expect(queued.mainSeen).toBe(C);
+    expect(seeMain(queued, { mainHead: C, held: false, lineProgram: LINE_PROGRAM }, LATER)).toBe(
+      queued,
+    );
+    const held = seeMain(empty(), { mainHead: C, held: true, lineProgram: LINE_PROGRAM }, AT);
+    expect(held.queue).toEqual([]);
+    expect(held.mainSeen).toBe(C);
   });
 });

@@ -359,9 +359,13 @@ export const createAwsStores = ({
           const next = change(current);
           return next === undefined ? undefined : { ...next, projectId, branch };
         },
-        (record) => (lineHasWork(record) ? keys.lineWorkIndex(projectId, branch) : undefined),
+        // Every line is indexed (P25): the reconciler reads them all for main's
+        // movement, and filters for work itself.
+        () => keys.lineWorkIndex(projectId, branch),
       ),
-    listWithWork: async () => listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition())),
+    listWithWork: async () =>
+      (await listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition()))).filter(lineHasWork),
+    listAll: async () => listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition())),
   };
 
   const projectSelfStartedUsage: NightshiftStores["projectSelfStartedUsage"] = {

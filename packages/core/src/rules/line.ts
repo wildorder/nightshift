@@ -170,6 +170,29 @@ export const shipToLine = (record: LineRecord, shipped: LineShipped): LineChange
 export const runJoinsLine = (run: Pick<Run, "status"> | undefined): boolean =>
   run?.status === "succeeded";
 
+/**
+ * What the reconciler learned of main for a line (P25, D-P25-06): main's head
+ * `mainHead`, and whether the line holds it. Held: the line has nothing to
+ * take in. Not held: main is queued as an entry of the line's own program
+ * (`lineProgram`), so the composer merges it first, repairing it if it must.
+ * `mainSeen` records the head either way, so the same head is not asked again.
+ */
+export const seeMain = (
+  record: LineRecord,
+  seen: {
+    readonly mainHead: CommitSha;
+    readonly held: boolean;
+    readonly lineProgram: ProgramId;
+  },
+  at: string,
+): LineRecord => {
+  if (record.mainSeen === seen.mainHead) return record;
+  const queued = seen.held
+    ? record
+    : appendQueueEntry(record, { program: seen.lineProgram, upTo: seen.mainHead }, at);
+  return { ...queued, mainSeen: seen.mainHead, updatedAt: at };
+};
+
 /** Whether a parked entry has been sent back to the queue. */
 export const isRequeued = (record: LineRecord, parkedId: string): boolean =>
   (record.requeued ?? []).some((entry) => entry.parkedId === parkedId);

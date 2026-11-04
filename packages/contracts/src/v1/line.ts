@@ -291,6 +291,12 @@ const LineRecordShape = z.strictObject({
   requeued: z.array(LineRequeuedSchema).optional(),
   /** Partial work a person shipped, newest `MAX_LINE_PARKED` kept (P25, D-P25-02). */
   shipped: z.array(LineShippedSchema).optional(),
+  /**
+   * The head of main the reconciler last looked at for this line (P25,
+   * D-P25-06): when main's head differs, it asks GitHub whether the line holds
+   * it, and queues main when it does not.
+   */
+  mainSeen: CommitShaSchema.optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**

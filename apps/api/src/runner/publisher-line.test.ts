@@ -118,7 +118,11 @@ interface World {
 
 /** `runStatus`: where the run stands when its intents publish; a program joins the line only once it has succeeded (P25). */
 const world = async (
-  options: { line?: boolean; remote?: GitRemote; runStatus?: "running" | "succeeded" | "failed" } = {},
+  options: {
+    line?: boolean;
+    remote?: GitRemote;
+    runStatus?: "running" | "succeeded" | "failed";
+  } = {},
 ): Promise<World> => {
   setRef(PROGRAM_REF, base);
   setRef(LINE_REF, undefined);

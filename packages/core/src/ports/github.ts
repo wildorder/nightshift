@@ -31,6 +31,17 @@ export interface GitHubAppClient {
     branch: string,
   ): Promise<string | undefined>;
   /**
+   * Whether `ancestor` is contained in `descendant` (GitHub's compare answers
+   * `identical` or `ahead`); `undefined` when GitHub does not know one of them.
+   * Optional: a plane without it never wakes a line for main (P25, D-P25-06).
+   */
+  contains?(
+    installationId: number,
+    repository: string,
+    ancestor: string,
+    descendant: string,
+  ): Promise<boolean | undefined>;
+  /**
    * A short-lived installation token for reading `repositories` (a machine's
    * clone, D-P10-02). Contents read and nothing else; the publisher mints its
    * own, with write, in T4.

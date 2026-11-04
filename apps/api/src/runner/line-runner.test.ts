@@ -128,6 +128,11 @@ interface World {
   reconcile(): Promise<Record<string, number>>;
   /** Another project of the same org with a line carrying queued work. */
   addLine(options?: { work?: boolean }): Promise<Fixtures>;
+  /** What GitHub answers: main's head, and (when set) whether the line holds a commit (P25). */
+  readonly github: {
+    mainHead: string;
+    contains?: (ancestor: string, descendant: string) => boolean;
+  };
 }
 
 const world = async (ceiling?: number): Promise<World> => {
@@ -174,7 +179,9 @@ const world = async (ceiling?: number): Promise<World> => {
     sleep: async () => undefined,
   });
   const ids = createFixtures().ids;
+  const github: World["github"] = { mainHead: FIXTURE_COMMIT };
   return {
+    github,
     stores,
     compute,
     tokens,
@@ -192,7 +199,13 @@ const world = async (ceiling?: number): Promise<World> => {
           clock,
           ids,
           github: {
-            branchHead: async () => FIXTURE_COMMIT,
+            branchHead: async () => github.mainHead,
+            ...(github.contains === undefined
+              ? {}
+              : {
+                  contains: async (_i: number, _r: string, ancestor: string, descendant: string) =>
+                    github.contains?.(ancestor, descendant),
+                }),
           } as never,
           dispatcher: {
             provision: async (scope: { runId: string }) => void provisioned.push(scope.runId),
@@ -335,5 +348,62 @@ describe("reconcile: lines with work and the publisher", () => {
       projectId: f.scope.projectId as ProjectId,
       branch: BRANCH,
     });
+  });
+});
+
+describe("reconcile: main that moved without the line (P25, D-P25-06)", () => {
+  const MAIN = "d".repeat(40);
+
+  /** A line with no work whose last known head is the fixture commit. */
+  const quietLine = async (w: World): Promise<Fixtures> => {
+    const f = await w.addLine({ work: false });
+    await w.stores.lines.update(f.scope.projectId, BRANCH, (row) =>
+      row === undefined ? undefined : { ...row, head: FIXTURE_COMMIT },
+    );
+    return f;
+  };
+
+  it("queues main on the line, under the line's own program, and starts the line's run", async () => {
+    const w = await world();
+    const f = await quietLine(w);
+    w.github.mainHead = MAIN;
+    w.github.contains = () => false;
+    const counts = await w.reconcile();
+    expect(counts["line-main:queued"]).toBe(1);
+    const record = await w.stores.lines.get(f.scope.projectId, BRANCH);
+    expect(record?.queue.map(({ program, upTo }) => [program, upTo])).toEqual([
+      [lineProgramId(f.scope.projectId, BRANCH), MAIN],
+    ]);
+    expect(record?.mainSeen).toBe(MAIN);
+    expect(counts["line-admit:started"]).toBe(1);
+
+    // The same head of main is not asked about, nor queued, again.
+    w.github.contains = () => {
+      throw new Error("asked again");
+    };
+    const again = await w.reconcile();
+    expect(again["line-main:queued"]).toBeUndefined();
+    expect((await w.stores.lines.get(f.scope.projectId, BRANCH))?.queue).toHaveLength(1);
+  });
+
+  it("records a main the line already holds, and queues nothing", async () => {
+    const w = await world();
+    const f = await quietLine(w);
+    w.github.mainHead = MAIN;
+    w.github.contains = () => true;
+    const counts = await w.reconcile();
+    expect(counts["line-main:held"]).toBe(1);
+    const record = await w.stores.lines.get(f.scope.projectId, BRANCH);
+    expect(record?.queue).toEqual([]);
+    expect(record?.mainSeen).toBe(MAIN);
+  });
+
+  it("skips a line that was never pushed", async () => {
+    const w = await world();
+    const f = await w.addLine({ work: false });
+    w.github.mainHead = MAIN;
+    w.github.contains = () => false;
+    await w.reconcile();
+    expect((await w.stores.lines.get(f.scope.projectId, BRANCH))?.queue).toEqual([]);
   });
 });

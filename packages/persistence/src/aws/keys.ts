@@ -268,6 +268,7 @@ export const keys = {
    * The line's place in the work index: sparse, the line carries it only while
    * `lineHasWork` holds, so one query of the partition lists every line with work.
    */
+  // Since P25 every line is indexed here, with or without work; the readers filter.
   lineWorkIndex: (projectId: ProjectId, branch: string): NodeIndexKey => ({
     GSI1PK: "LINEWORK",
     GSI1SK: `${projectId}#${branch}`,
