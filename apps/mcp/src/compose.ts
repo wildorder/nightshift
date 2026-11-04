@@ -26,6 +26,7 @@ import {
   CommitShaSchema,
   DispatchSchema,
   HeartbeatResponseSchema,
+  LineCandidateResponseSchema,
   LineViewSchema,
   type ProgramContract,
   ProgramIdSchema,
@@ -194,6 +195,22 @@ export const createLineRunnerPlane: LinePlaneFactory = (endpoint, tokens, target
           body,
         }),
       ),
+    cutCandidate: async (body) =>
+      LineCandidateResponseSchema.parse(
+        await send(transport, {
+          method: "POST",
+          path: routes.lineCandidates(projectId, branch),
+          body: { generation, ...body },
+        }),
+      ).candidate,
+    settleCandidate: async (body) =>
+      LineCandidateResponseSchema.parse(
+        await send(transport, {
+          method: "POST",
+          path: routes.lineCandidateSettle(projectId, branch),
+          body: { generation, ...body },
+        }),
+      ).candidate,
     bundleUploadUrl: async (id) => {
       const signed = (await send(transport, {
         method: "POST",

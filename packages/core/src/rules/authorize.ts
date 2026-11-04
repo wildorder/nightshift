@@ -157,6 +157,9 @@ export type Operation =
   | "line.requeue"
   // P25: a person ships what landed of a run that did not succeed.
   | "line.ship"
+  // P25: the line run cuts and qualifies candidates.
+  | "line.cutCandidate"
+  | "line.settleCandidate"
   // Publication of the program branch (D-P10-22).
   | "publication.request"
   // A strand's branch, as it moves (A-60).
@@ -365,6 +368,8 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.createBundleUploadUrl": "forbidden",
   "line.requeue": "forbidden",
   "line.ship": "forbidden",
+  "line.cutCandidate": "forbidden",
+  "line.settleCandidate": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -520,6 +525,8 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "line.createBundleUploadUrl": "forbidden",
   "line.requeue": "forbidden",
   "line.ship": "forbidden",
+  "line.cutCandidate": "forbidden",
+  "line.settleCandidate": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -707,6 +714,8 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // A person's decision, never the line's own: its engine may not undo what it parked.
   "line.requeue": "forbidden",
   "line.ship": "forbidden",
+  "line.cutCandidate": "own_project_line",
+  "line.settleCandidate": "own_project_line",
   "publication.request": "own_run",
   "publication.strand": "own_run",
   "publication.list": "own_program",

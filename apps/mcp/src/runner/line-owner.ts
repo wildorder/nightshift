@@ -38,7 +38,7 @@ import {
   type NightshiftConfig,
   NightshiftConfigSchema,
 } from "@nightshift/contracts";
-import { type Clock, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
+import { type Clock, candidateDue, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
 import {
   createLineCheckout,
   createLineComposer,
@@ -53,6 +53,7 @@ import {
   packCommits,
   type ScratchPaths,
   tryGit,
+  verifySnapshot,
 } from "@nightshift/execution";
 import { commandAs, type RunAs } from "@nightshift/harness";
 import type { StepInvocation } from "@nightshift/verification";
@@ -519,6 +520,35 @@ const ownLine = async (
     !line.engine.idle() ||
     pendingPush(record) !== undefined;
 
+  /**
+   * Cuts a candidate at the line's head and qualifies it with every gate on that
+   * exact commit (D-P25-08, D-P25-09), when the line holds programs main lacks
+   * and no candidate was cut there. Answers whether it did anything.
+   */
+  const cutAndQualify = async (record: LineRecord): Promise<boolean> => {
+    if (plane.cutCandidate === undefined || plane.settleCandidate === undefined) return false;
+    if (!candidateDue(record)) return false;
+    const { lineHead, mainHead } = await heads();
+    // The line at GitHub is not where the record says yet: the next pass decides.
+    if (lineHead !== record.head) return false;
+    say(`cutting a candidate at ${lineHead.slice(0, 12)}`);
+    const candidate = await plane.cutCandidate({ commit: lineHead, mainAt: mainHead });
+    if (candidate.state !== "qualifying") return true;
+    say(`qualifying candidate ${candidate.candidateId}: every gate on ${lineHead.slice(0, 12)}`);
+    const verification = await verifySnapshot(line.environment, line.session, lineHead, mainHead);
+    const failing = verification.commands
+      .filter((command) => command.exitCode !== undefined && command.exitCode !== 0)
+      .map((command) => command.stepId);
+    const settled = await plane.settleCandidate({
+      candidateId: candidate.candidateId,
+      outcome: verification.outcome,
+      verificationId: verification.verificationId,
+      ...(failing.length === 0 ? {} : { detail: `failing gates: ${failing.join(", ")}` }),
+    });
+    log(`candidate ${settled.candidateId}: ${settled.state}`);
+    return true;
+  };
+
   let idleSince: number | undefined;
   for (;;) {
     ensureRunning();
@@ -563,14 +593,31 @@ const ownLine = async (
       continue;
     }
 
+    // Idle with programs main lacks: a candidate is cut and qualified (D-P25-09).
+    if (await cutAndQualify(record)) {
+      idleSince = undefined;
+      continue;
+    }
+
     // Nothing queued, held or pending: wait, and end once it has stayed so.
     idleSince ??= machine.now();
     if (machine.now() - idleSince >= idleMs) {
       log(`the line has been idle for ${Math.round(idleMs / 1000)}s; the owner ends`);
-      // A run that parked anything did not do what it was started for (D-P25-04).
+      // A run that parked anything, or whose candidate failed, did not do what it
+      // was started for (D-P25-04).
       const parked = parkedSince(record, line.session.run.startedAt);
+      const failed = (record.candidates ?? []).filter(
+        (candidate) => candidate.state === "failed" && candidate.runId === line.session.scope.runId,
+      );
+      const reasons = [
+        ...(parked.length === 0 ? [] : [parkedReason(parked)]),
+        ...failed.map(
+          (candidate) =>
+            `candidate ${candidate.candidateId} at ${candidate.commit.slice(0, 12)} failed its qualification: ${candidate.detail ?? "the full verification failed"}`,
+        ),
+      ];
       await line.complete(
-        parked.length === 0 ? undefined : { status: "failed", reason: parkedReason(parked) },
+        reasons.length === 0 ? undefined : { status: "failed", reason: reasons.join("; ") },
       );
       return undefined;
     }

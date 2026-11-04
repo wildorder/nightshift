@@ -24,8 +24,10 @@ import {
   makeRun,
   recordAttempt,
   requireEffectivePolicy,
+  cutCandidate,
   resolvePush,
   settleBatch,
+  settleCandidate,
   systemClock,
   takeBatch,
 } from "@nightshift/core";
@@ -226,6 +228,8 @@ const makePlane = (
     readonly record?: Partial<LineRecord>;
     readonly respond?: (count: number) => Partial<HeartbeatResponse> | "throw";
     readonly resolveAfterReads?: number;
+    /** The plane cuts and settles candidates (P25). */
+    readonly candidates?: boolean;
   } = {},
 ): FakePlane => {
   const programs = [
@@ -372,6 +376,34 @@ const makePlane = (
     }),
   };
   if (options.resolveAfterReads !== undefined) pendingResolveAt = options.resolveAfterReads;
+  if (options.candidates === true) {
+    const candidateOf = (pick: (c: NonNullable<LineRecord["candidates"]>[number]) => boolean) => {
+      const found = (plane.record.candidates ?? []).find(pick);
+      if (found === undefined) throw new Error("no such candidate");
+      return found;
+    };
+    plane.cutCandidate = async (body) => {
+      plane.events.push("cutCandidate");
+      apply(
+        cutCandidate(
+          plane.record,
+          {
+            candidateId: ids.next("cand"),
+            commit: body.commit,
+            mainAt: body.mainAt,
+            runId: f.scope.runId,
+          },
+          iso(),
+        ),
+      );
+      return candidateOf((c) => c.commit === body.commit);
+    };
+    plane.settleCandidate = async (body) => {
+      plane.events.push("settleCandidate");
+      apply(settleCandidate(plane.record, body, iso()));
+      return candidateOf((c) => c.candidateId === body.candidateId);
+    };
+  }
   return plane;
 };
 
@@ -451,7 +483,15 @@ const lineRuntime = async (): Promise<{ stores: InMemoryStores; runtime: Runtime
     clock: systemClock,
     paths: localPaths(),
     git: nodeGitRunner,
-    bodies: { put: async () => undefined, get: async () => undefined },
+    bodies: {
+      // A snapshot's step logs are kept as artifacts (P25): the fake keeps nothing but answers.
+      put: async (_scope: unknown, artifactId: string, bytes: Uint8Array) => ({
+        uri: `memory://${artifactId}`,
+        sizeBytes: bytes.byteLength,
+        sha256: "0".repeat(64),
+      }),
+      get: async () => undefined,
+    },
     tokens: { mint: async () => "token" },
     harness: {
       id: "none",
@@ -785,6 +825,38 @@ describe("a range that conflicts", () => {
     expect(run?.outcomeReason).toContain("the line parked 1 range");
     expect(run?.outcomeReason).toContain(world.programs.d);
     expect(run?.outcomeReason).toContain("nightshift line requeue");
+  });
+});
+
+describe("candidates (P25, D-P25-09)", () => {
+  it("cuts and qualifies a candidate once the line is idle with programs main lacks, and ends succeeded", async () => {
+    const machine = lineMachine();
+    const plane = makePlane(world, machine, { candidates: true });
+    plane.enqueue(world.programs.a, world.head(world.branches.a));
+    const { stores, runtime } = await lineRuntime();
+    const log: string[] = [];
+    const exit = await own(machine, plane, { runtime, log });
+    expect(exit, log.join("\n")).toBe(0);
+
+    const candidates = plane.record.candidates ?? [];
+    expect(candidates).toHaveLength(1);
+    const [candidate] = candidates;
+    expect(candidate).toMatchObject({
+      state: "qualified",
+      commit: world.head(LINE),
+      programs: [{ program: world.programs.a }],
+      runId: f.scope.runId,
+    });
+    // Qualified by every gate on that exact commit, in the line run's own records.
+    const verification = await stores.verifications.get(
+      f.scope,
+      candidate?.verificationId as never,
+    );
+    expect(verification?.phase).toBe("snapshot");
+    expect(verification?.commitSha).toBe(world.head(LINE));
+    expect((await stores.runs.get(f.scope, f.scope.runId))?.status).toBe("succeeded");
+    // Cut once: an idle line at the same head does not cut again.
+    expect(plane.events.filter((event) => event === "cutCandidate")).toHaveLength(1);
   });
 });
 

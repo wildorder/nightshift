@@ -11,6 +11,9 @@ import type {
   JobContract,
   LineAttemptBody,
   LineBatch,
+  LineCandidate,
+  LineCandidateCutBody,
+  LineCandidateSettleBody,
   LineSettleBody,
   LineView,
   ProgramContract,
@@ -67,6 +70,10 @@ export interface LineRunnerPlane {
   attempt(body: Omit<LineAttemptBody, "generation">): Promise<void>;
   /** The run's dispatch heartbeat. */
   heartbeat(body: HeartbeatBody): Promise<HeartbeatResponse>;
+  /** P25: cuts a candidate at the line's head; absent where a plane does not cut candidates. */
+  cutCandidate?(body: Omit<LineCandidateCutBody, "generation">): Promise<LineCandidate>;
+  /** P25: settles a candidate's qualification. */
+  settleCandidate?(body: Omit<LineCandidateSettleBody, "generation">): Promise<LineCandidate>;
   /** A presigned PUT for one bundle; `key` is what the push names. */
   bundleUploadUrl(id: string): Promise<{
     readonly uploadUrl: string;

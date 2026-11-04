@@ -8,6 +8,8 @@ import {
 } from "../testing/factories.js";
 import {
   appendQueueEntry,
+  candidateDue,
+  cutCandidate,
   capReached,
   chargeDispatchUsage,
   composeBatch,
@@ -30,6 +32,7 @@ import {
   requeueParked,
   resolvePush,
   seeMain,
+  settleCandidate,
   settleBatch,
   takeBatch,
 } from "./line.js";
@@ -969,5 +972,101 @@ describe("seeMain (P25, D-P25-06)", () => {
     const held = seeMain(empty(), { mainHead: C, held: true, lineProgram: LINE_PROGRAM }, AT);
     expect(held.queue).toEqual([]);
     expect(held.mainSeen).toBe(C);
+  });
+});
+
+describe("candidates (P25, D-P25-09)", () => {
+  const RUN = f.ids.next("run");
+  const CAND1 = f.ids.next("cand");
+  const CAND2 = f.ids.next("cand");
+  const VER = f.ids.next("ver");
+  const atHead = (head: string): LineRecord => ({
+    ...empty(),
+    head: head as never,
+    undeployed: [{ program: P1, upTo: A as never, since: head as never, at: AT }],
+  });
+  const cut = (record: LineRecord, candidateId = CAND1, commit = C) => {
+    const change = cutCandidate(
+      record,
+      { candidateId, commit: commit as never, mainAt: A as never, runId: RUN },
+      AT,
+    );
+    if (!change.ok) throw new Error(change.detail);
+    return change.record;
+  };
+
+  it("is due when the line holds programs main lacks at a head no candidate was cut at", () => {
+    expect(candidateDue(empty())).toBe(false);
+    expect(candidateDue(atHead(C))).toBe(true);
+    expect(candidateDue(cut(atHead(C)))).toBe(false);
+  });
+
+  it("cuts a qualifying candidate of the undeployed programs, once per head", () => {
+    const record = cut(atHead(C));
+    expect(record.candidates).toEqual([
+      expect.objectContaining({
+        candidateId: CAND1,
+        commit: C,
+        mainAt: A,
+        programs: [{ program: P1, upTo: A }],
+        state: "qualifying",
+        runId: RUN,
+      }),
+    ]);
+    expect(cut(record, CAND2)).toBe(record);
+  });
+
+  it("refuses a commit the line is not at, and a line with nothing to ship", () => {
+    expect(
+      cutCandidate(
+        atHead(C),
+        { candidateId: CAND1, commit: B as never, mainAt: A as never, runId: RUN },
+        AT,
+      ),
+    ).toMatchObject({ ok: false, reason: "candidate_refused" });
+    expect(
+      cutCandidate(
+        { ...empty(), head: C as never },
+        { candidateId: CAND1, commit: C as never, mainAt: A as never, runId: RUN },
+        AT,
+      ),
+    ).toMatchObject({ ok: false, reason: "candidate_refused" });
+  });
+
+  it("qualifies a passed candidate and supersedes the older qualified one; a failed one says why", () => {
+    const first = settleCandidate(
+      cut(atHead(C)),
+      { candidateId: CAND1, outcome: "passed", verificationId: VER },
+      AT,
+    );
+    if (!first.ok) throw new Error(first.detail);
+    const second = settleCandidate(
+      cut({ ...first.record, head: B as never }, CAND2, B),
+      { candidateId: CAND2, outcome: "passed", verificationId: VER },
+      LATER,
+    );
+    if (!second.ok) throw new Error(second.detail);
+    expect(second.record.candidates?.map((c) => [c.candidateId, c.state, c.supersededBy])).toEqual([
+      [CAND1, "superseded", CAND2],
+      [CAND2, "qualified", undefined],
+    ]);
+    expect(
+      settleCandidate(
+        second.record,
+        { candidateId: CAND2, outcome: "passed", verificationId: VER },
+        LATER,
+      ),
+    ).toMatchObject({ ok: false, reason: "candidate_refused" });
+
+    const failed = settleCandidate(
+      cut(atHead(C)),
+      { candidateId: CAND1, outcome: "failed", verificationId: VER, detail: "failing gates: e2e" },
+      AT,
+    );
+    if (!failed.ok) throw new Error(failed.detail);
+    expect(failed.record.candidates?.[0]).toMatchObject({
+      state: "failed",
+      detail: "failing gates: e2e",
+    });
   });
 });

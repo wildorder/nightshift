@@ -40,6 +40,8 @@ export const ArtifactIdSchema = rawId("art").brand<"ArtifactId">();
 export const EventIdSchema = rawId("evt").brand<"EventId">();
 export const MeasurementSummaryIdSchema = rawId("meas").brand<"MeasurementSummaryId">();
 export const CompletionHistoryIdSchema = rawId("comp").brand<"CompletionHistoryId">();
+/** P25: a candidate cut from the project line, to become one pull request to main. */
+export const CandidateIdSchema = rawId("cand").brand<"CandidateId">();
 
 export type OrgId = z.infer<typeof OrgIdSchema>;
 export type ProjectId = z.infer<typeof ProjectIdSchema>;
@@ -57,6 +59,7 @@ export type ArtifactId = z.infer<typeof ArtifactIdSchema>;
 export type EventId = z.infer<typeof EventIdSchema>;
 export type MeasurementSummaryId = z.infer<typeof MeasurementSummaryIdSchema>;
 export type CompletionHistoryId = z.infer<typeof CompletionHistoryIdSchema>;
+export type CandidateId = z.infer<typeof CandidateIdSchema>;
 
 /**
  * Every ID prefix, keyed by prefix. `core`'s generator iterates this so a new
@@ -79,6 +82,7 @@ export const ID_SCHEMAS = {
   evt: EventIdSchema,
   meas: MeasurementSummaryIdSchema,
   comp: CompletionHistoryIdSchema,
+  cand: CandidateIdSchema,
 } as const;
 
 export type IdPrefix = keyof typeof ID_SCHEMAS;

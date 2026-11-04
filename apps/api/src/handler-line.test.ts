@@ -129,6 +129,8 @@ interface Seed {
   readonly batch?: LineRecord["batch"];
   readonly held?: LineRecord["held"];
   readonly parked?: LineRecord["parked"];
+  readonly head?: LineRecord["head"];
+  readonly undeployed?: LineRecord["undeployed"];
 }
 
 /** The engine of a run, as the dispatch Lambda mints it. */
@@ -196,6 +198,8 @@ const seedLineRecords = async (w: World, seed: Seed = {}) => {
       ...(seed.held === undefined ? {} : { held: seed.held }),
       ...(seed.batch === undefined ? {} : { batch: seed.batch }),
       ...(seed.parked === undefined ? {} : { parked: seed.parked }),
+      ...(seed.head === undefined ? {} : { head: seed.head }),
+      ...(seed.undeployed === undefined ? {} : { undeployed: seed.undeployed }),
     }),
   );
 };
@@ -226,6 +230,8 @@ describe("the line routes", () => {
       "line.createBundleUploadUrl",
       "line.requeue",
       "line.ship",
+      "line.cutCandidate",
+      "line.settleCandidate",
     ]);
   });
 });
@@ -1331,5 +1337,75 @@ describe("shipping what landed of a run that did not succeed (P25, D-P25-02)", (
       me,
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("candidates, cut and qualified by the line run (P25, D-P25-09)", () => {
+  const seedForCandidate = (w: World) =>
+    seedLine(w, {
+      head: SHA_B as never,
+      undeployed: [
+        { program: w.f.scope.programId, upTo: SHA as never, since: SHA_B as never, at: NOW },
+      ],
+    });
+
+  it("cuts a candidate at the line's head and settles its qualification", async () => {
+    const w = await setup();
+    const { me, runId } = await seedForCandidate(w);
+    const cut = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/candidates"),
+      {
+        generation: 1,
+        commit: SHA_B,
+        mainAt: SHA,
+      },
+      me,
+    );
+    expect(cut.status, JSON.stringify(cut.body)).toBe(200);
+    const candidate = (
+      cut.body as { candidate: { candidateId: string; state: string; runId: string } }
+    ).candidate;
+    expect(candidate.state).toBe("qualifying");
+    expect(candidate.runId).toBe(runId);
+    const settled = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/candidates/settle"),
+      {
+        generation: 1,
+        candidateId: candidate.candidateId,
+        outcome: "passed",
+        verificationId: w.f.ids.next("ver"),
+      },
+      me,
+    );
+    expect(settled.status, JSON.stringify(settled.body)).toBe(200);
+    expect((settled.body as { candidate: { state: string } }).candidate.state).toBe("qualified");
+  });
+
+  it("refuses a person, and a commit the line is not at", async () => {
+    const w = await setup();
+    const { me } = await seedForCandidate(w);
+    const asUser = await call(w, "POST", lineUrl(w, BRANCH, "/candidates"), {
+      generation: 1,
+      commit: SHA_B,
+      mainAt: SHA,
+    });
+    expect(asUser.status).toBe(403);
+    const elsewhere = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/candidates"),
+      {
+        generation: 1,
+        commit: SHA,
+        mainAt: SHA,
+      },
+      me,
+    );
+    expect(elsewhere.status).toBe(409);
+    expect(code(elsewhere)).toBe("candidate_refused");
   });
 });

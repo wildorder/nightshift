@@ -10,11 +10,14 @@
  */
 import type {
   CalendarMonth,
+  CandidateId,
   CommitSha,
   Dispatch,
   DispatchStatus,
   LineAttemptBody,
   LineBatch,
+  LineCandidate,
+  LineCandidateSettleBody,
   LineCompositionBody,
   LineParkBody,
   LinePushBody,
@@ -31,7 +34,7 @@ import type {
   Run,
   RunId,
 } from "@nightshift/contracts";
-import { MAX_LINE_COMPOSITIONS, MAX_LINE_PARKED } from "@nightshift/contracts";
+import { MAX_LINE_CANDIDATES, MAX_LINE_COMPOSITIONS, MAX_LINE_PARKED } from "@nightshift/contracts";
 import { lineProgramId } from "../line/program.js";
 import { composedEntryOf, parkedEntryOf, settlementDigest } from "../line/settlement.js";
 
@@ -90,7 +93,9 @@ export type LineRefusal =
   /** The write is from an owner generation the line has moved past. */
   | { readonly reason: "stale_generation"; readonly detail: string }
   /** P25, D-P25-05: there is no parked entry to send back. */
-  | { readonly reason: "nothing_parked"; readonly detail: string };
+  | { readonly reason: "nothing_parked"; readonly detail: string }
+  /** P25, D-P25-09: no candidate can be cut, or the one named cannot move so. */
+  | { readonly reason: "candidate_refused"; readonly detail: string };
 
 export type LineChange =
   | { readonly ok: true; readonly record: LineRecord }
@@ -867,3 +872,118 @@ const SLOT_STATUSES: readonly DispatchStatus[] = ["provisioning", "ready", "runn
  */
 export const occupiesComputeSlot = (status: DispatchStatus): boolean =>
   SLOT_STATUSES.includes(status);
+
+/**
+ * Whether the line has something to cut a candidate from (P25, D-P25-09):
+ * programs main lacks, at a head no candidate was cut at.
+ */
+export const candidateDue = (record: LineRecord): boolean =>
+  record.head !== undefined &&
+  (record.undeployed ?? []).length > 0 &&
+  !(record.candidates ?? []).some((candidate) => candidate.commit === record.head);
+
+/**
+ * Cuts a candidate at the line's head (P25, D-P25-09): `qualifying`, shipping
+ * the programs main lacks. The same head again answers the candidate already
+ * cut there. Refused when the line is not at `commit` or has nothing to ship.
+ */
+export const cutCandidate = (
+  record: LineRecord,
+  cut: {
+    readonly candidateId: CandidateId;
+    readonly commit: CommitSha;
+    readonly mainAt: CommitSha;
+    readonly runId: RunId;
+  },
+  at: string,
+): LineChange => {
+  if ((record.candidates ?? []).some((candidate) => candidate.commit === cut.commit)) {
+    return { ok: true, record };
+  }
+  if (record.head !== cut.commit) {
+    return refuse({
+      reason: "candidate_refused",
+      detail: `the line is at ${record.head?.slice(0, 12) ?? "no commit"}, not ${cut.commit.slice(0, 12)}`,
+    });
+  }
+  const programs = (record.undeployed ?? []).map(({ program, upTo }) => ({ program, upTo }));
+  if (programs.length === 0) {
+    return refuse({ reason: "candidate_refused", detail: "the line holds nothing main lacks" });
+  }
+  const candidate: LineCandidate = {
+    candidateId: cut.candidateId,
+    commit: cut.commit,
+    mainAt: cut.mainAt,
+    programs,
+    state: "qualifying",
+    runId: cut.runId,
+    createdAt: at,
+    updatedAt: at,
+  };
+  return {
+    ok: true,
+    record: {
+      ...record,
+      candidates: [...(record.candidates ?? []), candidate].slice(-MAX_LINE_CANDIDATES),
+      updatedAt: at,
+    },
+  };
+};
+
+/**
+ * Settles a candidate's qualification (P25, D-P25-09): `passed` makes it
+ * `qualified` and supersedes every older one still qualified; anything else
+ * makes it `failed` with why. Only a `qualifying` candidate settles.
+ */
+export const settleCandidate = (
+  record: LineRecord,
+  body: Pick<LineCandidateSettleBody, "candidateId" | "outcome" | "verificationId" | "detail">,
+  at: string,
+): LineChange => {
+  const candidates = record.candidates ?? [];
+  const target = candidates.find((candidate) => candidate.candidateId === body.candidateId);
+  if (target === undefined || target.state !== "qualifying") {
+    return refuse({
+      reason: "candidate_refused",
+      detail:
+        target === undefined
+          ? `the line has no candidate ${body.candidateId}`
+          : `candidate ${body.candidateId} is ${target.state}, not qualifying`,
+    });
+  }
+  const passed = body.outcome === "passed";
+  return {
+    ok: true,
+    record: {
+      ...record,
+      candidates: candidates.map((candidate) => {
+        if (candidate.candidateId === body.candidateId) {
+          return {
+            ...candidate,
+            state: passed ? ("qualified" as const) : ("failed" as const),
+            verificationId: body.verificationId,
+            ...(passed
+              ? {}
+              : {
+                  detail:
+                    body.detail ??
+                    (body.outcome === "deferred"
+                      ? "a gate could not run: it waits on a human prerequisite"
+                      : "the full verification failed"),
+                }),
+            updatedAt: at,
+          };
+        }
+        return passed && candidate.state === "qualified"
+          ? {
+              ...candidate,
+              state: "superseded" as const,
+              supersededBy: body.candidateId,
+              updatedAt: at,
+            }
+          : candidate;
+      }),
+      updatedAt: at,
+    },
+  };
+};

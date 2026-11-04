@@ -15,7 +15,13 @@
  * The rules are `core`'s (`rules/line.ts`); this is only the records.
  */
 import { z } from "zod";
-import { JobContractIdSchema, ProgramIdSchema, RunIdSchema, VerificationIdSchema } from "../ids.js";
+import {
+  CandidateIdSchema,
+  JobContractIdSchema,
+  ProgramIdSchema,
+  RunIdSchema,
+  VerificationIdSchema,
+} from "../ids.js";
 import { CommitShaSchema, IsoTimestampSchema, projectScoped } from "./common.js";
 import { CalendarMonthSchema } from "./compute-usage.js";
 import { DispatchStatusSchema } from "./dispatch.js";
@@ -269,6 +275,62 @@ export const LineShippedSchema = z.strictObject({
 });
 export type LineShipped = z.infer<typeof LineShippedSchema>;
 
+/** The most candidates a line record keeps, the newest. */
+export const MAX_LINE_CANDIDATES = 20;
+
+/**
+ * Where a candidate stands (P25, D-P25-09): `qualifying` while its full
+ * verification runs, then `qualified` or `failed`; a qualified one is later
+ * `superseded` by a newer one, `deployed` when its pull request is merged, or
+ * `closed` when its pull request is closed unmerged.
+ */
+export const LineCandidateStateSchema = z.enum([
+  "qualifying",
+  "qualified",
+  "failed",
+  "superseded",
+  "deployed",
+  "closed",
+]);
+export type LineCandidateState = z.infer<typeof LineCandidateStateSchema>;
+
+/**
+ * A candidate (P25, D-P25-09): one exact commit of the line, cut when the line
+ * is idle with programs main lacks, and qualified by a full verification of
+ * that commit. Immutable in what it is (commit, programs, verification); only
+ * its state, pull request and deploy move. A failed candidate is never edited
+ * into another: a repair produces a new commit and a new candidate.
+ */
+export const LineCandidateSchema = z.strictObject({
+  candidateId: CandidateIdSchema,
+  commit: CommitShaSchema,
+  /** Main's head when it was cut, which the line held. */
+  mainAt: CommitShaSchema,
+  /** What it ships: the programs main lacked when it was cut. */
+  programs: z.array(z.strictObject({ program: ProgramIdSchema, upTo: CommitShaSchema })).min(1),
+  state: LineCandidateStateSchema,
+  /** The line run that cut and qualified it. */
+  runId: RunIdSchema,
+  /** The `snapshot` verification that qualified it, in the line run's records. */
+  verificationId: VerificationIdSchema.optional(),
+  /** Why it failed, or why its pull request could not be opened. */
+  detail: z.string().min(1).optional(),
+  pr: z
+    .strictObject({
+      number: z.int().min(1),
+      url: z.string().min(1),
+      branch: z.string().min(1),
+    })
+    .optional(),
+  supersededBy: CandidateIdSchema.optional(),
+  deployedAt: IsoTimestampSchema.optional(),
+  /** Who deployed it, when a person did so through Nightshift. */
+  deployedBy: z.string().min(1).optional(),
+  createdAt: IsoTimestampSchema,
+  updatedAt: IsoTimestampSchema,
+});
+export type LineCandidate = z.infer<typeof LineCandidateSchema>;
+
 const LineRecordShape = z.strictObject({
   ...projectScoped,
   branch: LineBranchSchema,
@@ -314,6 +376,8 @@ const LineRecordShape = z.strictObject({
       }),
     )
     .optional(),
+  /** The candidates cut from the line, newest `MAX_LINE_CANDIDATES` kept (P25). */
+  candidates: z.array(LineCandidateSchema).optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**
@@ -510,6 +574,27 @@ export const LineShipResponseSchema = z.strictObject({
   run: z.string().min(1),
 });
 export type LineShipResponse = z.infer<typeof LineShipResponseSchema>;
+
+/** `POST …/line/candidates?branch=`: the line run cuts a candidate at the line's head. */
+export const LineCandidateCutBodySchema = z.strictObject({
+  generation: z.int().min(1),
+  commit: CommitShaSchema,
+  mainAt: CommitShaSchema,
+});
+export type LineCandidateCutBody = z.infer<typeof LineCandidateCutBodySchema>;
+
+/** `POST …/line/candidates/settle?branch=`: the qualification's outcome. */
+export const LineCandidateSettleBodySchema = z.strictObject({
+  generation: z.int().min(1),
+  candidateId: CandidateIdSchema,
+  outcome: VerificationOutcomeSchema,
+  verificationId: VerificationIdSchema,
+  detail: z.string().min(1).max(MAX_LINE_WORDS_CHARS).optional(),
+});
+export type LineCandidateSettleBody = z.infer<typeof LineCandidateSettleBodySchema>;
+
+export const LineCandidateResponseSchema = z.strictObject({ candidate: LineCandidateSchema });
+export type LineCandidateResponse = z.infer<typeof LineCandidateResponseSchema>;
 
 /** `POST …/line/bundle-upload-url?branch=`. */
 export const LineBundleUploadUrlBodySchema = z.strictObject({

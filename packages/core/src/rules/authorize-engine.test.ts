@@ -321,6 +321,8 @@ const LINE_OPERATIONS: readonly Operation[] = [
   "line.attempt",
   "line.push",
   "line.createBundleUploadUrl",
+  "line.cutCandidate",
+  "line.settleCandidate",
 ];
 
 describe("the line run's engine (own_project_line)", () => {

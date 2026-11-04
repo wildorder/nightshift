@@ -17,6 +17,9 @@ import {
   inlinePayloadBytes,
   LineAttemptBodySchema,
   LineBundleUploadUrlBodySchema,
+  LineCandidateCutBodySchema,
+  type LineCandidateResponse,
+  LineCandidateSettleBodySchema,
   type LineComposition,
   type LineParked,
   LinePushBodySchema,
@@ -40,6 +43,7 @@ import {
 import {
   composedEntryOf,
   createUlidIdGenerator,
+  cutCandidate,
   entryText,
   LINE_RESOLVER_ATTEMPTS,
   type LineChange,
@@ -55,6 +59,7 @@ import {
   requeueParked,
   requireEffectivePolicy,
   settleBatch,
+  settleCandidate,
   settledMarkers,
   settleIds,
   settlementDigest,
@@ -146,7 +151,8 @@ const refusalStatus = (refusal: LineRefusal): HttpError =>
       refusal.reason === "held_not_in_batch" ||
       refusal.reason === "not_held" ||
       refusal.reason === "stale_generation" ||
-      refusal.reason === "nothing_parked"
+      refusal.reason === "nothing_parked" ||
+      refusal.reason === "candidate_refused"
       ? refusal.reason
       : "conflict",
     refusal.detail,
@@ -764,5 +770,53 @@ export const postLineShip: Handler = async (context) => {
     queued,
     run: queued ? await startAfterQueueing(deps, target, program) : "none (nothing new was queued)",
   };
+  return { status: 200, body: response };
+};
+
+const candidateOf = (record: LineRecord, commit: string) => {
+  const found = (record.candidates ?? []).find((candidate) => candidate.commit === commit);
+  if (found === undefined) throw new Error(`the line kept no candidate at ${commit}`);
+  return found;
+};
+
+/**
+ * `POST …/line/candidates?branch=` (P25, D-P25-09): the line run cuts a
+ * candidate at the line's head. The same head again answers the same candidate.
+ */
+export const postLineCandidateCut: Handler = async (context) => {
+  const { deps, request, params } = context;
+  const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
+  const body = parseBody(LineCandidateCutBodySchema, request.body);
+  const owner = await ownerOf(context, body.generation);
+  const runId = typeof owner === "number" ? undefined : owner.runId;
+  if (runId === undefined) throw new Error("a candidate is cut by a line run");
+  const at = nowIso(deps.clock);
+  const candidateId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("cand");
+  const record = await applyLineChange(deps, target, (latest) =>
+    cutCandidate(
+      latest,
+      { candidateId, commit: body.commit, mainAt: body.mainAt, runId },
+      at,
+    ),
+  );
+  const response: LineCandidateResponse = { candidate: candidateOf(record, body.commit) };
+  return { status: 200, body: response };
+};
+
+/** `POST …/line/candidates/settle?branch=` (P25, D-P25-09): a candidate's qualification. */
+export const postLineCandidateSettle: Handler = async (context) => {
+  const { deps, request, params } = context;
+  const target = targetOf(params);
+  refuseUser(context.principal, "write to the line");
+  const body = parseBody(LineCandidateSettleBodySchema, request.body);
+  await ownerOf(context, body.generation);
+  const at = nowIso(deps.clock);
+  const record = await applyLineChange(deps, target, (latest) => settleCandidate(latest, body, at));
+  const candidate = (record.candidates ?? []).find(
+    (found) => found.candidateId === body.candidateId,
+  );
+  if (candidate === undefined) throw new Error(`the line kept no candidate ${body.candidateId}`);
+  const response: LineCandidateResponse = { candidate };
   return { status: 200, body: response };
 };

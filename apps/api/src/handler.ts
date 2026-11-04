@@ -52,6 +52,8 @@ import {
   createLineBundleUploadUrl,
   getLine,
   postLineAttempt,
+  postLineCandidateCut,
+  postLineCandidateSettle,
   postLinePush,
   postLineRequeue,
   postLineSettle,
@@ -187,6 +189,20 @@ export const ROUTES: readonly Route[] = [
     operation: "line.ship",
     query: LINE_QUERY,
     handler: postLineShip,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/candidates`,
+    operation: "line.cutCandidate",
+    query: LINE_QUERY,
+    handler: postLineCandidateCut,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/candidates/settle`,
+    operation: "line.settleCandidate",
+    query: LINE_QUERY,
+    handler: postLineCandidateSettle,
   },
 
   // An organisation's routing and examination policy (P8, D-P8-02).
