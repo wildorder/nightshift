@@ -794,11 +794,7 @@ export const postLineCandidateCut: Handler = async (context) => {
   const at = nowIso(deps.clock);
   const candidateId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("cand");
   const record = await applyLineChange(deps, target, (latest) =>
-    cutCandidate(
-      latest,
-      { candidateId, commit: body.commit, mainAt: body.mainAt, runId },
-      at,
-    ),
+    cutCandidate(latest, { candidateId, commit: body.commit, mainAt: body.mainAt, runId }, at),
   );
   const response: LineCandidateResponse = { candidate: candidateOf(record, body.commit) };
   return { status: 200, body: response };
