@@ -155,6 +155,8 @@ export type Operation =
   | "line.createBundleUploadUrl"
   // P25: a person sends parked ranges back to the line's queue.
   | "line.requeue"
+  // P25: a person ships what landed of a run that did not succeed.
+  | "line.ship"
   // Publication of the program branch (D-P10-22).
   | "publication.request"
   // A strand's branch, as it moves (A-60).
@@ -362,6 +364,7 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
   "line.requeue": "forbidden",
+  "line.ship": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -516,6 +519,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
   "line.requeue": "forbidden",
+  "line.ship": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -702,6 +706,7 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.createBundleUploadUrl": "own_project_line",
   // A person's decision, never the line's own: its engine may not undo what it parked.
   "line.requeue": "forbidden",
+  "line.ship": "forbidden",
   "publication.request": "own_run",
   "publication.strand": "own_run",
   "publication.list": "own_program",

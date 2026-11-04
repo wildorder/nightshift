@@ -24,9 +24,11 @@ import type {
   LineRecord,
   LineResolver,
   LineSettleBody,
+  LineShipped,
   ProgramId,
   ProjectId,
   ProjectSelfStartedUsage,
+  Run,
   RunId,
 } from "@nightshift/contracts";
 import { MAX_LINE_COMPOSITIONS, MAX_LINE_PARKED } from "@nightshift/contracts";
@@ -119,17 +121,54 @@ const alreadyTaken = (record: LineRecord, program: ProgramId, upTo: CommitSha): 
  */
 export const appendQueueEntry = (
   record: LineRecord,
-  entry: { readonly program: ProgramId; readonly upTo: CommitSha },
+  entry: { readonly program: ProgramId; readonly upTo: CommitSha; readonly runId?: RunId },
   at: string,
 ): LineRecord => {
   if (record.queue.some((queued) => sameRange(queued, entry))) return record;
+  if (record.held.some((held) => sameRange(held, entry))) return record;
   if (alreadyTaken(record, entry.program, entry.upTo)) return record;
   return {
     ...record,
-    queue: [...record.queue, { program: entry.program, upTo: entry.upTo, enqueuedAt: at }],
+    queue: [
+      ...record.queue,
+      {
+        program: entry.program,
+        upTo: entry.upTo,
+        enqueuedAt: at,
+        ...(entry.runId === undefined ? {} : { runId: entry.runId }),
+      },
+    ],
     updatedAt: at,
   };
 };
+
+/**
+ * Records partial work a person shipped (P25, D-P25-02) and queues its head,
+ * unless that range is already queued, held, batched or on the line.
+ */
+export const shipToLine = (record: LineRecord, shipped: LineShipped): LineChange => {
+  const queued = appendQueueEntry(
+    record,
+    { program: shipped.program, upTo: shipped.upTo, runId: shipped.runId },
+    shipped.at,
+  );
+  return {
+    ok: true,
+    record: {
+      ...queued,
+      shipped: [...(record.shipped ?? []), shipped].slice(-MAX_LINE_PARKED),
+      updatedAt: shipped.at,
+    },
+  };
+};
+
+/**
+ * Whether a run's published work joins the line now (P25, D-P25-01): only
+ * when the run ended `succeeded`, which on a machine means every strand
+ * succeeded, the end gates passed and GitHub has every landing.
+ */
+export const runJoinsLine = (run: Pick<Run, "status"> | undefined): boolean =>
+  run?.status === "succeeded";
 
 /** Whether a parked entry has been sent back to the queue. */
 export const isRequeued = (record: LineRecord, parkedId: string): boolean =>

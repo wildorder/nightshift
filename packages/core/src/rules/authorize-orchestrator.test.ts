@@ -117,6 +117,7 @@ const EXPECTED: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
   "line.requeue": "forbidden",
+  "line.ship": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",

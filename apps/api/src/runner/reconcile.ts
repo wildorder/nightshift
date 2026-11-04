@@ -16,7 +16,7 @@
  */
 import type { LineRecord, ProgramContract, ProjectId } from "@nightshift/contracts";
 import { DispatchStatusSchema } from "@nightshift/contracts";
-import { hasPendingIntent, lineQueueOwed } from "@nightshift/core";
+import { hasPendingIntent, lineQueueOwed, runJoinsLine } from "@nightshift/core";
 import type { ApiDeps } from "../http.js";
 import { cleanupStopped, enforceStop } from "./cleanup.js";
 import { followLineRun } from "./line-lifecycle.js";
@@ -84,7 +84,10 @@ export const reconcileRuns = async (deps: ReconcileDeps, count: Counter): Promis
       // A push that failed for a passing reason is retried, the last landing of
       // a run is never left waiting for a next one that will not come, and a
       // range the run owes the line is queued.
-      if (hasPendingIntent(dispatch) || lineQueueOwed(dispatch)) {
+      // A run's range joins the line only once the run has succeeded (P25, D-P25-01).
+      const lineDue =
+        lineQueueOwed(dispatch) && runJoinsLine(await stores.runs.get(scope, scope.runId));
+      if (hasPendingIntent(dispatch) || lineDue) {
         await deps.askPublisher(scope);
         count("publish:asked");
       }

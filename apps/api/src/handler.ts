@@ -55,6 +55,7 @@ import {
   postLinePush,
   postLineRequeue,
   postLineSettle,
+  postLineShip,
   takeLineBatch,
 } from "./operations/line.js";
 import { getNode, listChildren, listNodes, putNode } from "./operations/nodes.js";
@@ -179,6 +180,13 @@ export const ROUTES: readonly Route[] = [
     operation: "line.requeue",
     query: LINE_QUERY,
     handler: postLineRequeue,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/ship`,
+    operation: "line.ship",
+    query: LINE_QUERY,
+    handler: postLineShip,
   },
 
   // An organisation's routing and examination policy (P8, D-P8-02).

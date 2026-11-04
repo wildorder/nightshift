@@ -11,11 +11,13 @@ import {
   type LineRange,
   type LineRepairRef,
   LineRequeueResponseSchema,
+  LineShipResponseSchema,
   type LineView,
   LineViewSchema,
   type ProgramContract,
   type ProgramId,
   type Run,
+  type RunId,
 } from "@nightshift/contracts";
 import { routes, send } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
@@ -287,6 +289,103 @@ export const lineRequeue = async (
       environment.out(`  ${range.program} up to ${short(range.upTo)}`);
     }
   }
+  environment.out(`the line's run: ${answer.run}`);
+  return 0;
+};
+
+export interface LineShipOptions extends LineOptions {
+  /** A program id, or a program's branch (`program/<name>` or `<name>`). */
+  readonly program: string;
+  /** The run to ship; absent: the program's latest. */
+  readonly run?: string;
+  /** Without it, the command only says what would be shipped. */
+  readonly yes?: boolean;
+}
+
+/**
+ * `nightshift line ship <program> [--run <id>] [--yes]` (P25, D-P25-02):
+ * ships what landed of a run that did not succeed to the line. Without
+ * `--yes` it only shows which strands landed and which did not, and exits 1:
+ * shipping half a program is the person's decision, made with that in view.
+ */
+export const lineShip = async (
+  environment: CliEnvironment,
+  options: LineShipOptions,
+): Promise<number> => {
+  const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
+  const config = await readConfig(repoPath);
+  if (config === undefined) {
+    environment.err(`no nightshift.config.json in ${repoPath}`);
+    return 1;
+  }
+  if (config.line === undefined) {
+    environment.out(NO_LINE_CONFIGURED);
+    return 1;
+  }
+  const session = await openSession(environment);
+  const program = await resolveProgram(session, config.projectId, options.program);
+  if (program === undefined) {
+    environment.err(`no program of project ${config.projectId} is named ${options.program}`);
+    return 1;
+  }
+  const scope = { projectId: config.projectId, programId: program };
+  let run: Run | undefined;
+  if (options.run !== undefined) {
+    run = await session.stores.runs.get(scope, options.run as RunId);
+  } else {
+    let cursor: string | undefined;
+    do {
+      const page = await session.stores.runs.listByProgram(
+        scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      for (const found of page.items) {
+        if (run === undefined || found.startedAt > run.startedAt) run = found;
+      }
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+  }
+  if (run === undefined) {
+    environment.err(`program ${options.program} has no such run`);
+    return 1;
+  }
+  const runScope = { ...scope, runId: run.runId };
+  const nodes = (await session.stores.executionNodes.listByRun(runScope)).items.filter(
+    (node) => node.depth === 1,
+  );
+  const landed = nodes.filter((node) => node.status === "integrated");
+  const missing = nodes.filter((node) => node.status !== "integrated");
+  const label = async (node: (typeof nodes)[number]): Promise<string> => {
+    const job =
+      node.jobContractId === undefined || node.jobContractId === null
+        ? undefined
+        : await session.stores.jobContracts.get(runScope, node.jobContractId);
+    const first = job?.objective.split("\n")[0]?.trim() ?? "";
+    return `${node.executionNodeId} ${node.status}${first === "" ? "" : `: ${first.slice(0, 100)}`}`;
+  };
+  environment.out(`run ${run.runId} of ${options.program}: ${run.status}`);
+  environment.out(`landed (${landed.length}):`);
+  for (const node of landed) environment.out(`  ${await label(node)}`);
+  environment.out(`not landed (${missing.length}):`);
+  for (const node of missing) environment.out(`  ${await label(node)}`);
+  if (options.yes !== true) {
+    environment.out(
+      "nothing shipped: shipping part of a program is your decision. Run again with --yes to ship what landed.",
+    );
+    return 1;
+  }
+  const answer = LineShipResponseSchema.parse(
+    await send(session.transport, {
+      method: "POST",
+      path: routes.lineShip(config.projectId, config.line.branch),
+      body: { program, runId: run.runId },
+    }),
+  );
+  environment.out(
+    answer.queued
+      ? `shipped ${short(answer.shipped.upTo)} to the line's queue`
+      : `recorded; ${short(answer.shipped.upTo)} was already queued, held or on the line`,
+  );
   environment.out(`the line's run: ${answer.run}`);
   return 0;
 };

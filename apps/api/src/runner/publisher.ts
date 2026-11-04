@@ -48,6 +48,7 @@ import {
   resolveIntent,
   resolvePush,
   resolveStrandPublication,
+  runJoinsLine,
 } from "@nightshift/core";
 import {
   advertiseReceivePack,
@@ -485,6 +486,9 @@ const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promi
     if (upTo === undefined) return;
     const program = await deps.stores.programContracts.get(scope.projectId, scope.programId);
     if (program?.line === undefined) return;
+    // A program joins the line whole, once its run has succeeded (P25, D-P25-01):
+    // until then the obligation stands, and the reconciler asks again.
+    if (!runJoinsLine(await deps.stores.runs.get(scope, scope.runId))) return;
     const { branch } = program.line;
     const at = nowIso(deps.clock);
     // A line is created by its first range, with one look at where its ref stands.
@@ -505,7 +509,7 @@ const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promi
           parked: [],
           updatedAt: at,
         },
-        { program: scope.programId, upTo },
+        { program: scope.programId, upTo, runId: scope.runId },
         at,
       ),
     );

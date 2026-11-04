@@ -59,6 +59,7 @@ export const routes = {
   lineBundleUploadUrl: (projectId: ProjectId, branch: string) =>
     routes.line(projectId, branch, "/bundle-upload-url"),
   lineRequeue: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/requeue"),
+  lineShip: (projectId: ProjectId, branch: string) => routes.line(projectId, branch, "/ship"),
 
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,

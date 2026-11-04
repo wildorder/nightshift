@@ -318,6 +318,10 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     await stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
     await stores.dispatches.put(makeDispatch(f, { status: "running", instanceId: "i-run" }));
     await stores.runs.put(makeRun(f, { status: "running", location: "remote" }));
+    // A program joins the line once its run has succeeded (P25, D-P25-01). These
+    // tests are about how the line composes and repairs what joins it, so each
+    // landing below stands for a succeeded program's head.
+    await stores.runs.put(makeRun(f, { status: "succeeded", location: "remote" }));
   }
 
   const bundles = new Map<string, Uint8Array>();

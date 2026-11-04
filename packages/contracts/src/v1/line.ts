@@ -52,11 +52,18 @@ export const LineRangeSchema = z.strictObject({
 });
 export type LineRange = z.infer<typeof LineRangeSchema>;
 
-/** A published range waiting for the owner. */
+/**
+ * A published range waiting for the owner. Since P25 (D-P25-01) a program
+ * joins the line as one range, its run's final head, once the run has
+ * succeeded, and the entry names that run; an entry without `runId` was queued
+ * under P23's rule of one range per published push.
+ */
 export const LineQueueEntrySchema = z.strictObject({
   program: ProgramIdSchema,
   upTo: CommitShaSchema,
   enqueuedAt: IsoTimestampSchema,
+  /** The run whose final head this is (P25). */
+  runId: RunIdSchema.optional(),
   repairs: LineRepairsSchema.optional(),
   /** The successful repair commit for this range, composed first when the range returns. */
   repaired: CommitShaSchema.optional(),
@@ -247,6 +254,21 @@ export const LineRequeuedSchema = z.strictObject({
 });
 export type LineRequeued = z.infer<typeof LineRequeuedSchema>;
 
+/**
+ * Work a person sent to the line from a run that did not succeed (P25,
+ * D-P25-02): what landed of it, shipped by the person's word, never by default.
+ */
+export const LineShippedSchema = z.strictObject({
+  program: ProgramIdSchema,
+  runId: RunIdSchema,
+  upTo: CommitShaSchema,
+  /** The run's status when it was shipped. */
+  runStatus: z.string().min(1),
+  at: IsoTimestampSchema,
+  by: z.string().min(1),
+});
+export type LineShipped = z.infer<typeof LineShippedSchema>;
+
 const LineRecordShape = z.strictObject({
   ...projectScoped,
   branch: LineBranchSchema,
@@ -267,6 +289,8 @@ const LineRecordShape = z.strictObject({
   parked: z.array(LineParkedSchema),
   /** The parked entries sent back to the queue, newest `MAX_LINE_PARKED` kept (P25, D-P25-05). */
   requeued: z.array(LineRequeuedSchema).optional(),
+  /** Partial work a person shipped, newest `MAX_LINE_PARKED` kept (P25, D-P25-02). */
+  shipped: z.array(LineShippedSchema).optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**
@@ -445,6 +469,24 @@ export const LineRequeueResponseSchema = z.strictObject({
   run: z.string().min(1),
 });
 export type LineRequeueResponse = z.infer<typeof LineRequeueResponseSchema>;
+
+/**
+ * `POST …/line/ship?branch=` (P25, D-P25-02): a person sends what landed of a
+ * run that did not succeed to the line. Without `runId`, the program's latest run.
+ */
+export const LineShipBodySchema = z.strictObject({
+  program: ProgramIdSchema,
+  runId: RunIdSchema.optional(),
+});
+export type LineShipBody = z.infer<typeof LineShipBodySchema>;
+
+export const LineShipResponseSchema = z.strictObject({
+  shipped: LineShippedSchema,
+  /** Whether the range was queued now; false when it was already queued, held, batched or on the line. */
+  queued: z.boolean(),
+  run: z.string().min(1),
+});
+export type LineShipResponse = z.infer<typeof LineShipResponseSchema>;
 
 /** `POST …/line/bundle-upload-url?branch=`. */
 export const LineBundleUploadUrlBodySchema = z.strictObject({

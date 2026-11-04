@@ -116,7 +116,10 @@ interface World {
   readonly intend: (head: string, predecessor: string, pack: Uint8Array) => Promise<void>;
 }
 
-const world = async (options: { line?: boolean; remote?: GitRemote } = {}): Promise<World> => {
+/** `runStatus`: where the run stands when its intents publish; a program joins the line only once it has succeeded (P25). */
+const world = async (
+  options: { line?: boolean; remote?: GitRemote; runStatus?: "running" | "succeeded" | "failed" } = {},
+): Promise<World> => {
   setRef(PROGRAM_REF, base);
   setRef(LINE_REF, undefined);
   const stores = createInMemoryStores();
@@ -153,6 +156,10 @@ const world = async (options: { line?: boolean; remote?: GitRemote } = {}): Prom
   await stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
   await stores.dispatches.put(makeDispatch(f, { status: "running", instanceId: "i-1" }));
   await stores.runs.put(makeRun(f, { status: "running", location: "remote" }));
+  const runStatus = options.runStatus ?? "succeeded";
+  if (runStatus !== "running") {
+    await stores.runs.put(makeRun(f, { status: runStatus, location: "remote" }));
+  }
   const bundles = new Map<string, Uint8Array>();
   const bundleStore: BundleStore = {
     get: async (key) => {
@@ -265,6 +272,34 @@ describe("queueing a published range on the line", () => {
     await publishAll(w.deps, w.f.scope);
     expect((await w.stores.lines.get(w.f.scope.projectId, LINE))?.queue).toHaveLength(1);
     expect(w.started).toHaveLength(1);
+  });
+
+  it("holds a running run's range until the run succeeds, then queues its final head with its run (P25)", async () => {
+    const w = await world({ runStatus: "running" });
+    const next = commit(work, "p25-running.txt", "running\n", "p25 running");
+    await w.intend(next, base, await packOf(work, next, base));
+    expect(await publishAll(w.deps, w.f.scope)).toEqual({ published: 1, nothing_pending: 1 });
+    expect((await w.stores.lines.get(w.f.scope.projectId, LINE))?.queue ?? []).toEqual([]);
+    expect(lineQueueOwed(await w.dispatch())).toBe(true);
+    expect(w.started).toEqual([]);
+
+    await w.stores.runs.put(makeRun(w.f, { status: "succeeded", location: "remote" }));
+    await publishAll(w.deps, w.f.scope);
+    const line = await w.stores.lines.get(w.f.scope.projectId, LINE);
+    expect(line?.queue.map(({ program, upTo, runId }) => ({ program, upTo, runId }))).toEqual([
+      { program: w.f.scope.programId, upTo: next, runId: w.f.scope.runId },
+    ]);
+    expect(lineQueueOwed(await w.dispatch())).toBe(false);
+    expect(w.started).toHaveLength(1);
+  });
+
+  it("never queues the range of a run that failed (P25)", async () => {
+    const w = await world({ runStatus: "failed" });
+    const next = commit(work, "p25-failed.txt", "failed\n", "p25 failed");
+    await w.intend(next, base, await packOf(work, next, base));
+    await publishAll(w.deps, w.f.scope);
+    expect(await w.stores.lines.get(w.f.scope.projectId, LINE)).toBeUndefined();
+    expect(w.started).toEqual([]);
   });
 
   it("leaves a project without a line untouched", async () => {

@@ -24,7 +24,7 @@ import { recordedGates, recordGates } from "./commands/gate-health.js";
 import { gates } from "./commands/gates.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
-import { lineRequeue, lineStatus } from "./commands/line.js";
+import { lineRequeue, lineShip, lineStatus } from "./commands/line.js";
 import { runLocal, useStage } from "./commands/local.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
@@ -909,21 +909,42 @@ const doRemote = async (environment: CliEnvironment, args: readonly string[]): P
 /** `nightshift line status | requeue`: the project line's state, and sending parked ranges back. */
 const doLine = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
-    "nightshift line status [--repo <path>] | nightshift line requeue [--program <id|branch>] [--repo <path>]";
+    "nightshift line status [--repo <path>] | nightshift line requeue [--program <id|branch>] [--repo <path>] | nightshift line ship <program> [--run <id>] [--yes] [--repo <path>]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { repo: { type: "string" }, program: { type: "string" } },
+      options: {
+        repo: { type: "string" },
+        program: { type: "string" },
+        run: { type: "string" },
+        yes: { type: "boolean" },
+      },
       allowPositionals: true,
       strict: true,
     },
     usage,
   );
   const verb = positionals[0];
-  if (positionals.length !== 1 || (verb !== "status" && verb !== "requeue")) {
-    throw new UsageError("`nightshift line` takes `status` or `requeue`", usage);
-  }
   const repo = optional(values, "repo");
+  if (verb === "ship") {
+    const shipped = positionals[1];
+    if (positionals.length !== 2 || shipped === undefined) {
+      throw new UsageError("`nightshift line ship` names one program", usage);
+    }
+    const run = optional(values, "run");
+    return lineShip(environment, {
+      program: shipped,
+      ...(repo === undefined ? {} : { repo }),
+      ...(run === undefined ? {} : { run }),
+      ...(values.yes === true ? { yes: true } : {}),
+    });
+  }
+  if (positionals.length !== 1 || (verb !== "status" && verb !== "requeue")) {
+    throw new UsageError("`nightshift line` takes `status`, `requeue` or `ship`", usage);
+  }
+  if (values.run !== undefined || values.yes !== undefined) {
+    throw new UsageError("`--run` and `--yes` are for `ship`", usage);
+  }
   const program = optional(values, "program");
   if (verb === "status") {
     if (program !== undefined) throw new UsageError("`--program` is for `requeue`", usage);

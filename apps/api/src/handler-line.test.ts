@@ -225,6 +225,7 @@ describe("the line routes", () => {
       "line.push",
       "line.createBundleUploadUrl",
       "line.requeue",
+      "line.ship",
     ]);
   });
 });
@@ -1208,7 +1209,7 @@ describe("users and the line", () => {
 });
 
 describe("sending parked ranges back to the queue (P25, D-P25-05)", () => {
-  const parkedEntry = (w: World, compositionId: string, program: ProgramId, upTo: string) => ({
+  const parkedEntry = (_w: World, compositionId: string, program: ProgramId, upTo: string) => ({
     compositionId,
     ranges: [{ program, upTo, repairs: 3 }],
     reason: "main does not compose onto the line",
@@ -1258,5 +1259,77 @@ describe("sending parked ranges back to the queue (P25, D-P25-05)", () => {
     expect(response.status).toBe(403);
     const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
     expect(record?.queue).toEqual([]);
+  });
+});
+
+describe("shipping what landed of a run that did not succeed (P25, D-P25-02)", () => {
+  /** A run of the feeding program, ended `status`, whose dispatch published `head`. */
+  const endedRun = async (w: World, status: "failed" | "succeeded" | "running", head?: string) => {
+    const runId = w.f.ids.next("run");
+    const programId = w.f.scope.programId;
+    await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "pending" }));
+    await w.stores.dispatches.put(
+      makeDispatch(w.f, {
+        programId,
+        runId,
+        status: "stopped",
+        ...(head === undefined ? {} : { publication: { intents: [], head } }),
+      }),
+    );
+    await w.stores.runs.put(makeRun(w.f, { programId, runId, status: "running" }));
+    if (status !== "running") {
+      await w.stores.runs.put(makeRun(w.f, { programId, runId, status }));
+    }
+    return runId;
+  };
+
+  it("queues a failed run's published head, says who shipped it, and starts the line's run", async () => {
+    const w = await setup();
+    await seedLineRecords(w);
+    const runId = await endedRun(w, "failed", SHA_B);
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/ship"), {
+      program: w.f.scope.programId,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const body = response.body as { queued: boolean; shipped: { runStatus: string } };
+    expect(body.queued).toBe(true);
+    expect(body.shipped.runStatus).toBe("failed");
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.queue.map(({ program, upTo, runId: run }) => [program, upTo, run])).toEqual([
+      [w.f.scope.programId, SHA_B, runId],
+    ]);
+    expect(record?.shipped?.[0]).toMatchObject({ runId, upTo: SHA_B, by: expect.any(String) });
+  });
+
+  it("refuses a run that succeeded, one still running, and one that published nothing", async () => {
+    for (const [status, head, says] of [
+      ["succeeded", SHA_B, "joins the line by itself"],
+      ["running", SHA_B, "is running"],
+      ["failed", undefined, "published nothing"],
+    ] as const) {
+      const w = await setup();
+      await seedLineRecords(w);
+      const runId = await endedRun(w, status, head);
+      const response = await call(w, "POST", lineUrl(w, BRANCH, "/ship"), {
+        program: w.f.scope.programId,
+        runId,
+      });
+      expect(response.status, status).toBe(409);
+      expect(JSON.stringify(response.body)).toContain(says);
+    }
+  });
+
+  it("refuses the line run's own engine", async () => {
+    const w = await setup();
+    const { me } = await seedLine(w);
+    await endedRun(w, "failed", SHA_B);
+    const response = await call(
+      w,
+      "POST",
+      lineUrl(w, BRANCH, "/ship"),
+      { program: w.f.scope.programId },
+      me,
+    );
+    expect(response.status).toBe(403);
   });
 });

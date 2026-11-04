@@ -270,7 +270,7 @@ describe("reconcile: lines with work and the publisher", () => {
     expect(await lineRunsOf(w, f)).toHaveLength(0);
   });
 
-  it("asks the publisher about a run that owes the line a range, with no pending intent", async () => {
+  it("asks the publisher about a run that owes the line a range, with no pending intent, once the run has succeeded", async () => {
     const w = await world();
     const f = createFixtures();
     await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
@@ -282,6 +282,13 @@ describe("reconcile: lines with work and the publisher", () => {
         publication: { intents: [], lineOwed: true, head: FIXTURE_COMMIT },
       }),
     );
+    // A program joins the line whole, once its run has succeeded (P25, D-P25-01).
+    await w.reconcile();
+    expect(w.asked).toEqual([]);
+    await w.stores.runs.put(makeRun(f, { status: "failed", location: "remote" }));
+    await w.reconcile();
+    expect(w.asked).toEqual([]);
+    await w.stores.runs.put(makeRun(f, { status: "succeeded", location: "remote" }));
     await w.reconcile();
     expect(w.asked).toEqual([
       { projectId: f.scope.projectId, programId: f.scope.programId, runId: f.scope.runId },

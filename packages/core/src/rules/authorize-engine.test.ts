@@ -61,6 +61,7 @@ const FORBIDDEN: readonly Operation[] = [
   "publication.retry",
   // P25: a person sends parked ranges back; the line's own engine never does.
   "line.requeue",
+  "line.ship",
   "computeRecommendation.get",
   "warmCache.get",
   "orgCredential.put",

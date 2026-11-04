@@ -26,12 +26,15 @@ import {
   type LineSettleBody,
   LineSettleBodySchema,
   type LineSettledPayload,
+  LineShipBodySchema,
+  type LineShipResponse,
   type LineView,
   LineViewSchema,
   MAX_INLINE_PAYLOAD_BYTES,
   MAX_LINE_SETTLED_ENTRIES_PER_EVENT,
   type Principal,
   type ProjectId,
+  type Run,
   TakeLineBatchBodySchema,
 } from "@nightshift/contracts";
 import {
@@ -55,6 +58,7 @@ import {
   settledMarkers,
   settleIds,
   settlementDigest,
+  shipToLine,
   takeBatch,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
@@ -657,5 +661,108 @@ export const postLineRequeue: Handler = async (context) => {
     }
   }
   const response: LineRequeueResponse = { requeued, run };
+  return { status: 200, body: response };
+};
+
+/** Starts the line's run after a person queued work, and says what that answered; a failure is the reconciler's to retry. */
+const startAfterQueueing = async (
+  deps: ApiDeps,
+  target: LineTarget,
+  naming: Parameters<typeof startLineRun>[1]["naming"],
+): Promise<string> => {
+  try {
+    const started = await startLineRun(deps, {
+      projectId: target.projectId,
+      branch: target.branch,
+      naming,
+    });
+    return started.kind === "waiting"
+      ? `waiting (${started.reason}: ${started.detail})`
+      : started.kind;
+  } catch (error) {
+    return `not started now (${error instanceof Error ? error.message : String(error)}); the reconciler starts it on its next tick`;
+  }
+};
+
+/**
+ * `POST …/line/ship?branch=` (P25, D-P25-02): a person sends what landed of a
+ * run that did not succeed to the line, at the run's published head. Refused
+ * for a run that succeeded (it joins by itself), one still going, one that
+ * published nothing, and a program that does not feed this line. Only a user may.
+ */
+export const postLineShip: Handler = async (context) => {
+  const { deps, request, params, principal } = context;
+  const target = targetOf(params);
+  if (principal.kind !== "user") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "only a person may ship a run's partial work to the line",
+    );
+  }
+  const body = parseBody(LineShipBodySchema, request.body);
+  await requireLine(deps, target);
+  const program = await deps.stores.programContracts.get(target.projectId, body.program);
+  if (program?.line?.branch !== target.branch) {
+    throw new HttpError(
+      409,
+      "conflict",
+      `program ${body.program} does not feed the line ${target.branch}`,
+    );
+  }
+  const scope = { projectId: target.projectId, programId: body.program };
+  let run: Run | undefined;
+  if (body.runId !== undefined) {
+    run = await deps.stores.runs.get(scope, body.runId);
+  } else {
+    for (const found of await readAll((cursor) =>
+      deps.stores.runs.listByProgram(scope, cursor === undefined ? {} : { cursor }),
+    )) {
+      if (run === undefined || found.startedAt > run.startedAt) run = found;
+    }
+  }
+  if (run === undefined) {
+    throw new HttpError(404, "not_found", `program ${body.program} has no such run`);
+  }
+  if (run.status === "succeeded") {
+    throw new HttpError(
+      409,
+      "conflict",
+      `run ${run.runId} succeeded: its work joins the line by itself`,
+    );
+  }
+  if (run.status === "running" || run.status === "pending") {
+    throw new HttpError(
+      409,
+      "conflict",
+      `run ${run.runId} is ${run.status}: ship what landed once it has stopped`,
+    );
+  }
+  const dispatch = await deps.stores.dispatches.get({ ...scope, runId: run.runId });
+  const upTo = dispatch?.publication.head;
+  if (upTo === undefined) {
+    throw new HttpError(
+      409,
+      "conflict",
+      `run ${run.runId} published nothing to GitHub, so nothing of it can reach the line`,
+    );
+  }
+  const at = nowIso(deps.clock);
+  const shipped = {
+    program: body.program,
+    runId: run.runId,
+    upTo,
+    runStatus: run.status,
+    at,
+    by: principal.userId,
+  };
+  const before = await requireLine(deps, target);
+  const after = await applyLineChange(deps, target, (latest) => shipToLine(latest, shipped));
+  const queued = after.queue.length > before.queue.length;
+  const response: LineShipResponse = {
+    shipped,
+    queued,
+    run: queued ? await startAfterQueueing(deps, target, program) : "none (nothing new was queued)",
+  };
   return { status: 200, body: response };
 };
