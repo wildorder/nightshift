@@ -23,27 +23,38 @@
  * once more, so an intent recorded while it held the lock is not left behind.
  */
 import type {
+  CandidateId,
   Dispatch,
+  LineCandidate,
+  LineRecord,
   ProgramContract,
   ProjectId,
   PublicationIntent,
+  Verification,
 } from "@nightshift/contracts";
 import {
   appendQueueEntry,
   blocksPublication,
   type Clock,
+  candidateNeedsWriter,
   chainOrder,
   type GitHubAppClient,
   hasPendingIntent,
   holdBehind,
   type IdGenerator,
   installationGranting,
+  lineProgramId,
   lineQueueOwed,
+  markCandidateClosed,
+  markCandidateDeployed,
   type NightshiftStores,
   nextPendingIntent,
   nowIso,
   pendingStrandPublications,
   type RunScope,
+  recordCandidatePr,
+  recordCandidatePrClosed,
+  recordCandidatePrDetail,
   repositoryNameOf,
   resolveIntent,
   resolvePush,
@@ -132,7 +143,7 @@ export const smartHttpRemote: GitRemote = {
 export interface PublisherDeps {
   readonly stores: NightshiftStores;
   readonly clock: Clock;
-  readonly github: Pick<GitHubAppClient, "writeToken">;
+  readonly github: Pick<GitHubAppClient, "writeToken" | "pullRequests">;
   readonly bundles: BundleStore;
   readonly lock?: PublishLock;
   readonly remote?: GitRemote;
@@ -706,4 +717,259 @@ const pushLine = async (
         },
   );
   return "retrying";
+};
+
+/** The words of a candidate's pull request (P25, D-P25-11): what it ships, how the line got there, what proved it. */
+export const candidatePullRequestBody = (input: {
+  readonly candidate: LineCandidate;
+  readonly programs: readonly {
+    readonly program: string;
+    readonly name: string;
+    readonly objective?: string;
+  }[];
+  readonly repairs: readonly {
+    readonly commit: string;
+    readonly runId: string;
+    readonly jobContractId: string;
+  }[];
+  readonly verification?: Verification | undefined;
+}): string => {
+  const { candidate, verification } = input;
+  const lines = [
+    `Nightshift candidate \`${candidate.candidateId}\`: the project line at \`${candidate.commit.slice(0, 12)}\`, which holds main at \`${candidate.mainAt.slice(0, 12)}\`.`,
+    "",
+    "## What this ships",
+    "",
+    ...input.programs.map(
+      (program) =>
+        `- **${program.name}** (\`${program.program}\`)${program.objective === undefined ? "" : `: ${program.objective}`}`,
+    ),
+    "",
+    "## How the line got here",
+    "",
+    ...(input.repairs.length === 0
+      ? ["Every program composed onto the line without a repair."]
+      : input.repairs.map(
+          (repair) =>
+            `- \`${repair.commit.slice(0, 12)}\`: a repair by Nightshift, job \`${repair.jobContractId}\` of line run \`${repair.runId}\``,
+        )),
+    "",
+    "## What proved it",
+    "",
+    ...(verification === undefined
+      ? [
+          `Verification \`${candidate.verificationId ?? "unknown"}\` of the line run \`${candidate.runId}\`.`,
+        ]
+      : [
+          `Every gate on exactly \`${candidate.commit.slice(0, 12)}\` (verification \`${verification.verificationId}\`, ${verification.outcome}):`,
+          "",
+          ...verification.commands.map(
+            (command) =>
+              `- \`${command.stepId}\`: \`${command.command}\` ${command.exitCode === 0 ? "passed" : command.exitCode === undefined ? "did not run" : `exit ${command.exitCode}`}`,
+          ),
+        ]),
+    "",
+    "Merge with a **merge commit**, never squash: the line then holds main's commits and taking main back in changes nothing.",
+  ];
+  return `${lines.join("\n")}\n`;
+};
+
+/**
+ * The GitHub writer's work for a line's candidates (P25, D-P25-11, D-P25-12),
+ * under the line's lock: open the pull request of a qualified candidate from a
+ * branch pinned at its commit; close a superseded candidate's pull request with
+ * a link to the one that replaced it; merge a deploying candidate's with a
+ * merge commit, only while it is current; and notice a pull request merged or
+ * closed in GitHub. A refusal is recorded on the candidate and asked again.
+ */
+export const publishCandidates = async (
+  deps: PublisherDeps,
+  input: { readonly projectId: ProjectId; readonly branch: string },
+): Promise<Record<string, number>> => {
+  const counts: Record<string, number> = {};
+  const count = (key: string) => {
+    counts[key] = (counts[key] ?? 0) + 1;
+  };
+  const log = deps.log ?? (() => undefined);
+  const key: LineScope = { kind: "line", ...input };
+  const lock = deps.lock ?? createLocalPublishLock();
+  if (!(await lock.acquire(key, PUBLISH_LEASE_MS))) return { locked: 1 };
+  try {
+    const { projectId, branch } = input;
+    const record = await deps.stores.lines.get(projectId, branch);
+    const pulls = deps.github.pullRequests;
+    if (record === undefined || pulls === undefined) return { nothing_pending: 1 };
+    const project = await deps.stores.projects.get(projectId);
+    const orgConfig =
+      project === undefined ? undefined : await deps.stores.orgConfigs.get(project.orgId);
+    const repository = repositoryNameOf(record.repositoryUrl);
+    const installation =
+      repository === undefined
+        ? undefined
+        : installationGranting(orgConfig?.installations ?? [], repository);
+    if (repository === undefined || installation === undefined) return { not_configured: 1 };
+    const { installationId } = installation;
+    const at = () => nowIso(deps.clock);
+    const update = (change: (current: LineRecord) => LineRecord) =>
+      deps.stores.lines.update(projectId, branch, (current) =>
+        current === undefined ? undefined : change(current),
+      );
+    const linePrograms = lineProgramId(projectId, branch);
+    const naming = await firstNamingProgram(deps, projectId, branch);
+    const base = naming?.repository.baseBranch ?? "main";
+
+    for (const candidate of (record.candidates ?? []).filter(candidateNeedsWriter)) {
+      const id = candidate.candidateId;
+      try {
+        if (candidate.state === "qualified" && candidate.pr === undefined) {
+          const head = `nightshift/candidates/${id}`;
+          await pulls.createBranch(installationId, repository, head, candidate.commit);
+          const programs = [];
+          for (const entry of candidate.programs) {
+            const contract = await deps.stores.programContracts.get(projectId, entry.program);
+            programs.push({
+              program: entry.program,
+              name: contract?.repository.programBranch ?? entry.program,
+              ...(contract === undefined
+                ? {}
+                : { objective: contract.objective.split("\n")[0]?.trim().slice(0, 200) ?? "" }),
+            });
+          }
+          const verification =
+            candidate.verificationId === undefined
+              ? undefined
+              : await deps.stores.verifications.get(
+                  { projectId, programId: linePrograms, runId: candidate.runId },
+                  candidate.verificationId,
+                );
+          const repairs = (record.compositions ?? [])
+            .filter(
+              (composition) => composition.repair !== undefined && composition.pushed !== undefined,
+            )
+            .map((composition) => ({
+              commit: composition.commit,
+              runId: composition.repair?.runId ?? "",
+              jobContractId: composition.repair?.jobContractId ?? "",
+            }));
+          const title =
+            `Nightshift: ship ${programs.map((program) => program.name).join(", ")}`.slice(0, 250);
+          const pr = await pulls.open(installationId, repository, {
+            head,
+            base,
+            title,
+            body: candidatePullRequestBody({ candidate, programs, repairs, verification }),
+          });
+          await update((current) =>
+            recordCandidatePr(current, id, { number: pr.number, url: pr.url, branch: head }, at()),
+          );
+          log(`line ${branch}: candidate ${id}: opened pull request #${pr.number}`);
+          count("pr_opened");
+          continue;
+        }
+        if (candidate.pr === undefined) continue;
+        const pr = await pulls.get(installationId, repository, candidate.pr.number);
+        if (pr?.merged === true) {
+          await update((current) => markCandidateDeployed(current, id, at()));
+          log(`line ${branch}: candidate ${id}: merged; deployed`);
+          count("deployed");
+          continue;
+        }
+        if (candidate.state === "superseded") {
+          if (pr?.state === "open") {
+            const by = (record.candidates ?? []).find(
+              (found) => found.candidateId === candidate.supersededBy,
+            );
+            await pulls.close(
+              installationId,
+              repository,
+              candidate.pr.number,
+              by?.pr === undefined
+                ? `Superseded by Nightshift candidate \`${candidate.supersededBy ?? "a newer one"}\`.`
+                : `Superseded by ${by.pr.url}: a newer qualified candidate of the line.`,
+            );
+          }
+          await update((current) => recordCandidatePrClosed(current, id, at()));
+          count("pr_closed");
+          continue;
+        }
+        if (pr === undefined || pr.state === "closed") {
+          await update((current) => markCandidateClosed(current, id, at()));
+          log(`line ${branch}: candidate ${id}: its pull request was closed unmerged`);
+          count("closed");
+          continue;
+        }
+        if (candidate.state === "deploying") {
+          const merged = await pulls.merge(
+            installationId,
+            repository,
+            candidate.pr.number,
+            candidate.commit,
+          );
+          if (merged.merged) {
+            await update((current) => markCandidateDeployed(current, id, at()));
+            log(`line ${branch}: candidate ${id}: merged #${candidate.pr.number}; deployed`);
+            count("deployed");
+          } else {
+            await update((current) =>
+              recordCandidatePrDetail(
+                withDeployRefused(current, id, at()),
+                id,
+                `GitHub did not merge #${candidate.pr?.number}: ${merged.detail}`,
+                at(),
+              ),
+            );
+            count("merge_refused");
+          }
+          continue;
+        }
+        count("watching");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        log(`line ${branch}: candidate ${id}: ${detail}`);
+        await update((current) =>
+          recordCandidatePrDetail(current, id, detail.slice(0, 1000), at()),
+        );
+        count("error");
+      }
+    }
+    return counts;
+  } finally {
+    await lock.release(key);
+  }
+};
+
+/** A deploy GitHub refused: the candidate is qualified again, to deploy once current. */
+const withDeployRefused = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  at: string,
+): LineRecord => ({
+  ...record,
+  candidates: (record.candidates ?? []).map((candidate) =>
+    candidate.candidateId === candidateId && candidate.state === "deploying"
+      ? { ...candidate, state: "qualified" as const, updatedAt: at }
+      : candidate,
+  ),
+  updatedAt: at,
+});
+
+/** A program of the project that names the line: its base branch is main. */
+const firstNamingProgram = async (
+  deps: PublisherDeps,
+  projectId: ProjectId,
+  branch: string,
+): Promise<ProgramContract | undefined> => {
+  let cursor: string | undefined;
+  do {
+    const page = await deps.stores.programContracts.listByProject(
+      projectId,
+      cursor === undefined ? {} : { cursor },
+    );
+    const found = page.items.find(
+      (program) => program.line?.branch === branch && program.kind !== "line",
+    );
+    if (found !== undefined) return found;
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return undefined;
 };

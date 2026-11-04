@@ -289,6 +289,8 @@ export const LineCandidateStateSchema = z.enum([
   "qualified",
   "failed",
   "superseded",
+  /** A person asked to deploy it; the GitHub writer is merging its pull request (D-P25-12). */
+  "deploying",
   "deployed",
   "closed",
 ]);
@@ -323,6 +325,10 @@ export const LineCandidateSchema = z.strictObject({
     })
     .optional(),
   supersededBy: CandidateIdSchema.optional(),
+  /** When the GitHub writer closed its pull request, superseded. */
+  prClosedAt: IsoTimestampSchema.optional(),
+  /** Why its pull request could not be opened, or a deploy could not merge it; the reconciler asks again. */
+  prDetail: z.string().min(1).optional(),
   deployedAt: IsoTimestampSchema.optional(),
   /** Who deployed it, when a person did so through Nightshift. */
   deployedBy: z.string().min(1).optional(),

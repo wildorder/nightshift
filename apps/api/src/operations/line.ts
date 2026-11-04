@@ -813,6 +813,12 @@ export const postLineCandidateSettle: Handler = async (context) => {
     (found) => found.candidateId === body.candidateId,
   );
   if (candidate === undefined) throw new Error(`the line kept no candidate ${body.candidateId}`);
+  // A qualified candidate becomes a pull request (D-P25-11); the reconciler asks again on a miss.
+  if (candidate.state === "qualified") {
+    await deps.dispatcher?.publishCandidates?.(target).catch((error: unknown) => {
+      console.error(`line ${target.branch}: the GitHub writer was not reached:`, error);
+    });
+  }
   const response: LineCandidateResponse = { candidate };
   return { status: 200, body: response };
 };

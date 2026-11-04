@@ -19,7 +19,7 @@ import { createS3BundleStore } from "../aws/s3-bundles.js";
 import { loadConfig } from "../config.js";
 import { createGitHubAppClient, type GitHubAppSecret } from "../github/app.js";
 import type { ApiDeps } from "../http.js";
-import { publishAll, publishLine } from "../runner/publisher.js";
+import { publishAll, publishCandidates, publishLine } from "../runner/publisher.js";
 
 const config = loadConfig(process.env);
 const table = createAwsClients().table;
@@ -53,10 +53,11 @@ export interface RunPublishEvent {
   readonly runId: string;
 }
 
-/** A run's intents (`RunPublishEvent`), or a line's push. */
+/** A run's intents (`RunPublishEvent`), a line's push, or a line's candidates' pull requests (P25). */
 export type PublishEvent =
   | RunPublishEvent
-  | { readonly kind: "line"; readonly projectId: string; readonly branch: string };
+  | { readonly kind: "line"; readonly projectId: string; readonly branch: string }
+  | { readonly kind: "candidates"; readonly projectId: string; readonly branch: string };
 
 const isLineEvent = (
   event: PublishEvent,
@@ -102,6 +103,14 @@ export const handler = async (event: PublishEvent): Promise<Record<string, numbe
     plane,
     log: (line: string) => console.warn(`publisher: ${line}`),
   };
+  if ("kind" in event && event.kind === "candidates") {
+    const counts = await publishCandidates(deps, {
+      projectId: ProjectIdSchema.parse(event.projectId),
+      branch: event.branch,
+    });
+    console.warn(`publisher candidates ${event.branch}: ${JSON.stringify(counts)}`);
+    return counts;
+  }
   if (isLineEvent(event)) {
     const step = await publishLine(deps, {
       projectId: ProjectIdSchema.parse(event.projectId),

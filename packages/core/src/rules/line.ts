@@ -987,3 +987,96 @@ export const settleCandidate = (
     },
   };
 };
+
+/** One candidate changed by `change`, or the record as it was when there is none of that id. */
+const withCandidate = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  change: (candidate: LineCandidate) => LineCandidate,
+  at: string,
+): LineRecord => {
+  const candidates = record.candidates ?? [];
+  if (!candidates.some((candidate) => candidate.candidateId === candidateId)) return record;
+  return {
+    ...record,
+    candidates: candidates.map((candidate) =>
+      candidate.candidateId === candidateId ? { ...change(candidate), updatedAt: at } : candidate,
+    ),
+    updatedAt: at,
+  };
+};
+
+/** Its pull request, opened by the GitHub writer (P25, D-P25-11). */
+export const recordCandidatePr = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  pr: NonNullable<LineCandidate["pr"]>,
+  at: string,
+): LineRecord =>
+  withCandidate(
+    record,
+    candidateId,
+    ({ prDetail: _said, ...candidate }) => ({ ...candidate, pr }),
+    at,
+  );
+
+/** Why the GitHub writer could not do what the candidate needs; it asks again. */
+export const recordCandidatePrDetail = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  detail: string,
+  at: string,
+): LineRecord =>
+  withCandidate(record, candidateId, (candidate) => ({ ...candidate, prDetail: detail }), at);
+
+/** A superseded candidate's pull request, closed by the GitHub writer. */
+export const recordCandidatePrClosed = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  at: string,
+): LineRecord =>
+  withCandidate(record, candidateId, (candidate) => ({ ...candidate, prClosedAt: at }), at);
+
+/** Whether a candidate still needs the GitHub writer: a pull request to open, close, merge, or watch. */
+export const candidateNeedsWriter = (candidate: LineCandidate): boolean =>
+  (candidate.state === "qualified" && candidate.pr === undefined) ||
+  (candidate.state === "qualified" && candidate.pr !== undefined) ||
+  candidate.state === "deploying" ||
+  (candidate.state === "superseded" &&
+    candidate.pr !== undefined &&
+    candidate.prClosedAt === undefined);
+
+/**
+ * Its pull request was merged (P25, D-P25-12): `deployed`, and what it shipped
+ * is no longer undeployed, unless the line has carried that program further
+ * since. `by` is the person who asked, when one did through Nightshift.
+ */
+export const markCandidateDeployed = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  at: string,
+): LineRecord => {
+  const candidate = (record.candidates ?? []).find((found) => found.candidateId === candidateId);
+  if (candidate === undefined || candidate.state === "deployed") return record;
+  const shipped = new Map(candidate.programs.map((entry) => [entry.program, entry.upTo]));
+  const deployed = withCandidate(
+    record,
+    candidateId,
+    ({ prDetail: _said, ...found }) => ({ ...found, state: "deployed", deployedAt: at }),
+    at,
+  );
+  return {
+    ...deployed,
+    undeployed: (record.undeployed ?? []).filter(
+      (entry) => shipped.get(entry.program) !== entry.upTo,
+    ),
+  };
+};
+
+/** Its pull request was closed unmerged in GitHub: `closed`. */
+export const markCandidateClosed = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  at: string,
+): LineRecord =>
+  withCandidate(record, candidateId, (candidate) => ({ ...candidate, state: "closed" }), at);

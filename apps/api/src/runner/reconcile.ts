@@ -17,6 +17,7 @@
 import type { LineRecord, ProgramContract, ProjectId } from "@nightshift/contracts";
 import { DispatchStatusSchema } from "@nightshift/contracts";
 import {
+  candidateNeedsWriter,
   hasPendingIntent,
   installationGranting,
   lineProgramId,
@@ -39,7 +40,8 @@ export const REQUESTED_GRACE_MS = 2 * 60_000;
 /** What the publisher is asked about: a run's intents, or the line's push. */
 export type PublisherRequest =
   | { readonly projectId: string; readonly programId: string; readonly runId: string }
-  | { readonly kind: "line"; readonly projectId: string; readonly branch: string };
+  | { readonly kind: "line"; readonly projectId: string; readonly branch: string }
+  | { readonly kind: "candidates"; readonly projectId: string; readonly branch: string };
 
 export interface ReconcileDeps {
   readonly provision: ProvisionDeps;
@@ -192,6 +194,28 @@ export const reconcileLineMain = async (deps: ReconcileDeps, count: Counter): Pr
   }
 };
 
+/**
+ * Candidates the GitHub writer still owes something (P25, D-P25-11, D-P25-12):
+ * a pull request to open, close or merge, or one to watch for a merge made in
+ * GitHub. The writer is asked once per line each tick.
+ */
+export const reconcileCandidates = async (deps: ReconcileDeps, count: Counter): Promise<void> => {
+  for (const record of await deps.provision.stores.lines.listAll()) {
+    if (!(record.candidates ?? []).some(candidateNeedsWriter)) continue;
+    try {
+      await deps.askPublisher({
+        kind: "candidates",
+        projectId: record.projectId,
+        branch: record.branch,
+      });
+      count("publish:candidates-asked");
+    } catch (error) {
+      count("error");
+      console.error(`reconciler: candidates of ${record.projectId}/${record.branch}:`, error);
+    }
+  }
+};
+
 /** A program of the project that names the line's branch: the line program is made from it. */
 const namingProgramOf = async (
   stores: Pick<ProvisionDeps["stores"], "programContracts">,
@@ -220,6 +244,7 @@ export const reconcile = async (deps: ReconcileDeps): Promise<Record<string, num
   await reconcileRuns(deps, count);
   // Main moving without the line queues it before lines with work are started.
   await reconcileLineMain(deps, count);
+  await reconcileCandidates(deps, count);
   await reconcileLinesWithWork(deps, count);
   return counts;
 };

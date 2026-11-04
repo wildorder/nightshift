@@ -131,6 +131,8 @@ const dispatcher: Dispatcher | undefined =
               publish: (scope: RunScope) => invoke(publisherFunctionArn, scope),
               publishLine: ({ projectId, branch }) =>
                 invoke(publisherFunctionArn, { kind: "line", projectId, branch }),
+              publishCandidates: ({ projectId, branch }) =>
+                invoke(publisherFunctionArn, { kind: "candidates", projectId, branch }),
             }),
       };
 

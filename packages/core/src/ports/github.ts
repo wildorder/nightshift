@@ -20,6 +20,59 @@ export interface GitHubInstallationFacts {
   readonly repositories: readonly string[];
 }
 
+/** A pull request as GitHub states it (P25). */
+export interface GitHubPullRequest {
+  readonly number: number;
+  readonly url: string;
+  readonly state: "open" | "closed";
+  readonly merged: boolean;
+  /** The commit the pull request's head branch is at. */
+  readonly headSha: string;
+}
+
+/**
+ * What the GitHub writer does with pull requests (P25, D-P25-11, D-P25-12),
+ * with a token that asks for pull requests and contents write: minted only in
+ * the publisher Lambda, like `writeToken`.
+ */
+export interface GitHubPullRequests {
+  /** Creates `refs/heads/<branch>` at `sha`; a branch already at `sha` is fine. */
+  createBranch(
+    installationId: number,
+    repository: string,
+    branch: string,
+    sha: string,
+  ): Promise<void>;
+  /** Opens one; an open one from the same head branch is answered instead. */
+  open(
+    installationId: number,
+    repository: string,
+    request: {
+      readonly head: string;
+      readonly base: string;
+      readonly title: string;
+      readonly body: string;
+    },
+  ): Promise<GitHubPullRequest>;
+  get(
+    installationId: number,
+    repository: string,
+    number: number,
+  ): Promise<GitHubPullRequest | undefined>;
+  /** Comments, then closes it unmerged. */
+  close(installationId: number, repository: string, number: number, comment: string): Promise<void>;
+  /**
+   * Merges it with a merge commit, only while its head is `sha`. Answers whether
+   * GitHub merged it, and why not when it did not.
+   */
+  merge(
+    installationId: number,
+    repository: string,
+    number: number,
+    sha: string,
+  ): Promise<{ readonly merged: true } | { readonly merged: false; readonly detail: string }>;
+}
+
 export interface GitHubAppClient {
   app(): Promise<GitHubAppIdentity>;
   /** The installation's facts, or `undefined` when GitHub knows no such installation of this App. */
@@ -58,6 +111,8 @@ export interface GitHubAppClient {
     installationId: number,
     repository: string,
   ): Promise<{ readonly token: string; readonly expiresAt: string }>;
+  /** P25: the GitHub writer's pull requests; absent where nothing opens them. */
+  readonly pullRequests?: GitHubPullRequests;
 }
 
 /** `owner/name` from the forms a contract's `repository.url` takes. */

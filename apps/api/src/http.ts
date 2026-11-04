@@ -105,6 +105,11 @@ export interface Dispatcher {
   publish?(scope: RunScope): Promise<void>;
   /** The publisher for the project line's push (Pipkin M1b); absent where nothing publishes. */
   publishLine?(target: { readonly projectId: ProjectId; readonly branch: string }): Promise<void>;
+  /** The GitHub writer for a line's candidates' pull requests (P25); absent where nothing opens them. */
+  publishCandidates?(target: {
+    readonly projectId: ProjectId;
+    readonly branch: string;
+  }): Promise<void>;
 }
 
 /** Where execution tokens come from, and who they say issued them. */
