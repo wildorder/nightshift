@@ -1125,7 +1125,8 @@ describe("the project line, end to end", () => {
     expect(origin.isAncestor(commits.a2, head)).toBe(false);
     expect(origin.show(head, "shared.txt")).toMatch(/^from b\n/);
     expect(origin.linePushes).toEqual([head]);
-    expect(await plane.lineRuns()).toEqual([{ runId, status: "succeeded" }]);
+    // A line run that parked work did not do what it was started for (P25, D-P25-04).
+    expect(await plane.lineRuns()).toEqual([{ runId, status: "failed" }]);
   });
 
   it("creates the line branch on the git server when the first composition finds it absent", async () => {

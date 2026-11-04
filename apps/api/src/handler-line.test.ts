@@ -128,6 +128,7 @@ interface Seed {
   readonly queue?: LineRecord["queue"];
   readonly batch?: LineRecord["batch"];
   readonly held?: LineRecord["held"];
+  readonly parked?: LineRecord["parked"];
 }
 
 /** The engine of a run, as the dispatch Lambda mints it. */
@@ -194,6 +195,7 @@ const seedLineRecords = async (w: World, seed: Seed = {}) => {
       queue: seed.queue ?? [],
       ...(seed.held === undefined ? {} : { held: seed.held }),
       ...(seed.batch === undefined ? {} : { batch: seed.batch }),
+      ...(seed.parked === undefined ? {} : { parked: seed.parked }),
     }),
   );
 };
@@ -212,7 +214,7 @@ const entry = (w: World, upTo = SHA) => ({
 });
 
 describe("the line routes", () => {
-  it("are exactly the six that survive", () => {
+  it("are the six the owner uses, and the person's requeue", () => {
     expect(
       ROUTES.filter((route) => route.operation.startsWith("line.")).map((route) => route.operation),
     ).toEqual([
@@ -222,6 +224,7 @@ describe("the line routes", () => {
       "line.attempt",
       "line.push",
       "line.createBundleUploadUrl",
+      "line.requeue",
     ]);
   });
 });
@@ -1201,5 +1204,59 @@ describe("users and the line", () => {
     expect(
       (await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me)).status,
     ).toBe(403);
+  });
+});
+
+describe("sending parked ranges back to the queue (P25, D-P25-05)", () => {
+  const parkedEntry = (w: World, compositionId: string, program: ProgramId, upTo: string) => ({
+    compositionId,
+    ranges: [{ program, upTo, repairs: 3 }],
+    reason: "main does not compose onto the line",
+    parkedAt: NOW,
+  });
+
+  it("lets a person of the owning org queue every parked range again and start the line's run", async () => {
+    const w = await setup();
+    await seedLineRecords(w, { parked: [parkedEntry(w, "b1-p0", w.f.scope.programId, SHA)] });
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const body = response.body as { requeued: unknown[]; run: string };
+    expect(body.requeued).toEqual([{ program: w.f.scope.programId, upTo: SHA }]);
+    expect(body.run.length).toBeGreaterThan(0);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.queue.map((entry) => [entry.program, entry.upTo, entry.repairs])).toEqual([
+      [w.f.scope.programId, SHA, undefined],
+    ]);
+    expect(record?.requeued?.[0]).toMatchObject({ parkedId: "b1-p0", by: expect.any(String) });
+
+    const again = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(again.status).toBe(409);
+    expect(code(again)).toBe("nothing_parked");
+  });
+
+  it("queues only the named program's ranges", async () => {
+    const w = await setup();
+    const other = w.f.ids.next("prog") as ProgramId;
+    await seedLineRecords(w, {
+      parked: [
+        parkedEntry(w, "b1-p0", w.f.scope.programId, SHA),
+        parkedEntry(w, "b1-p1", other, SHA_B),
+      ],
+    });
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), { program: other });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.queue.map((entry) => entry.program)).toEqual([other]);
+  });
+
+  it("refuses the line run's own engine: it never undoes what it parked", async () => {
+    const w = await setup();
+    const { me } = await seedLine(w, {
+      parked: [parkedEntry(w, "b1-p0", w.f.scope.programId, SHA)],
+    });
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {}, me);
+    expect(response.status).toBe(403);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.queue).toEqual([]);
   });
 });

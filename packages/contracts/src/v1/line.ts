@@ -236,6 +236,17 @@ export const LineWaitingSchema = z.strictObject({
 });
 export type LineWaiting = z.infer<typeof LineWaitingSchema>;
 
+/**
+ * A parked entry a person sent back to the queue (P25, D-P25-05): the entry's
+ * id, when and by whom. The parked entry itself is kept as it was recorded.
+ */
+export const LineRequeuedSchema = z.strictObject({
+  parkedId: z.string().min(1),
+  at: IsoTimestampSchema,
+  by: z.string().min(1),
+});
+export type LineRequeued = z.infer<typeof LineRequeuedSchema>;
+
 const LineRecordShape = z.strictObject({
   ...projectScoped,
   branch: LineBranchSchema,
@@ -254,6 +265,8 @@ const LineRecordShape = z.strictObject({
   compositions: z.array(LineCompositionSchema),
   /** Newest `MAX_LINE_PARKED` kept. */
   parked: z.array(LineParkedSchema),
+  /** The parked entries sent back to the queue, newest `MAX_LINE_PARKED` kept (P25, D-P25-05). */
+  requeued: z.array(LineRequeuedSchema).optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**
@@ -415,6 +428,23 @@ export const LineSettleBodySchema = z
     }
   });
 export type LineSettleBody = z.infer<typeof LineSettleBodySchema>;
+
+/**
+ * `POST …/line/requeue?branch=` (P25, D-P25-05): a person sends parked ranges
+ * back to the queue, every one, or one program's.
+ */
+export const LineRequeueBodySchema = z.strictObject({
+  program: ProgramIdSchema.optional(),
+});
+export type LineRequeueBody = z.infer<typeof LineRequeueBodySchema>;
+
+export const LineRequeueResponseSchema = z.strictObject({
+  /** The ranges queued again, in the order they were parked. */
+  requeued: z.array(z.strictObject({ program: ProgramIdSchema, upTo: CommitShaSchema })),
+  /** What starting the line's run answered: `started`, `live` (one is running), or `waiting` with why. */
+  run: z.string().min(1),
+});
+export type LineRequeueResponse = z.infer<typeof LineRequeueResponseSchema>;
 
 /** `POST …/line/bundle-upload-url?branch=`. */
 export const LineBundleUploadUrlBodySchema = z.strictObject({

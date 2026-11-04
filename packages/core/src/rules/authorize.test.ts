@@ -195,6 +195,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.attempt": "forbidden",
   "line.push": "forbidden",
   "line.createBundleUploadUrl": "forbidden",
+  "line.requeue": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -619,6 +620,7 @@ describe("the project line (Pipkin M1b)", () => {
         "line.attempt",
         "line.push",
         "line.createBundleUploadUrl",
+        "line.requeue",
       ].sort(),
     );
   });

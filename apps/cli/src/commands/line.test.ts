@@ -185,6 +185,26 @@ describe("describeLine", () => {
     expect(out).toContain("nightshift/beta 1111111..eeeeeee");
     expect(out).toContain("reason: verification failed after the resolver gave up");
     expect(out).toContain("resolver gave_up, 3 attempts");
+    expect(out).toContain("(1 waiting for `nightshift line requeue`)");
+  });
+
+  it("marks a parked entry that was sent back, and counts only the rest as waiting (P25)", () => {
+    const parked = (compositionId: string) => ({
+      compositionId,
+      ranges: [range(BETA, sha("e"), sha("1"))],
+      reason: "main does not compose onto the line",
+      parkedAt: AT,
+    });
+    const out = text(
+      describeLine(
+        view({
+          parked: [parked("comp-2"), parked("comp-3")],
+          requeued: [{ parkedId: "comp-2", at: AT, by: "user-1" }],
+        }),
+      ),
+    );
+    expect(out).toContain("parked: 2 (1 waiting for `nightshift line requeue`)");
+    expect(out).toContain(`(requeued ${AT} by user-1)`);
   });
 
   it("shows the cap reached and why the line is waiting", () => {

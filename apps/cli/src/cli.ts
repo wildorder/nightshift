@@ -24,7 +24,7 @@ import { recordedGates, recordGates } from "./commands/gate-health.js";
 import { gates } from "./commands/gates.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
-import { lineStatus } from "./commands/line.js";
+import { lineRequeue, lineStatus } from "./commands/line.js";
 import { runLocal, useStage } from "./commands/local.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
@@ -906,23 +906,33 @@ const doRemote = async (environment: CliEnvironment, args: readonly string[]): P
   return remoteResume(environment, options);
 };
 
-/** `nightshift line status`: the project line's state, from the plane. */
+/** `nightshift line status | requeue`: the project line's state, and sending parked ranges back. */
 const doLine = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift line status [--repo <path>]";
+  const usage =
+    "nightshift line status [--repo <path>] | nightshift line requeue [--program <id|branch>] [--repo <path>]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { repo: { type: "string" } },
+      options: { repo: { type: "string" }, program: { type: "string" } },
       allowPositionals: true,
       strict: true,
     },
     usage,
   );
-  if (positionals.length !== 1 || positionals[0] !== "status") {
-    throw new UsageError("`nightshift line` takes `status`", usage);
+  const verb = positionals[0];
+  if (positionals.length !== 1 || (verb !== "status" && verb !== "requeue")) {
+    throw new UsageError("`nightshift line` takes `status` or `requeue`", usage);
   }
   const repo = optional(values, "repo");
-  return lineStatus(environment, repo === undefined ? {} : { repo });
+  const program = optional(values, "program");
+  if (verb === "status") {
+    if (program !== undefined) throw new UsageError("`--program` is for `requeue`", usage);
+    return lineStatus(environment, repo === undefined ? {} : { repo });
+  }
+  return lineRequeue(environment, {
+    ...(repo === undefined ? {} : { repo }),
+    ...(program === undefined ? {} : { program }),
+  });
 };
 
 const doRoutes = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
