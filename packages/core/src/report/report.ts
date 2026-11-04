@@ -33,6 +33,7 @@ import {
   type GateHealthVerdict,
   type IsoTimestamp,
   type JobContract,
+  type LineCandidate,
   LineComposedPayloadSchema,
   type LineComposition,
   LineCompositionSchema,
@@ -300,6 +301,8 @@ export interface LineRunReport {
   readonly parked: readonly LineParked[];
   /** The run's repair jobs; each composition's or parked entry's `repair` names one of them. */
   readonly repairs: readonly RepairReport[];
+  /** The candidates this run cut (P25), as the line record has them now. */
+  readonly candidates?: readonly LineCandidate[];
 }
 
 export interface PublicationReport {
@@ -1517,6 +1520,7 @@ const gatherLine = async (
       (p) => p.parkedAt,
     ),
     repairs,
+    candidates: (record?.candidates ?? []).filter((candidate) => candidate.runId === run.runId),
   };
 };
 
@@ -2755,9 +2759,25 @@ const renderLineParked = (line: LineRunReport): string[] => [
       ]),
 ];
 
+const renderLineCandidates = (line: LineRunReport): string[] =>
+  (line.candidates ?? []).length === 0
+    ? []
+    : [
+        "## Candidates",
+        "",
+        ...(line.candidates ?? []).flatMap((candidate) => [
+          `- \`${candidate.candidateId}\` at \`${candidate.commit.slice(0, 8)}\`: **${candidate.state}**${candidate.pr === undefined ? "" : `, pull request [#${candidate.pr.number}](${candidate.pr.url})`}`,
+          ...(candidate.detail === undefined && candidate.prDetail === undefined
+            ? []
+            : [`  ${candidate.detail ?? candidate.prDetail}`]),
+        ]),
+        "",
+      ];
+
 const renderLineLead = (line: LineRunReport): string[] => [
   // What waits on the owner leads (D-P25-04): a parked range is work the line did not do.
   ...renderLineParked(line),
+  ...renderLineCandidates(line),
   "## Composed",
   "",
   ...(line.compositions.length === 0

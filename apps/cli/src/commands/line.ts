@@ -160,6 +160,26 @@ export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = [])
     lines.push(...describeComposition(composition, names));
   }
 
+  const undeployed = record.undeployed ?? [];
+  lines.push(
+    undeployed.length === 0
+      ? "main lacks: nothing"
+      : `main lacks: ${undeployed.map((entry) => names.get(entry.program) ?? entry.program).join(", ")}`,
+  );
+  const candidates = record.candidates ?? [];
+  if (candidates.length > 0) {
+    lines.push(`candidates: ${candidates.length} (newest last)`);
+    for (const candidate of candidates.slice(-5)) {
+      const pr =
+        candidate.pr === undefined
+          ? ""
+          : `  pull request #${candidate.pr.number} ${candidate.pr.url}`;
+      lines.push(`  ${candidate.candidateId}  ${short(candidate.commit)}  ${candidate.state}${pr}`);
+      const said = candidate.detail ?? candidate.prDetail;
+      if (said !== undefined) lines.push(`    ${said}`);
+    }
+  }
+
   if (record.parked.length > 0) {
     const requeued = new Map((record.requeued ?? []).map((entry) => [entry.parkedId, entry]));
     const waiting = record.parked.filter((parked) => !requeued.has(parked.compositionId)).length;

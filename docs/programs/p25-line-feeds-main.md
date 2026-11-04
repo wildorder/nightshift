@@ -266,4 +266,84 @@ T4 → T5 → T6 → T7 are in dependency order; T2 and T3 can be built beside T
 
 ## 13. As built
 
-Not started.
+Built in session on `program/p25-line-feeds-main`, 2026-11-04. T1 to T8 are
+done; T9 (deploy and the live proof) waits on the owner (H-P25-03, H-P25-04).
+
+### Task states
+
+| Task | State | Commits |
+|------|-------|---------|
+| T1 Line honesty | done | `0bbda27` main repaired, `c798bd3` honest status, `0443cd3` requeue |
+| T2 Whole programs | done | `4b10c84` |
+| T3 Main wakes the line | done | `99763fe` |
+| T4 Snapshot verification | done | `e3cfe3c` |
+| T5 Candidates | done | `d22bc23`, `472a56d` (red candidate repaired) |
+| T6 Candidate pull requests | done | `4a00401` |
+| T7 Deploy and the Studio | done | `1e3f168` route, `7edcf1f` Studio |
+| T8 Words | done | this commit: A-68, A-69, the run-program skill, `line status`, the line report |
+| T9 Deploy and prove | waiting on the owner | — |
+
+### Build decisions, provisional until the owner ratifies or reverses them
+
+- **BD-01, no separate Snapshot store (amends D-P25-07).** What D-P25-07 asked
+  of a snapshot record ("what is in it and what proved it") is met by the line
+  record's `undeployed` list (each program pushed since the last deploy, with
+  the commit that first carried it) and by the candidate itself (its commit,
+  programs and verification id). A second store would have needed three
+  backends and its own conformance suite for no reader the candidate does not
+  already serve.
+- **BD-02, candidates live on the line record (D-P25-09's storage).** Newest 20,
+  changed by pure rules under the record's compare-and-swap, like compositions.
+  Same ids (`cand_…`), states and immutability as ratified, plus one state the
+  decision did not name: `deploying`, between the person's press and GitHub's
+  merge.
+- **BD-03, main and repairs are entries of the line's own program.** Main moving
+  (D-P25-06) and a red candidate's repair (D-P25-10) are queued as entries whose
+  program is the line's own program id, so the composer, batch, settle and push
+  handle them unchanged. They are never listed as undeployed programs.
+- **BD-04, the reconciler indexes every line.** DynamoDB's line index now holds
+  every line, not only those with work; the readers filter. A line with no work
+  written before this deploy is indexed on its next write.
+- **BD-05, staleness in the Studio is read from `mainSeen`.** The panel says
+  "Updating" when the main head the reconciler last saw is not the candidate's;
+  the deploy route asks GitHub itself, so a stale answer can only hide the
+  button, never merge a stale candidate.
+
+### What was proven, and where
+
+- Main's conflict and red repairs, held ranges, spent budget:
+  `test/src/execution/line-compose.test.ts`.
+- A line run that parked or whose candidate failed ends failed, with its reason:
+  `apps/mcp/src/runner/line-owner.test.ts`, `test/src/line/line-e2e.test.ts`.
+- Requeue and ship, user-only: `packages/core/src/rules/line.test.ts`,
+  `apps/api/src/handler-line.test.ts`.
+- Whole programs only on success: `apps/api/src/runner/publisher-line.test.ts`,
+  `apps/api/src/runner/line-runner.test.ts`.
+- Main waking the line: `apps/api/src/runner/line-runner.test.ts`.
+- Snapshot verification on an exact commit, never landing evidence:
+  `test/src/execution/step-adjustments.test.ts`.
+- Cut, qualify, supersede, repair a red candidate: `line-owner.test.ts`,
+  `line.test.ts`, `handler-line.test.ts`.
+- Pull requests opened, closed, merged, noticed, refused:
+  `apps/api/src/runner/publisher-candidates.test.ts`.
+- Deploy only when current; the Studio's words and button:
+  `handler-line.test.ts`, `apps/studio/src/pages/project.test.tsx`,
+  `apps/studio/src/components/line-candidate.test.ts`.
+
+### Known and not P25's
+
+- **This laptop's git is 2.35.** `git worktree list -z` needs 2.36, so the
+  worktree clean-up paths fail locally (about 38 tests in a full run, all in
+  execution and parallel suites that remove worktrees). The runner image's git
+  is newer; upgrading Git for Windows makes the full suite meaningful here.
+
+### For the owner's trial (SC-P25-13)
+
+1. `aws sso login --profile nightshift`, then deploy the API and runner stacks
+   and a new runner image (the line owner changed).
+2. Two foodfly programs that touch the same file, run to success. Watch the
+   line combine both, repair the conflict once, go idle, and cut and qualify a
+   candidate; one pull request appears on foodfly.
+3. Commit something small to foodfly's main by hand. Within a tick the line
+   takes it in, the candidate is superseded, and a new one is qualified.
+4. Press Deploy in the Studio.

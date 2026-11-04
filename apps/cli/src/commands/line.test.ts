@@ -207,6 +207,31 @@ describe("describeLine", () => {
     expect(out).toContain(`(requeued ${AT} by user-1)`);
   });
 
+  it("says what main lacks and lists the candidates with their pull requests (P25)", () => {
+    const out = text(
+      describeLine(
+        view({
+          undeployed: [{ program: BETA, upTo: sha("e"), since: sha("f"), at: AT }],
+          candidates: [
+            {
+              candidateId: "cand_01J00000000000000000000000" as never,
+              commit: sha("f"),
+              mainAt: sha("a"),
+              programs: [{ program: BETA, upTo: sha("e") }],
+              state: "qualified",
+              runId: RUN_A,
+              pr: { number: 12, url: "https://github.com/x/y/pull/12", branch: "b" },
+              createdAt: AT,
+              updatedAt: AT,
+            },
+          ],
+        }),
+      ),
+    );
+    expect(out).toContain("main lacks: nightshift/beta");
+    expect(out).toContain("cand_01J00000000000000000000000  fffffff  qualified  pull request #12");
+  });
+
   it("shows the cap reached and why the line is waiting", () => {
     const out = text(
       describeLine(

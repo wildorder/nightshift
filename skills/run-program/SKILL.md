@@ -231,7 +231,13 @@ it, in this order:
    options, or a rejection reason that looks thin. Those are the ones worth the
    human's second look.
 
-Then the human's choices, plainly: review the branch and merge it; do the
+Then the human's choices, plainly. For a project with a line, the program
+does not get its own pull request: once its run has succeeded it joins the
+line, and it ships with the line's next candidate, whose one pull request the
+human deploys from the Studio (or merges with a merge commit in GitHub). For a
+run that did not succeed, `nightshift line ship <program>` shows what landed
+and, with `--yes`, ships it anyway. For a project without a line: review the
+branch and merge it. Either way: do the
 prerequisites and resume; re-plan (`/plan-program {id}` reads this report first
 and starts from the departures and the parked strands); or **reverse a
 decision** and correct it:
