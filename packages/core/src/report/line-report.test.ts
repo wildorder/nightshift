@@ -118,10 +118,12 @@ describe("a line run's report", () => {
     expect(gathered.line?.repairs.map((r) => r.cause)).toEqual(["line_conflict"]);
     const text = renderReport(gathered);
     expect(text).toContain("a line run of `nightshift/develop`");
-    const composed = text.indexOf("## Composed");
-    expect(composed).toBeGreaterThan(0);
-    expect(text.indexOf("## Parked")).toBeGreaterThan(composed);
-    expect(text.indexOf("## Repairs")).toBeGreaterThan(text.indexOf("## Parked"));
+    // What waits on the owner leads (P25, D-P25-04).
+    const parked = text.indexOf("## Parked");
+    expect(parked).toBeGreaterThan(0);
+    expect(text.indexOf("## Composed")).toBeGreaterThan(parked);
+    expect(text.indexOf("## Repairs")).toBeGreaterThan(text.indexOf("## Composed"));
+    expect(text).toContain("Each waits for `nightshift line requeue`");
     expect(text).toContain("Reason: repair budget exhausted");
     expect(text).toContain(`repair \`${repairJob.jobContractId}\``);
     expect(text).toContain("Resolve the conflict.");

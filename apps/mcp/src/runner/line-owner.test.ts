@@ -778,6 +778,13 @@ describe("a range that conflicts", () => {
     expect(agents.filter((agent) => agent.role === "orchestrator")).toHaveLength(1);
     expect(decisions.every((decision) => decision.agentId === agents[0]?.agentId)).toBe(true);
     expect((await stores.checkpoints.listByRun(f.scope)).items).toHaveLength(1);
+
+    // A run that parked work did not do what it was started for (P25, D-P25-04).
+    const run = await stores.runs.get(f.scope, f.scope.runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.outcomeReason).toContain("the line parked 1 range");
+    expect(run?.outcomeReason).toContain(world.programs.d);
+    expect(run?.outcomeReason).toContain("nightshift line requeue");
   });
 });
 

@@ -2738,7 +2738,25 @@ const renderTail = (report: RunReport): string[] => [
   ...renderDefinitions(report),
 ];
 
+const renderLineParked = (line: LineRunReport): string[] => [
+  "## Parked",
+  "",
+  ...(line.parked.length === 0
+    ? ["Nothing parked in this run.", ""]
+    : [
+        "These ranges are not on the line. Each waits for `nightshift line requeue`.",
+        "",
+        ...line.parked.flatMap((p) => [
+          `- ${p.compositionId} at ${p.parkedAt}: ${p.ranges.map(rangeText).join(", ")}${renderRepairRef(p.repair)}`,
+          `  Reason: ${p.reason}`,
+        ]),
+        "",
+      ]),
+];
+
 const renderLineLead = (line: LineRunReport): string[] => [
+  // What waits on the owner leads (D-P25-04): a parked range is work the line did not do.
+  ...renderLineParked(line),
   "## Composed",
   "",
   ...(line.compositions.length === 0
@@ -2748,17 +2766,6 @@ const renderLineLead = (line: LineRunReport): string[] => [
           (c) =>
             `- \`${c.commit.slice(0, 8)}\` at ${c.composedAt} (${c.compositionId}): ${c.ranges.map(rangeText).join(", ")}; verification ${c.verification.outcome}${renderRepairRef(c.repair)}`,
         ),
-        "",
-      ]),
-  "## Parked",
-  "",
-  ...(line.parked.length === 0
-    ? ["Nothing parked in this run.", ""]
-    : [
-        ...line.parked.flatMap((p) => [
-          `- ${p.compositionId} at ${p.parkedAt}: ${p.ranges.map(rangeText).join(", ")}${renderRepairRef(p.repair)}`,
-          `  Reason: ${p.reason}`,
-        ]),
         "",
       ]),
   "## Repairs",

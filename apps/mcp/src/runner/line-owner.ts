@@ -122,6 +122,23 @@ const cloneUrlOf = (repositoryUrl: string): string =>
     : repositoryUrl;
 
 const headRef = (branch: string): string => `refs/heads/${branch}`;
+
+/** The parked entries the line recorded at or after `since`: a run's own, from the record (a replacement owner included). */
+export const parkedSince = (record: LineRecord, since: string): LineRecord["parked"] => {
+  const from = Date.parse(since);
+  return record.parked.filter((entry) => Date.parse(entry.parkedAt) >= from);
+};
+
+/** Why a line run that parked work failed, in one paragraph: each range and its reason. */
+export const parkedReason = (parked: LineRecord["parked"]): string => {
+  const ranges = parked.flatMap((entry) =>
+    entry.ranges.map(
+      (range) => `${range.program} up to ${range.upTo.slice(0, 12)}: ${entry.reason}`,
+    ),
+  );
+  const said = `the line parked ${ranges.length} range${ranges.length === 1 ? "" : "s"}, which wait for \`nightshift line requeue\`: ${ranges.join("; ")}`;
+  return said.length <= 2000 ? said : `${said.slice(0, 1999)}…`;
+};
 const remoteRef = (branch: string): string => `refs/remotes/origin/${branch}`;
 
 export const runLineOwner = async (
@@ -550,7 +567,11 @@ const ownLine = async (
     idleSince ??= machine.now();
     if (machine.now() - idleSince >= idleMs) {
       log(`the line has been idle for ${Math.round(idleMs / 1000)}s; the owner ends`);
-      await line.complete();
+      // A run that parked anything did not do what it was started for (D-P25-04).
+      const parked = parkedSince(record, line.session.run.startedAt);
+      await line.complete(
+        parked.length === 0 ? undefined : { status: "failed", reason: parkedReason(parked) },
+      );
       return undefined;
     }
     say("waiting for work");
