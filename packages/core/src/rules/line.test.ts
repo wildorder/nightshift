@@ -9,10 +9,10 @@ import {
 import {
   appendQueueEntry,
   candidateDue,
-  cutCandidate,
   capReached,
   chargeDispatchUsage,
   composeBatch,
+  cutCandidate,
   DEFAULT_LINE_MONTHLY_USD,
   dispatchChargeDue,
   dispatchChargeKey,
@@ -32,8 +32,8 @@ import {
   requeueParked,
   resolvePush,
   seeMain,
-  settleCandidate,
   settleBatch,
+  settleCandidate,
   takeBatch,
 } from "./line.js";
 
