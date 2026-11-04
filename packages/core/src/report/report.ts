@@ -1959,8 +1959,8 @@ const renderVerificationTime = (time: VerificationTimeReport): string[] => {
     "",
     `Retained rerun time: ${humanDuration(time.steps.reduce((sum, step) => sum + step.rerunMs, 0))} across ${time.steps.reduce((sum, step) => sum + step.rerunRuns, 0)} flaky first run(s) and failed rerun(s), included in the totals.`,
     "",
-    "| Step | Runs | Total | Reruns | Per run | Quiet start | Queue / candidate / end | Forecast per run |",
-    "|------|------|-------|--------|---------|-------------|-------------------------|------------------|",
+    "| Step | Runs | Total | Reruns | Per run | Quiet start | Queue / candidate / end / snapshot | Forecast per run |",
+    "|------|------|-------|--------|---------|-------------|------------------------------------|------------------|",
     ...time.steps.map((step) => {
       const per = step.runs === 0 ? "—" : humanDuration(step.totalMs / step.runs);
       const quiet = step.runs === 0 ? "—" : humanDuration(step.quietMs / step.runs);

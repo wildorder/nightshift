@@ -251,7 +251,7 @@ export interface RunVerificationInput {
   /** The steps to run, from `gates.verification`: a job's landing steps, or the run's end gates. */
   readonly steps: readonly VerificationStep[];
   /** Absent for the queue's own verification, as the record has always read it. */
-  readonly phase?: "run";
+  readonly phase?: "run" | "snapshot";
   /** How progress lines name this verification. */
   readonly label: string;
   /** `nightshift resume`: the preflight has passed, and every step now runs. */

@@ -297,6 +297,23 @@ const LineRecordShape = z.strictObject({
    * it, and queues main when it does not.
    */
   mainSeen: CommitShaSchema.optional(),
+  /**
+   * The programs on the line that main does not have yet (P25, D-P25-07): each
+   * program's newest range pushed onto the line since the last deploy, in the
+   * order they first arrived. A candidate ships exactly these; a deploy clears
+   * what it shipped. Main's own entries (the line's program) are never listed.
+   */
+  undeployed: z
+    .array(
+      z.strictObject({
+        program: ProgramIdSchema,
+        upTo: CommitShaSchema,
+        /** The line commit that first carried this program since the last deploy. */
+        since: CommitShaSchema,
+        at: IsoTimestampSchema,
+      }),
+    )
+    .optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**

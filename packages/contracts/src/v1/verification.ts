@@ -149,9 +149,9 @@ export const outcomeOfCommands = (
 
 /**
  * The verification phases, declared once. The order is the order the report
- * and Studio render: queue / candidate / end.
+ * and Studio render: queue / candidate / end / line / snapshot.
  */
-export const VERIFICATION_PHASES = ["queue", "candidate", "run", "line"] as const;
+export const VERIFICATION_PHASES = ["queue", "candidate", "run", "line", "snapshot"] as const;
 export type VerificationPhase = (typeof VERIFICATION_PHASES)[number];
 export const VerificationPhaseSchema = z.enum(VERIFICATION_PHASES);
 
@@ -175,6 +175,11 @@ export const VERIFICATION_PHASE_HAS_JOB: Readonly<Record<VerificationPhase, bool
   run: false,
   /** A verification of a composition on the project line: embedded in the composition, no job. */
   line: false,
+  /**
+   * P25 (D-P25-08): every gate on one exact commit of the line, made by the line's
+   * run to qualify a candidate. On the line run's program node; no job.
+   */
+  snapshot: false,
 };
 
 /**

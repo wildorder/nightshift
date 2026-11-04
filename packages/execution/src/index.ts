@@ -33,6 +33,7 @@ export {
   type EndGatesResult,
   type FailedEndGate,
   verifyRunHead,
+  verifySnapshot,
 } from "./end-gates.js";
 export {
   createEngine,

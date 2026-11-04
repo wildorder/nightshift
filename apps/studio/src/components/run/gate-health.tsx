@@ -72,7 +72,7 @@ export const VerificationTime = ({ time }: { readonly time: VerificationTimeRepo
             <th className="p-1">Total</th>
             <th className="p-1">Per run</th>
             <th className="p-1">Quiet start</th>
-            <th className="p-1">Queue / candidate / end</th>
+            <th className="p-1">Queue / candidate / end / snapshot</th>
             <th className="p-1">Forecast per run</th>
           </tr>
         </thead>

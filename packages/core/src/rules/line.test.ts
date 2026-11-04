@@ -301,6 +301,8 @@ describe("requestPush and resolvePush", () => {
       resolvedAt: LATER,
     });
     expect(resolved.record.compositions[0]?.pushed).toEqual({ at: LATER });
+    // What main does not have yet (P25, D-P25-07): the composition's program, from this commit.
+    expect(resolved.record.undeployed).toEqual([{ program: P1, upTo: A, since: C, at: LATER }]);
     expect(lineHasWork(resolved.record)).toBe(false);
     // A resolved push does not hold the next one.
     expect(requestPush(resolved.record, { ...request, head: B }, 1, LATER).ok).toBe(true);

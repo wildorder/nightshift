@@ -316,6 +316,7 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
             queue: { runs: 10, totalMs: 10 * 41_000 },
             candidate: { runs: 2, totalMs: 2 * 41_000 },
             run: { runs: 0, totalMs: 0 },
+            snapshot: { runs: 0, totalMs: 0 },
           },
           forecastMs: 39_000,
         },
@@ -331,6 +332,7 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
             queue: { runs: 10, totalMs: 10 * 700_000 },
             candidate: { runs: 2, totalMs: 2 * 700_000 },
             run: { runs: 0, totalMs: 0 },
+            snapshot: { runs: 0, totalMs: 0 },
           },
         },
       ],
@@ -377,8 +379,8 @@ describe("the report's gate health (P15, D-P15-09, SC-P15-09)", () => {
     expect(text).toContain(
       "2h 28m across 12 verifications and 10 landings; the forecast assumed 12 landings at 12m 19s each, ≈ 2h 27m, measured on darwin arm64.",
     );
-    expect(text).toContain("| `e2e` | 12 | 2h 20m | none | 11m 40s | 30.0s | 10 / 2 / 0 | — |");
-    expect(text).toContain("| `build` | 12 | 8m 12s | none | 41.0s | 0.0s | 10 / 2 / 0 | 39.0s |");
+    expect(text).toContain("| `e2e` | 12 | 2h 20m | none | 11m 40s | 30.0s | 10 / 2 / 0 / 0 | — |");
+    expect(text).toContain("| `build` | 12 | 8m 12s | none | 41.0s | 0.0s | 10 / 2 / 0 / 0 | 39.0s |");
     expect(text).toContain(
       "- **e2e at the end** (rule 9): saves ≈ 1h 33m — 11m 40s × 10 landings − 11m 40s × 2 runs at the end.",
     );
@@ -1229,6 +1231,7 @@ describe("the report's usage, budget, time and completion wording (P20 J6)", () 
       queue: { runs: 0, totalMs: 0 },
       candidate: { runs: 0, totalMs: 0 },
       run: { runs: 2, totalMs: 90_000 },
+      snapshot: { runs: 0, totalMs: 0 },
     };
     const text = renderReport(
       report({

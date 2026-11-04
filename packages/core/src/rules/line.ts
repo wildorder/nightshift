@@ -32,6 +32,7 @@ import type {
   RunId,
 } from "@nightshift/contracts";
 import { MAX_LINE_COMPOSITIONS, MAX_LINE_PARKED } from "@nightshift/contracts";
+import { lineProgramId } from "../line/program.js";
 import { composedEntryOf, parkedEntryOf, settlementDigest } from "../line/settlement.js";
 
 /** What the plane's own starts may spend on one project's line per month, unless the config says. */
@@ -648,11 +649,18 @@ export const resolvePush = (
             })),
           ...record.queue,
         ];
+  const pushed =
+    status === "published"
+      ? record.compositions.find(
+          (composition) => composition.commit === head && composition.pushed === undefined,
+        )
+      : undefined;
   return {
     ok: true,
     record: {
       ...record,
       ...(status === "published" ? { head } : {}),
+      ...(pushed === undefined ? {} : { undeployed: withUndeployed(record, pushed, at) }),
       queue: requeued,
       push: {
         ...settled,
@@ -671,6 +679,32 @@ export const resolvePush = (
       updatedAt: at,
     },
   };
+};
+
+/**
+ * The programs main does not have yet, once `composition` is on the line (P25,
+ * D-P25-07): each of its ranges moves its program's `upTo` forward, a program
+ * new since the last deploy is added at the end, and main's own entries (the
+ * line's program) are not programs.
+ */
+const withUndeployed = (
+  record: LineRecord,
+  composition: LineRecord["compositions"][number],
+  at: string,
+): NonNullable<LineRecord["undeployed"]> => {
+  const main = lineProgramId(record.projectId as ProjectId, record.branch);
+  const listed = [...(record.undeployed ?? [])];
+  for (const range of composition.ranges) {
+    if (range.program === main) continue;
+    const index = listed.findIndex((entry) => entry.program === range.program);
+    const found = listed[index];
+    if (found === undefined) {
+      listed.push({ program: range.program, upTo: range.upTo, since: composition.commit, at });
+    } else {
+      listed[index] = { ...found, upTo: range.upTo };
+    }
+  }
+  return listed;
 };
 
 /** Whether the line has anything left for an owner to do: a queue, a batch, or a push to resolve. */

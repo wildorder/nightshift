@@ -193,6 +193,7 @@ describe("isLandingEvidence", () => {
     candidate: false,
     run: false,
     line: false,
+    snapshot: false,
   };
 
   it("classifies every verification phase, and only those", () => {

@@ -18,12 +18,12 @@
  */
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { CommitSha, Verification } from "@nightshift/contracts";
+import type { CommitSha, Verification, VerificationStep } from "@nightshift/contracts";
 import { stepAdjustmentOf } from "@nightshift/core";
 import { setupAsStep } from "@nightshift/verification";
 import type { ExecutionEnvironment, RunSession } from "./environment.js";
 import { verificationEvidence } from "./examine.js";
-import { endSteps, gateDefinitions } from "./gate-repair.js";
+import { endSteps, type GateDefinitions, gateDefinitions, landingSteps } from "./gate-repair.js";
 import { addDetachedWorktree, pruneWorktrees, revParse, tryGit } from "./git/index.js";
 import { discardScratch } from "./scratch.js";
 import { limitsOf, resolveSteps, runAdjustmentDecisions } from "./step-adjustments.js";
@@ -99,6 +99,16 @@ const resultOf = async (
   };
 };
 
+/** What one verification of a whole commit is asked to run, and how it is recorded. */
+interface WholeCommitVerification {
+  readonly head: CommitSha;
+  readonly base: CommitSha;
+  readonly gates: GateDefinitions;
+  readonly steps: readonly VerificationStep[];
+  readonly phase: "run" | "snapshot";
+  readonly label: string;
+}
+
 /**
  * Runs the end gates on `head`, in a detached checkout of it that goes when
  * they have run, and records the verification on the program node.
@@ -109,7 +119,46 @@ const runEndGates = async (
   head: CommitSha,
 ): Promise<Verification> => {
   const gates = await gateDefinitions(environment, session);
-  const steps = endSteps(gates);
+  return verifyWholeCommit(environment, session, {
+    head,
+    base: await endGatesBaseOf(environment, session, head),
+    gates,
+    steps: endSteps(gates),
+    phase: "run",
+    label: "end gates",
+  });
+};
+
+/**
+ * Verifies one exact commit (P25, D-P25-08): every step of every gate on the
+ * line's commit, in a detached checkout of it, recorded on the run's program
+ * node as a `snapshot` verification, which is never landing evidence. The line
+ * run qualifies a candidate with it; `base` is what main held when it was cut.
+ */
+export const verifySnapshot = async (
+  environment: ExecutionEnvironment,
+  session: RunSession,
+  commit: CommitSha,
+  base: CommitSha,
+): Promise<Verification> => {
+  const gates = await gateDefinitions(environment, session);
+  return verifyWholeCommit(environment, session, {
+    head: commit,
+    base,
+    gates,
+    steps: [...landingSteps(gates), ...endSteps(gates)],
+    phase: "snapshot",
+    label: "snapshot",
+  });
+};
+
+/** The pipeline both use: a detached checkout of `head`, setup and `steps`, recorded on the program node. */
+const verifyWholeCommit = async (
+  environment: ExecutionEnvironment,
+  session: RunSession,
+  input: WholeCommitVerification,
+): Promise<Verification> => {
+  const { head, gates, steps, phase, label } = input;
   const { outbox } = environment;
   const nodeId = session.rootNodeId;
   const worktree = environment.paths.worktree(session.scope.runId, nodeId);
@@ -132,7 +181,7 @@ const runEndGates = async (
     source: "control-plane",
     payload: {
       commitSha: head,
-      phase: "run",
+      phase,
       ...(resolved.skipped.size === 0 ? {} : { skippedSteps: [...resolved.skipped.keys()] }),
       steps: [...gates.setup.map((step) => setupAsStep(step).id), ...steps.map((step) => step.id)],
     },
@@ -147,11 +196,11 @@ const runEndGates = async (
       agentId: session.orchestratorAgentId,
       checkout,
       commitSha: head,
-      baseSha: await endGatesBaseOf(environment, session, head),
+      baseSha: input.base,
       gates,
       steps,
-      phase: "run",
-      label: "end gates",
+      phase,
+      label,
     });
     const failing = verification.commands.filter(
       (command) => command.exitCode !== undefined && command.exitCode !== 0,
@@ -163,7 +212,7 @@ const runEndGates = async (
         verificationId: verification.verificationId,
         outcome: verification.outcome,
         commitSha: head,
-        phase: "run",
+        phase,
         ...(failing.length === 0 ? {} : { failingSteps: failing.map((command) => command.stepId) }),
         ...(waitingOn.length === 0 ? {} : { waitingOn }),
         ...skippedStepsPayload(verification),

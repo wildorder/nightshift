@@ -28,6 +28,8 @@ const LANDING_EVIDENCE: Readonly<Record<VerificationPhase, boolean>> = {
   run: false,
   /** A line verification is the line's own evidence, never a run's (Pipkin M1b). */
   line: false,
+  /** A candidate's qualification proves a release, never a landing (P25, D-P25-08). */
+  snapshot: false,
 };
 
 /**

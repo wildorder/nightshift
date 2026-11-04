@@ -22,7 +22,7 @@ import {
   type Verification,
   VerificationSchema,
 } from "@nightshift/contracts";
-import { isSettled, nowIso } from "@nightshift/core";
+import { isLandingEvidence, isSettled, nowIso } from "@nightshift/core";
 import {
   completeJob,
   createEngine,
@@ -33,8 +33,10 @@ import {
   fingerprintAtCommit,
   gateDefinitions,
   gitBlobReader,
+  revParse,
   runJob,
   verifyRunHead,
+  verifySnapshot,
 } from "@nightshift/execution";
 import type { HarnessExit, HarnessStartInput } from "@nightshift/harness";
 import {
@@ -546,5 +548,31 @@ describe("verifyRunHead", () => {
       (event) => event.type === "verification.completed",
     );
     expect(completed).toHaveLength(2);
+  });
+});
+
+describe("verifySnapshot (P25, D-P25-08)", () => {
+  it("runs every gate, landing and end, on the exact commit, and records a snapshot that is never landing evidence", async () => {
+    const trial = await counter(0);
+    const world = await worldWith(programWith(trial.command, "end"));
+    const head = await revParse(
+      world.git,
+      world.session.repoPath,
+      `refs/heads/${world.session.program.repository.programBranch}`,
+    );
+    const verification = await verifySnapshot(world.environment, world.session, head, head);
+    expect(verification.phase).toBe("snapshot");
+    expect(verification.commitSha).toBe(head);
+    expect(verification.baseSha).toBe(head);
+    expect(verification.jobContractId).toBeNull();
+    expect(verification.executionNodeId).toBe(world.session.rootNodeId);
+    // The landing step and the end step both ran.
+    expect(verification.commands.map((command) => command.stepId)).toEqual(
+      expect.arrayContaining(["test", "trial"]),
+    );
+    expect(await trial.runs()).toBe(1);
+    expect(isLandingEvidence(verification.phase)).toBe(false);
+    const stored = await world.stores.verifications.get(world.scope, verification.verificationId);
+    expect(stored?.phase).toBe("snapshot");
   });
 });
