@@ -94,6 +94,20 @@ const draftsOver = (transport: Transport): NonNullable<Studio["drafts"]> => ({
   },
 });
 
+/** Deploying a candidate (P25): the plane's refusal comes back in its words. */
+const lineOver = (transport: Transport): NonNullable<Studio["line"]> => ({
+  deploy: async (projectId, branch, candidateId) => {
+    const response = await transport({
+      method: "POST",
+      path: routes.lineCandidateDeploy(projectId, branch),
+      body: { candidateId },
+    });
+    if (response.status === 202 || response.status === 200) return { ok: true };
+    const said = (response.body as { error?: { message?: string } } | undefined)?.error?.message;
+    return { ok: false, said: said ?? `the control plane answered ${response.status}` };
+  },
+});
+
 /** Everything below the session: the same for a hosted stage and a local instance. */
 const renderStudio = async (
   transport: Transport,
@@ -110,6 +124,7 @@ const renderStudio = async (
     artifacts: artifactsOver(transport),
     documents: documentsOver(transport),
     drafts: draftsOver(transport),
+    line: lineOver(transport),
     signOut: signOutAndLeave,
   };
   render(

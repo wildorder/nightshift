@@ -3,8 +3,16 @@
  * it parked, and its live run. The line is a run of its own program, so the row
  * links to runs, never to a plan.
  */
-import type { LineParked, LineRange, ProgramContract, ProjectId, Run } from "@nightshift/contracts";
-import { useQuery } from "@tanstack/react-query";
+import type {
+  LineCandidate,
+  LineParked,
+  LineRange,
+  LineRecord,
+  ProgramContract,
+  ProjectId,
+  Run,
+} from "@nightshift/contracts";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
@@ -34,6 +42,156 @@ const ParkedItem = ({
     <span className="text-muted-foreground">{entry.reason}</span>
   </li>
 );
+
+/**
+ * Where the line's newest candidate stands, in words a person who is not an
+ * engineer can act on (P25, D-P25-13). `deployable` only when Deploy may be
+ * pressed: qualified, with its pull request, and main not moved past it.
+ */
+export const candidateWords = (
+  record: Pick<LineRecord, "mainSeen" | "undeployed">,
+  candidate: LineCandidate | undefined,
+): {
+  readonly says: string;
+  readonly tone: "ready" | "busy" | "attention" | "quiet";
+  readonly deployable: boolean;
+} => {
+  const waiting = (record.undeployed ?? []).length > 0;
+  if (candidate === undefined) {
+    return waiting
+      ? {
+          says: "Preparing: Nightshift checks what is on the line once it settles.",
+          tone: "busy",
+          deployable: false,
+        }
+      : { says: "Nothing is waiting to ship.", tone: "quiet", deployable: false };
+  }
+  const sha = candidate.commit.slice(0, 8);
+  switch (candidate.state) {
+    case "qualifying":
+      return {
+        says: `Checking: Nightshift is running every gate on ${sha}.`,
+        tone: "busy",
+        deployable: false,
+      };
+    case "failed":
+      return {
+        says: `Needs an engineer: ${candidate.detail ?? "the full verification failed"}.`,
+        tone: "attention",
+        deployable: false,
+      };
+    case "deploying":
+      return { says: "Deploying: merging its pull request.", tone: "busy", deployable: false };
+    case "deployed":
+      return waiting
+        ? {
+            says: "Deployed. More has landed since: Nightshift is checking it.",
+            tone: "busy",
+            deployable: false,
+          }
+        : { says: "Deployed. Nothing new is waiting to ship.", tone: "quiet", deployable: false };
+    case "superseded":
+    case "closed":
+      return {
+        says: "Its pull request was closed. The next candidate replaces it.",
+        tone: "quiet",
+        deployable: false,
+      };
+    case "qualified": {
+      if (record.mainSeen !== undefined && record.mainSeen !== candidate.mainAt) {
+        return {
+          says: "Updating: main changed, Nightshift is re-checking.",
+          tone: "busy",
+          deployable: false,
+        };
+      }
+      if (candidate.pr === undefined) {
+        return candidate.prDetail === undefined
+          ? { says: "Opening its pull request.", tone: "busy", deployable: false }
+          : {
+              says: `Needs an engineer: ${candidate.prDetail}`,
+              tone: "attention",
+              deployable: false,
+            };
+      }
+      return { says: "Ready to deploy.", tone: "ready", deployable: true };
+    }
+  }
+};
+
+const TONE: Readonly<Record<ReturnType<typeof candidateWords>["tone"], string>> = {
+  ready: "text-status-success-foreground",
+  busy: "text-muted-foreground",
+  attention: "text-status-warning-foreground",
+  quiet: "text-muted-foreground",
+};
+
+/** The line's newest candidate: what a deploy would ship, where it stands, and Deploy (D-P25-13). */
+const CandidatePanel = ({
+  projectId,
+  branch,
+  record,
+  nameOf,
+}: {
+  readonly projectId: ProjectId;
+  readonly branch: string;
+  readonly record: LineRecord;
+  readonly nameOf: (programId: string) => string;
+}) => {
+  const { line } = useStudio();
+  const client = useQueryClient();
+  const candidate = record.candidates?.at(-1);
+  const words = candidateWords(record, candidate);
+  const [said, setSaid] = useState<string | undefined>(undefined);
+  const deploy = useMutation({
+    mutationFn: async () => {
+      if (line === undefined || candidate === undefined)
+        throw new Error("this Studio cannot deploy");
+      return line.deploy(projectId, branch, candidate.candidateId);
+    },
+    onSuccess: async (answer) => {
+      setSaid(answer.ok ? undefined : answer.said);
+      await client.invalidateQueries({ queryKey: ["line", projectId, branch] });
+    },
+    onError: (error) => setSaid(String(error)),
+  });
+  const ships = candidate?.programs ?? record.undeployed ?? [];
+  return (
+    <div className="grid gap-1 rounded-md border p-2" data-testid="line-candidate">
+      <p className={TONE[words.tone]} data-testid="line-candidate-state">
+        {words.says}
+      </p>
+      {ships.length === 0 ? null : (
+        <p>
+          <span className="text-muted-foreground">This deploy includes: </span>
+          {[...new Set(ships.map((entry) => nameOf(entry.program)))].join(", ")}
+        </p>
+      )}
+      {candidate?.pr === undefined ? null : (
+        <a className="underline-offset-4 hover:underline" href={candidate.pr.url}>
+          pull request #{candidate.pr.number}
+        </a>
+      )}
+      {candidate?.state === "qualified" &&
+      candidate.prDetail !== undefined &&
+      candidate.pr !== undefined ? (
+        <p className="text-status-warning-foreground">{candidate.prDetail}</p>
+      ) : null}
+      {words.deployable && line !== undefined ? (
+        <div>
+          <Button size="sm" disabled={deploy.isPending} onClick={() => deploy.mutate()}>
+            {deploy.isPending ? "Deploying…" : "Deploy"}
+          </Button>
+        </div>
+      ) : null}
+      {said === undefined ? null : (
+        <p role="alert" className="text-status-warning-foreground">
+          {said}
+        </p>
+      )}
+    </div>
+  );
+};
 
 export const LineRow = ({
   projectId,
@@ -92,6 +250,9 @@ export const LineRow = ({
           Could not read the line: {String(line.error)}
         </p>
       ) : null}
+      {record === undefined || branch === undefined ? null : (
+        <CandidatePanel projectId={projectId} branch={branch} record={record} nameOf={nameOf} />
+      )}
       {composition === undefined ? (
         <p className="text-muted-foreground">No composition yet.</p>
       ) : (

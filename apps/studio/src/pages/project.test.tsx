@@ -330,6 +330,62 @@ describe("the project page", () => {
     expect(programs.queryByText("The line program")).toBeNull();
   });
 
+  it("shows the line's candidate, what a deploy ships, and deploys it on the person's press (P25)", async () => {
+    const deployed: string[] = [];
+    await mountStudio(
+      async (stores, f, orgId) => {
+        const seeded = await seedLine(stores, f, orgId, true);
+        if (seeded === undefined) return;
+        await stores.lines.update(PROJECT_ID as never, "nightshift/develop", (row) =>
+          row === undefined
+            ? undefined
+            : {
+                ...row,
+                mainSeen: "9".repeat(40) as never,
+                candidates: [
+                  {
+                    candidateId: f.ids.next("cand"),
+                    commit: "abcdef1234".padEnd(40, "0") as never,
+                    mainAt: "9".repeat(40) as never,
+                    programs: [{ program: seeded.plan.programId, upTo: "2".repeat(40) as never }],
+                    state: "qualified",
+                    runId: seeded.run.runId,
+                    pr: {
+                      number: 12,
+                      url: "https://github.com/example/keyart/pull/12",
+                      branch: "b",
+                    },
+                    createdAt: "2026-09-27T12:00:00.000Z",
+                    updatedAt: "2026-09-27T12:00:00.000Z",
+                  },
+                ],
+              },
+        );
+      },
+      {
+        at: `/projects/${PROJECT_ID}`,
+        line: {
+          deploy: async (_projectId, branch, candidateId) => {
+            deployed.push(`${branch} ${candidateId}`);
+            return { ok: false, said: "Updating: main has changed since this candidate was cut." };
+          },
+        },
+      },
+    );
+    const line = within(await screen.findByRole("list", { name: "Line" }));
+    await waitFor(() =>
+      expect(line.getByTestId("line-candidate-state").textContent).toBe("Ready to deploy."),
+    );
+    expect(line.getByTestId("line-candidate").textContent).toContain("This deploy includes:");
+    expect(line.getByRole("link", { name: "pull request #12" }).getAttribute("href")).toBe(
+      "https://github.com/example/keyart/pull/12",
+    );
+    await userEvent.click(line.getByRole("button", { name: "Deploy" }));
+    await waitFor(() => expect(deployed).toHaveLength(1));
+    expect(deployed[0]).toMatch(/^nightshift\/develop cand_/);
+    expect((await line.findByRole("alert")).textContent).toContain("Updating");
+  });
+
   it("renders no Line section for a project with no line program", async () => {
     await mountStudio(
       (stores, f, orgId) => seedLine(stores, f, orgId, false).then(() => undefined),

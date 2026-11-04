@@ -38,6 +38,8 @@ export interface MountOptions {
   readonly checks?: Readonly<Record<number, PlanDraftCheck>>;
   readonly ids?: IdGenerator;
   readonly now?: () => string;
+  /** The line's deploy (P25); absent: no port. */
+  readonly line?: Studio["line"];
   /** Serve the page from these instead of the seeded stores (reads that fail or hang). */
   readonly serve?: (seeded: InMemoryStores) => ProjectStores;
 }
@@ -92,6 +94,7 @@ export const mountStudio = async (
           },
         }),
     ...(opts.pollMs === undefined ? {} : { pollMs: opts.pollMs }),
+    ...(opts.line === undefined ? {} : { line: opts.line }),
   };
   const at = typeof opts.at === "function" ? opts.at(f) : (opts.at ?? "/");
   const location = { current: at };

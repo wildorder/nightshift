@@ -5,7 +5,13 @@
  * lets a test mount them over `@nightshift/persistence/memory` with no browser
  * session and no network: the same pages, the same records.
  */
-import type { ArtifactId, OrgId, PlanDraftVersionResponse } from "@nightshift/contracts";
+import type {
+  ArtifactId,
+  CandidateId,
+  OrgId,
+  PlanDraftVersionResponse,
+  ProjectId,
+} from "@nightshift/contracts";
 import type { IdGenerator, ProgramScope, ProjectStores, RunScope } from "@nightshift/core";
 import { createContext, useContext } from "react";
 import type { Identity } from "./auth/session.js";
@@ -42,6 +48,18 @@ export interface Studio {
    */
   readonly drafts?: {
     version(scope: ProgramScope, version: number): Promise<PlanDraftVersionResponse | undefined>;
+  };
+  /**
+   * The project line's one write a person makes here (P25, D-P25-12): deploy a
+   * candidate. Answers what the plane said when it refused, in its own words.
+   * `undefined` when this composition cannot deploy.
+   */
+  readonly line?: {
+    deploy(
+      projectId: ProjectId,
+      branch: string,
+      candidateId: CandidateId,
+    ): Promise<{ readonly ok: true } | { readonly ok: false; readonly said: string }>;
   };
   /** How often a live run's page asks for new events (D-P11-05). */
   readonly pollMs?: number;
