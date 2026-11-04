@@ -474,3 +474,116 @@ describe("the line composer", () => {
     assertSchemas(h);
   });
 });
+
+/** P25, D-P25-03: main that will not compose onto the line is repaired, not a reason to park. */
+describe("the line composer, when main does not compose onto the line", () => {
+  const isAncestor = async (lr: LineRepo, ancestor: string, descendant: string) =>
+    git(nodeGitRunner, ["merge-base", "--is-ancestor", ancestor, descendant], { cwd: lr.repo })
+      .then(() => true)
+      .catch(() => false);
+
+  it("repairs main's conflict while every range waits behind it, then composes the repair first", async () => {
+    const h = await setup();
+    const { lr } = h;
+    const line0 = await lr.commit("line", { "shared.txt": "line\n" });
+    const main1 = await lr.commit("main", { "shared.txt": "hotfix\n" });
+    const p1 = await lr.commit("p1", { "other.txt": "o\n" });
+    h.queue.push(entry(P1, p1, 1));
+
+    const first = await h.composer.step();
+    expect(first.idle).toBe(false);
+    expect(h.repairs).toHaveLength(1);
+    const request = h.repairs[0]?.request as LineRepairRequest;
+    expect(request.cause).toBe("line_main_conflict");
+    expect(request.main).toBe(main1);
+    expect(request.attempt).toBe(1);
+    expect(request.paths).toEqual(["shared.txt"]);
+    expect(await parentsOf(lr, request.base)).toEqual([line0, main1]);
+    expect(await lr.readFileAtCommit(request.base, "shared.txt")).toContain("<<<<<<<");
+
+    // Nothing is parked or composed: the range is held behind main, its own budget untouched.
+    const settled = h.settled[0] as LineSettlement;
+    expect(settled.parked).toEqual([]);
+    expect(settled.composition).toBeUndefined();
+    expect(settled.held?.map((e) => [e.program, e.repairs])).toEqual([[P1, undefined]]);
+    expect(await lr.tip("line")).toBe(line0);
+
+    await git(nodeGitRunner, ["branch", "repair", request.base], { cwd: lr.repo });
+    const fixed = await lr.commit("repair", { "shared.txt": "line and hotfix\n" });
+    h.repairs[0]?.resolve({ kind: "repaired", commit: fixed, repair: REF });
+    await h.composer.repairSettled();
+
+    const second = await h.composer.step();
+    expect(second.outcome?.composed).toEqual([{ program: P1, upTo: p1 }]);
+    expect(h.settled.at(-1)?.composition?.repair).toEqual(REF);
+    const line1 = await lr.tip("line");
+    expect(await lr.readFileAtCommit(line1, "shared.txt")).toBe("line and hotfix\n");
+    expect(await lr.readFileAtCommit(line1, "other.txt")).toBe("o\n");
+    expect(await isAncestor(lr, main1, line1)).toBe(true);
+    expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
+  });
+
+  it("repairs main that is red on the line from the red merge", async () => {
+    const h = await setup();
+    const { lr } = h;
+    const line0 = await lr.commit("line", { "l.txt": "l\n" });
+    const main1 = await lr.commit("main", { "bad.txt": "RED\n" });
+    const p1 = await lr.commit("p1", { "other.txt": "o\n" });
+    h.queue.push(entry(P1, p1, 1));
+    await h.composer.step();
+    const request = h.repairs[0]?.request as LineRepairRequest;
+    expect(request.cause).toBe("line_main_red");
+    expect(request.main).toBe(main1);
+    expect(request.paths).toEqual(["bad.txt"]);
+    expect(request.checks.length).toBeGreaterThan(0);
+    expect(await parentsOf(lr, request.base)).toEqual([line0, main1]);
+    expect(h.settled[0]?.parked).toEqual([]);
+  });
+
+  it("holds a range that arrives while main is being repaired, without trying main again", async () => {
+    const h = await setup();
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    await lr.commit("main", { "shared.txt": "hotfix\n" });
+    const p1 = await lr.commit("p1", { "a.txt": "a\n" });
+    const p2 = await lr.commit("p2", { "b.txt": "b\n" });
+    h.queue.push(entry(P1, p1, 1));
+    await h.composer.step();
+    h.queue.push(entry(P2, p2, 2));
+    await h.composer.step();
+    expect(h.repairs).toHaveLength(1);
+    expect(h.settled[1]?.held?.map((e) => e.program)).toEqual([P2]);
+    expect(h.settled[1]?.parked).toEqual([]);
+  });
+
+  it("parks every range with main's cause and the last words once main's repairs are spent", async () => {
+    const seen: string[] = [];
+    const h = await setup({
+      repair: (request) => {
+        seen.push(request.cause);
+        return { kind: "failed", words: "the hotfix and the line disagree" };
+      },
+    });
+    const { lr } = h;
+    await lr.commit("line", { "shared.txt": "line\n" });
+    await lr.commit("main", { "shared.txt": "hotfix\n" });
+    const p1 = await lr.commit("p1", { "other.txt": "o\n" });
+    h.queue.push(entry(P1, p1, 1));
+    for (let i = 0; i < 8 && !(i > 0 && h.composer.idle()); i++) {
+      await h.composer.step();
+      await h.composer.repairSettled();
+    }
+    await h.composer.step();
+    expect(seen).toEqual(["line_main_conflict", "line_main_conflict", "line_main_conflict"]);
+    const parked = h.settled.flatMap((s) => s.parked);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]?.reason).toContain("main does not compose onto the line");
+    expect(parked[0]?.reason).toContain("merging main onto the line conflicted in shared.txt");
+    expect(parked[0]?.reason).toContain("the hotfix and the line disagree");
+    // Main's repairs are not the range's: its own budget is untouched.
+    expect(parked[0]?.ranges[0]?.repairs).toBeUndefined();
+    expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
+  });
+});

@@ -162,12 +162,29 @@ export interface LinePublisherPort {
   }): Promise<{ status: "published" } | { status: "rejected"; detail: string }>;
 }
 
-export type LineRepairCause = "line_conflict" | "line_red";
+export type LineRepairCause = "line_conflict" | "line_red" | "line_main_conflict" | "line_main_red";
+
+/**
+ * The program a repair of main names in its `range` (P25, D-P25-03): main is a
+ * unit of the line, not a program, and never a queue entry or a record's range.
+ */
+export const LINE_MAIN_UNIT = "main" as ProgramId;
+
+/** Whether a cause is main's own, merged onto the line before any range. */
+export const isMainCause = (cause: LineRepairCause): boolean =>
+  cause === "line_main_conflict" || cause === "line_main_red";
+
+/** Whether a cause is a conflict (paths with markers), as against a red check. */
+export const isConflictCause = (cause: LineRepairCause): boolean =>
+  cause === "line_conflict" || cause === "line_main_conflict";
 
 /** What a repair agent is asked to do; it starts from `base`, the candidate, and only resolves or fixes. */
 export interface LineRepairRequest {
   cause: LineRepairCause;
+  /** For a repair of main, `{ program: LINE_MAIN_UNIT, upTo: main's head }`. */
   range: LineRange;
+  /** Set for a repair of main: the main head that would not compose onto the line. */
+  main?: CommitSha;
   /** The candidate commit: parents (line head, range.upTo). */
   base: CommitSha;
   lineHead: CommitSha;

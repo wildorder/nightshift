@@ -22,6 +22,8 @@ const CAUSE_WORD: Readonly<Record<RepairReport["cause"], string>> = {
   flaky: "flaky",
   line_conflict: "line conflict",
   line_red: "line red",
+  line_main_conflict: "main conflict on the line",
+  line_main_red: "main red on the line",
 };
 
 const isEmpty = ({

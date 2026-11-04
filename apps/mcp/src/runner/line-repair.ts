@@ -23,6 +23,8 @@ import {
   continuedByNightshift,
   type GitRunner,
   git,
+  isConflictCause,
+  LINE_MAIN_UNIT,
   type LineCommandLog,
   type LineRepairRequest,
   type RepairOutcome,
@@ -50,7 +52,9 @@ const DEFAULT_REPAIR_POLL_MS = 100;
 const short = (sha: string): string => sha.slice(0, 12);
 
 const rangeText = (range: LineRange): string =>
-  `${range.program}: ${range.from === undefined ? "start" : short(range.from)}..${short(range.upTo)}`;
+  range.program === LINE_MAIN_UNIT
+    ? `main at ${short(range.upTo)}`
+    : `${range.program}: ${range.from === undefined ? "start" : short(range.from)}..${short(range.upTo)}`;
 
 const rangesText = (ranges: readonly LineRange[]): string =>
   ranges.length === 0 ? "none" : ranges.map(rangeText).join("; ");
@@ -62,10 +66,9 @@ const failingChecks = (checks: readonly LineCommandLog[]): LineCommandLog[] => {
 
 /** The step ids or paths the repair is about; a repair names at least one gate. */
 const gatesOf = (request: LineRepairRequest): string[] => {
-  const gates =
-    request.cause === "line_conflict"
-      ? request.paths
-      : failingChecks(request.checks).map((check) => check.stepId);
+  const gates = isConflictCause(request.cause)
+    ? request.paths
+    : failingChecks(request.checks).map((check) => check.stepId);
   const unique = [...new Set(gates)];
   return unique.length > 0 ? unique : ["line"];
 };
@@ -76,13 +79,23 @@ export const lineRepairBrief = (request: LineRepairRequest): string => {
     `Repair the project line (attempt ${request.attempt} of ${ATTEMPTS}).`,
     "",
     `Line head: ${request.lineHead}`,
-    `Range being composed: ${rangeText(request.range)}`,
+    request.main === undefined
+      ? `Range being composed: ${rangeText(request.range)}`
+      : `Being composed: main at ${request.main}, merged onto the line before any program's range`,
     `Base commit (your starting point): ${request.base}`,
     `Ranges held behind it: ${rangesText(request.held)}`,
     `Landed on the line since this lineage's first failure: ${rangesText(request.landedSince)}`,
     "",
   ];
-  if (request.cause === "line_conflict") {
+  if (request.cause === "line_main_conflict") {
+    lines.push(
+      "The base commit is main merged onto the line with conflict markers committed in the named " +
+        "paths. Main changed without going through the line (a hotfix or a hand commit). Resolve " +
+        "each conflict keeping both sides' intent, and leave no conflict markers (<<<<<<<, " +
+        "=======, >>>>>>>) in any file.",
+      `Conflicting paths:\n${request.paths.map((path) => `  ${path}`).join("\n")}`,
+    );
+  } else if (request.cause === "line_conflict") {
     lines.push(
       "The base commit is the range merged onto the line with conflict markers committed in the " +
         "named paths. Resolve each conflict keeping both sides' intent, and leave no conflict " +
@@ -91,9 +104,12 @@ export const lineRepairBrief = (request: LineRepairRequest): string => {
     );
   } else {
     lines.push(
-      "The base is the red composition: the range composed onto the line, which fails the " +
-        "checks below. Make it green without weakening a gate.",
-      `Paths the range changed:\n${request.paths.map((path) => `  ${path}`).join("\n")}`,
+      request.main === undefined
+        ? "The base is the red composition: the range composed onto the line, which fails the " +
+            "checks below. Make it green without weakening a gate."
+        : "The base is the red composition: main merged onto the line, which fails the checks " +
+            "below. Make it green without weakening a gate.",
+      `Paths ${request.main === undefined ? "the range" : "main"} changed:\n${request.paths.map((path) => `  ${path}`).join("\n")}`,
       "Failing checks:",
     );
     for (const check of failingChecks(request.checks)) {
@@ -116,13 +132,15 @@ export const lineRepairBrief = (request: LineRepairRequest): string => {
 };
 
 const decisionOf = (request: LineRepairRequest, gates: readonly string[]): DecisionInput => ({
-  context:
-    request.cause === "line_conflict"
-      ? `Range ${rangeText(request.range)} conflicted with line head ${short(request.lineHead)} in ${gates.join(", ")}.`
-      : `Range ${rangeText(request.range)} composed onto line head ${short(request.lineHead)} is red: ${gates.join(", ")} failed.`,
+  context: isConflictCause(request.cause)
+    ? `${request.main === undefined ? "Range " : ""}${rangeText(request.range)} conflicted with line head ${short(request.lineHead)} in ${gates.join(", ")}.`
+    : `${request.main === undefined ? "Range " : ""}${rangeText(request.range)} composed onto line head ${short(request.lineHead)} is red: ${gates.join(", ")} failed.`,
   alternatives: [
     {
-      summary: "Park the range without a repair",
+      summary:
+        request.main === undefined
+          ? "Park the range without a repair"
+          : "Park every range behind main without a repair",
       rejectedBecause: `the lineage has repairs left (attempt ${request.attempt} of ${ATTEMPTS})`,
     },
   ],
@@ -223,7 +241,7 @@ export const createLineRepair = (
       jobContractId: ids.next("job"),
       objective: repairObjective(brief, repair, decision),
       acceptance: [
-        request.cause === "line_conflict"
+        isConflictCause(request.cause)
           ? "no conflict markers remain and both sides' intent is kept"
           : "every failing check passes without weakening a gate",
         "the line's gates pass on the result",

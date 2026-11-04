@@ -10,21 +10,24 @@ import {
 } from "@nightshift/contracts";
 import { LINE_COMPOSITION_SECONDS } from "@nightshift/core";
 import { lineCauseText } from "./park.js";
-import type {
-  LineBatchOutcome,
-  LineCommandLog,
-  LineComposerPorts,
-  LineRepairCause,
-  LineRepairRequest,
-  LineSettlement,
-  LineWorktree,
-  RepairOutcome,
+import {
+  LINE_MAIN_UNIT,
+  type LineBatchOutcome,
+  type LineCommandLog,
+  type LineComposerPorts,
+  type LineRepairCause,
+  type LineRepairRequest,
+  type LineSettlement,
+  type LineWorktree,
+  type RepairOutcome,
 } from "./ports.js";
 
 type ParkPart = LineSettlement["parked"][number];
 
 const rangeLabel = (range: LineRange): string =>
-  `${range.program} ${range.from ?? "(start)"}..${range.upTo}`;
+  range.program === LINE_MAIN_UNIT
+    ? `main ${range.upTo}`
+    : `${range.program} ${range.from ?? "(start)"}..${range.upTo}`;
 
 const withRepairs = (range: LineRange, repairs: number): LineRange => {
   const { repairs: _spent, ...rest } = range;
@@ -167,9 +170,15 @@ const groupRanges = async (
   return grouped;
 };
 
-/** One range's chain of repairs: the range, any repair of its repair, and the paths they reserve. */
+/**
+ * One range's chain of repairs: the range, any repair of its repair, and the
+ * paths they reserve. Main's own lineage (P25, D-P25-03) has `main` set and a
+ * `range` naming {@link LINE_MAIN_UNIT} at main's head; while it is queued or
+ * running it reserves everything, because nothing composes before main does.
+ */
 interface Lineage {
   range: LineRange;
+  main?: true;
   /** Repairs spent, the one queued or in flight included. */
   repairs: number;
   /** The commit whose merge failed: the range's own, or a repair's. */
@@ -257,6 +266,7 @@ export const createLineComposer = (
 
   const requestOf = (lineage: Lineage): LineRepairRequest => ({
     cause: lineage.cause,
+    ...(lineage.main ? { main: lineage.range.upTo } : {}),
     range: withRepairs(lineage.range, lineage.repairs),
     base: lineage.candidate,
     lineHead: lineage.lineHead,
@@ -310,7 +320,7 @@ export const createLineComposer = (
         next.candidate = made.candidate;
         next.lineHead = lineHead;
         if (made.kind === "conflict") {
-          next.cause = "line_conflict";
+          next.cause = next.main ? "line_main_conflict" : "line_conflict";
           next.causePaths = made.paths;
           next.checks = [];
           for (const path of made.paths) next.paths.add(path);
@@ -329,7 +339,9 @@ export const createLineComposer = (
     repairs: number,
     words: string | undefined,
   ): Promise<void> => {
-    if (queue.recordAttempt === undefined) return;
+    // Main's budget is the owner's alone: its held entries are programs' ranges,
+    // whose own `repairs` must not be spent by main's repairs.
+    if (queue.recordAttempt === undefined || lineage.main) return;
     for (const item of held) {
       if (item.owner !== lineage) continue;
       for (const entry of item.entries) {
@@ -393,6 +405,164 @@ export const createLineComposer = (
     return pendingRelease.flatMap((item) =>
       item.entries.map((entry) => ({ program: entry.program, upTo: entry.upTo })),
     );
+  };
+
+  /**
+   * Merges main onto the line before any range (P25, D-P25-03). A conflict or
+   * a red result is main's to repair, as a lineage of its own that holds every
+   * unit of the batch behind it; once repaired, its commit is merged first. A
+   * spent budget parks every unit with main's cause and the last words.
+   */
+  const composeMain = async (
+    wt: LineWorktree,
+    lineHead: CommitSha,
+    mainHead: CommitSha,
+    units: readonly LineRange[],
+    ctx: {
+      mainLineage: Lineage | undefined;
+      deadline: string;
+      passed: () => boolean;
+      park: (range: LineRange, reason: string, extra?: Partial<ParkPart>) => void;
+      holdBehind: (range: LineRange, owner: Lineage) => void;
+    },
+  ): Promise<
+    | {
+        kind: "composed";
+        head: CommitSha;
+        verification?: LineVerification;
+        repair?: LineRepairRef;
+      }
+    | { kind: "repairing" | "parked" }
+  > => {
+    const { mainLineage, park, holdBehind } = ctx;
+    if (mainLineage?.state === "queued" || mainLineage?.state === "running") {
+      for (const range of units) holdBehind(range, mainLineage);
+      return { kind: "repairing" };
+    }
+    const spentReason = (
+      lineage: Lineage,
+      cause: LineRepairCause,
+      paths: string[],
+      checks: LineCommandLog[],
+    ): string =>
+      `main does not compose onto the line: ${lineCauseText({ cause, paths, checks })}; ` +
+      `main's ${MAX_LINE_REPAIRS} repairs were spent` +
+      (lineage.lastWords === undefined ? "" : `; the last repair failed: ${lineage.lastWords}`);
+    const parkAll = (lineage: Lineage, reason: string): void => {
+      for (const range of units) {
+        park(range, reason, lineage.lastRepair === undefined ? {} : { repair: lineage.lastRepair });
+      }
+      dropLineage(lineage);
+    };
+    if (mainLineage?.state === "spent") {
+      parkAll(
+        mainLineage,
+        spentReason(mainLineage, mainLineage.cause, mainLineage.causePaths, mainLineage.checks),
+      );
+      return { kind: "parked" };
+    }
+
+    const repaired = mainLineage?.state === "repaired" ? mainLineage : undefined;
+    const merges: { commit: CommitSha; message: string }[] = [
+      ...(repaired?.repaired === undefined
+        ? []
+        : [
+            {
+              commit: repaired.repaired.commit,
+              message: `Merge the repair of main ${repaired.range.upTo} into the line`,
+            },
+          ]),
+      { commit: mainHead, message: `Merge main ${mainHead} into the line` },
+    ];
+    let failure:
+      | {
+          cause: "line_main_conflict" | "line_main_red";
+          paths: string[];
+          checks: LineCommandLog[];
+          candidate: CommitSha;
+        }
+      | undefined;
+    for (const { commit, message } of merges) {
+      const merged = await checkout.merge(wt, commit, message);
+      if (merged.kind === "conflict") {
+        failure = {
+          cause: "line_main_conflict",
+          paths: merged.paths,
+          checks: [],
+          candidate: await checkout.conflictCandidate(wt, commit, message),
+        };
+        break;
+      }
+    }
+    let verification: LineVerification | undefined;
+    const head = await checkout.head(wt);
+    if (failure === undefined && head !== lineHead) {
+      const result = await verifier.verify({
+        worktree: wt,
+        commit: head,
+        base: lineHead,
+        deadline: ctx.deadline,
+      });
+      if (result.timedOut || ctx.passed()) {
+        for (const range of units) park(range, TIME_LIMIT_REASON);
+        return { kind: "parked" };
+      }
+      if (result.verification.outcome === "passed") {
+        verification = result.verification;
+      } else {
+        failure = {
+          cause: "line_main_red",
+          paths: await checkout.changedPaths(lineHead, head),
+          checks: result.logs,
+          candidate: head,
+        };
+      }
+    }
+    if (failure === undefined) {
+      if (repaired) awaiting.add(repaired);
+      return {
+        kind: "composed",
+        head,
+        ...(verification === undefined ? {} : { verification }),
+        ...(repaired?.repaired?.repair === undefined ? {} : { repair: repaired.repaired.repair }),
+      };
+    }
+
+    const prior = mainLineage?.repairs ?? 0;
+    if (mainLineage !== undefined && prior >= MAX_LINE_REPAIRS) {
+      parkAll(mainLineage, spentReason(mainLineage, failure.cause, failure.paths, failure.checks));
+      return { kind: "parked" };
+    }
+    const lineage: Lineage = mainLineage ?? {
+      range: { program: LINE_MAIN_UNIT, upTo: mainHead },
+      main: true,
+      repairs: 0,
+      commit: mainHead,
+      paths: new Set(),
+      state: "queued",
+      fresh: false,
+      cause: failure.cause,
+      causePaths: failure.paths,
+      checks: failure.checks,
+      candidate: failure.candidate,
+      lineHead,
+      landedFrom: landed.length,
+    };
+    if (!mainLineage) lineages.push(lineage);
+    lineage.range = { program: LINE_MAIN_UNIT, upTo: mainHead };
+    lineage.state = "queued";
+    lineage.repairs = prior + 1;
+    lineage.commit = mainHead;
+    lineage.cause = failure.cause;
+    lineage.causePaths = failure.paths;
+    lineage.checks = failure.checks;
+    lineage.candidate = failure.candidate;
+    lineage.lineHead = lineHead;
+    lineage.fresh = false;
+    delete lineage.repaired;
+    for (const path of failure.paths) lineage.paths.add(path);
+    for (const range of units) holdBehind(range, lineage);
+    return { kind: "repairing" };
   };
 
   const composeBatch = async (
@@ -532,6 +702,8 @@ export const createLineComposer = (
         (lineage) => lineage.state === "queued" || lineage.state === "running",
       );
       if (others.length === 0) return undefined;
+      const main = others.find((lineage) => lineage.main);
+      if (main) return main;
       // A descendant of a range under repair would bring in its unrepaired content.
       for (const lineage of others) {
         if (
@@ -588,8 +760,11 @@ export const createLineComposer = (
       else ordinary.push(range);
     }
 
+    /** Main's lineage, while it is being repaired or its repair awaits composing. */
+    const mainLineage = lineages.find((lineage) => lineage.main);
+
     // The batch attempt: everything merged together and verified once.
-    if (special.length === 0 && ordinary.length > 0) {
+    if (special.length === 0 && ordinary.length > 0 && mainLineage === undefined) {
       let wt: LineWorktree | undefined;
       try {
         wt = await checkout.open(lineHead);
@@ -661,36 +836,23 @@ export const createLineComposer = (
 
     try {
       await reopen(lineHead);
-      const mainResult = await checkout.merge(current as LineWorktree, mainHead, mainMessage);
-      let mainParked = false;
-      if (mainResult.kind === "conflict") {
-        mainParked = true;
-      } else if (mainResult.head !== head) {
-        const result = await verifier.verify({
-          worktree: current as LineWorktree,
-          commit: mainResult.head,
-          base: head,
-          deadline,
-        });
-        if (result.timedOut || passed()) {
-          for (const range of units) park(range, TIME_LIMIT_REASON);
-          await finish({});
-          return outcome;
-        }
-        if (result.verification.outcome === "passed") {
-          head = mainResult.head;
-          headVerification = result.verification;
-        } else {
-          mainParked = true;
-        }
-      }
-      if (mainParked) {
-        for (const range of units) {
-          park(range, "main does not compose onto the line");
-        }
+      const settledMain = await composeMain(current as LineWorktree, lineHead, mainHead, units, {
+        mainLineage,
+        deadline,
+        passed,
+        park,
+        holdBehind,
+      });
+      if (settledMain.kind !== "composed") {
         await finish({});
+        if (settledMain.kind === "repairing") await startNext();
         return outcome;
       }
+      if (settledMain.head !== head) {
+        head = settledMain.head;
+        headVerification = settledMain.verification;
+      }
+      if (settledMain.repair !== undefined) lastRepair = settledMain.repair;
 
       for (let i = 0; i < units.length; i++) {
         const range = units[i] as LineRange;

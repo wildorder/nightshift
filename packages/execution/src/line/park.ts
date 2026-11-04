@@ -1,4 +1,4 @@
-import type { LineCommandLog, LineRepairCause } from "./ports.js";
+import { isMainCause, type LineCommandLog, type LineRepairCause } from "./ports.js";
 
 /** At most `max` characters of `text`, the end kept: a log's last lines say why. */
 const clip = (text: string, max: number): string =>
@@ -10,11 +10,13 @@ export const lineCauseText = (cause: {
   paths: readonly string[];
   checks: readonly LineCommandLog[];
 }): string => {
-  if (cause.cause === "line_conflict") {
-    return `the merge conflicted in ${cause.paths.join(", ") || "paths git did not list"}`;
+  const of = isMainCause(cause.cause) ? "merging main onto the line" : "the merge";
+  if (cause.cause === "line_conflict" || cause.cause === "line_main_conflict") {
+    return `${of} conflicted in ${cause.paths.join(", ") || "paths git did not list"}`;
   }
+  const after = isMainCause(cause.cause) ? " once main was merged onto the line" : "";
   const first = cause.checks.find((log) => log.exitCode !== 0) ?? cause.checks[0];
   return first === undefined
-    ? "the landing checks failed"
-    : `the landing checks failed: \`${first.command}\` exit ${first.exitCode ?? "none"}: ${clip(first.tail.trim(), 800)}`;
+    ? `the landing checks failed${after}`
+    : `the landing checks failed${after}: \`${first.command}\` exit ${first.exitCode ?? "none"}: ${clip(first.tail.trim(), 800)}`;
 };
