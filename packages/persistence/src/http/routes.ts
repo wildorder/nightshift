@@ -64,6 +64,8 @@ export const routes = {
     routes.line(projectId, branch, "/candidates"),
   lineCandidateSettle: (projectId: ProjectId, branch: string) =>
     routes.line(projectId, branch, "/candidates/settle"),
+  lineCandidateDeploy: (projectId: ProjectId, branch: string) =>
+    routes.line(projectId, branch, "/candidates/deploy"),
 
   projects: () => "/projects",
   project: (projectId: ProjectId) => `/projects/${projectId}`,

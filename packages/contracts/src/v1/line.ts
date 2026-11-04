@@ -600,6 +600,10 @@ export const LineCandidateSettleBodySchema = z.strictObject({
 export type LineCandidateSettleBody = z.infer<typeof LineCandidateSettleBodySchema>;
 
 export const LineCandidateResponseSchema = z.strictObject({ candidate: LineCandidateSchema });
+
+/** `POST …/line/candidates/deploy?branch=` (P25, D-P25-12): a person deploys a current candidate. */
+export const LineCandidateDeployBodySchema = z.strictObject({ candidateId: CandidateIdSchema });
+export type LineCandidateDeployBody = z.infer<typeof LineCandidateDeployBodySchema>;
 export type LineCandidateResponse = z.infer<typeof LineCandidateResponseSchema>;
 
 /** `POST …/line/bundle-upload-url?branch=`. */

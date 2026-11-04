@@ -18,6 +18,7 @@ import {
   LineAttemptBodySchema,
   LineBundleUploadUrlBodySchema,
   LineCandidateCutBodySchema,
+  LineCandidateDeployBodySchema,
   type LineCandidateResponse,
   LineCandidateSettleBodySchema,
   type LineComposition,
@@ -45,6 +46,7 @@ import {
   createUlidIdGenerator,
   cutCandidate,
   entryText,
+  installationGranting,
   LINE_RESOLVER_ATTEMPTS,
   type LineChange,
   type LineOwnerArg,
@@ -55,6 +57,8 @@ import {
   parkedEntryOf,
   type RunScope,
   recordAttempt,
+  repositoryNameOf,
+  requestDeploy,
   requestPush,
   requeueParked,
   requireEffectivePolicy,
@@ -821,4 +825,92 @@ export const postLineCandidateSettle: Handler = async (context) => {
   }
   const response: LineCandidateResponse = { candidate };
   return { status: 200, body: response };
+};
+
+/**
+ * `POST …/line/candidates/deploy?branch=` (P25, D-P25-12): a person deploys a
+ * candidate, which merges its pull request with a merge commit. Only a current
+ * one: qualified, with its pull request, not superseded, and holding main's
+ * head as GitHub has it now. A candidate main has moved past is refused in
+ * words, and the line, woken by the reconciler, cuts the next. Only a user may.
+ */
+export const postLineCandidateDeploy: Handler = async (context) => {
+  const { deps, request, params, principal } = context;
+  const target = targetOf(params);
+  if (principal.kind !== "user") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "only a person may deploy a candidate",
+    );
+  }
+  const body = parseBody(LineCandidateDeployBodySchema, request.body);
+  const record = await requireLine(deps, target);
+  const candidate = (record.candidates ?? []).find(
+    (found) => found.candidateId === body.candidateId,
+  );
+  if (candidate === undefined) {
+    throw new HttpError(404, "not_found", `the line has no candidate ${body.candidateId}`);
+  }
+  if (deps.github?.contains === undefined || deps.dispatcher?.publishCandidates === undefined) {
+    throw new HttpError(
+      501,
+      "github_unavailable",
+      "this control plane was wired without the Nightshift GitHub App's writer; a candidate cannot be deployed",
+    );
+  }
+  const project = await requireProject(deps.stores, target.projectId);
+  const repository = repositoryNameOf(record.repositoryUrl);
+  const installation =
+    repository === undefined
+      ? undefined
+      : installationGranting(
+          (await deps.stores.orgConfigs.get(project.orgId))?.installations ?? [],
+          repository,
+        );
+  const naming = await deps.stores.programContracts.get(
+    target.projectId,
+    candidate.programs[0]?.program as never,
+  );
+  const mainBranch = naming?.repository.baseBranch ?? "main";
+  if (repository === undefined || installation === undefined) {
+    throw new HttpError(
+      409,
+      "conflict",
+      "the org has no GitHub installation granting the line's repository",
+    );
+  }
+  const mainHead = await deps.github.branchHead(
+    installation.installationId,
+    repository,
+    mainBranch,
+  );
+  const current =
+    mainHead !== undefined &&
+    (await deps.github.contains(
+      installation.installationId,
+      repository,
+      mainHead,
+      candidate.commit,
+    )) === true;
+  if (!current) {
+    throw new HttpError(
+      409,
+      "candidate_stale",
+      `Updating: ${mainBranch} has changed since candidate ${candidate.candidateId} was cut, so Nightshift is taking it into the line and re-checking. Deploy the next candidate.`,
+    );
+  }
+  const at = nowIso(deps.clock);
+  const after = await applyLineChange(deps, target, (latest) =>
+    requestDeploy(latest, body.candidateId, principal.userId, at),
+  );
+  await deps.dispatcher.publishCandidates(target).catch((error: unknown) => {
+    console.error(`line ${target.branch}: the GitHub writer was not reached:`, error);
+  });
+  const deploying = (after.candidates ?? []).find(
+    (found) => found.candidateId === body.candidateId,
+  );
+  if (deploying === undefined) throw new Error(`the line kept no candidate ${body.candidateId}`);
+  const response: LineCandidateResponse = { candidate: deploying };
+  return { status: 202, body: response };
 };

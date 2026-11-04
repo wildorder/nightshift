@@ -131,6 +131,7 @@ interface Seed {
   readonly parked?: LineRecord["parked"];
   readonly head?: LineRecord["head"];
   readonly undeployed?: LineRecord["undeployed"];
+  readonly candidates?: LineRecord["candidates"];
 }
 
 /** The engine of a run, as the dispatch Lambda mints it. */
@@ -200,6 +201,7 @@ const seedLineRecords = async (w: World, seed: Seed = {}) => {
       ...(seed.parked === undefined ? {} : { parked: seed.parked }),
       ...(seed.head === undefined ? {} : { head: seed.head }),
       ...(seed.undeployed === undefined ? {} : { undeployed: seed.undeployed }),
+      ...(seed.candidates === undefined ? {} : { candidates: seed.candidates }),
     }),
   );
 };
@@ -232,6 +234,7 @@ describe("the line routes", () => {
       "line.ship",
       "line.cutCandidate",
       "line.settleCandidate",
+      "line.deployCandidate",
     ]);
   });
 });
@@ -1407,5 +1410,112 @@ describe("candidates, cut and qualified by the line run (P25, D-P25-09)", () => 
     );
     expect(elsewhere.status).toBe(409);
     expect(code(elsewhere)).toBe("candidate_refused");
+  });
+});
+
+describe("deploying a candidate (P25, D-P25-12)", () => {
+  const candidateIn = (w: World, state: "qualified" | "superseded" = "qualified") => ({
+    candidateId: w.f.ids.next("cand"),
+    commit: SHA_B as never,
+    mainAt: SHA as never,
+    programs: [{ program: w.f.scope.programId, upTo: SHA as never }],
+    state,
+    runId: w.f.ids.next("run"),
+    pr: {
+      number: 7,
+      url: "https://github.com/wildorder/fixture/pull/7",
+      branch: "nightshift/candidates/x",
+    },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+
+  /** The world with GitHub answering whether main is in the candidate, and the writer counted. */
+  const withGitHub = async (w: World, current: boolean) => {
+    await w.stores.orgConfigs.put({
+      schemaVersion: 1,
+      orgId: w.orgId,
+      routingPolicy: DEFAULT_ROUTING_POLICY,
+      examinationPolicy: DEFAULT_EXAMINATION_POLICY,
+      installations: [
+        {
+          installationId: 3,
+          account: "example",
+          repositories: ["example/fixture"],
+          recordedAt: NOW,
+        },
+      ],
+      version: 1,
+      updatedAt: NOW,
+    });
+    const asked: string[] = [];
+    const deps: ApiDeps = {
+      ...w.deps,
+      github: {
+        branchHead: async () => SHA,
+        contains: async () => current,
+      } as never,
+      dispatcher: {
+        provision: async () => undefined,
+        publishCandidates: async ({ branch }) => void asked.push(branch),
+      },
+    };
+    return { world: { ...w, deps }, asked };
+  };
+
+  it("marks a current candidate deploying, as the person, and asks the GitHub writer to merge it", async () => {
+    const w = await setup();
+    const candidate = candidateIn(w);
+    await seedLineRecords(w, { candidates: [candidate] });
+    const { world, asked } = await withGitHub(w, true);
+    const response = await call(world, "POST", lineUrl(w, BRANCH, "/candidates/deploy"), {
+      candidateId: candidate.candidateId,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(202);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.candidates?.[0]).toMatchObject({
+      state: "deploying",
+      deployedBy: expect.any(String),
+    });
+    expect(asked).toEqual([BRANCH]);
+  });
+
+  it("refuses a candidate main has moved past, in words, and changes nothing", async () => {
+    const w = await setup();
+    const candidate = candidateIn(w);
+    await seedLineRecords(w, { candidates: [candidate] });
+    const { world, asked } = await withGitHub(w, false);
+    const response = await call(world, "POST", lineUrl(w, BRANCH, "/candidates/deploy"), {
+      candidateId: candidate.candidateId,
+    });
+    expect(response.status).toBe(409);
+    expect(code(response)).toBe("candidate_stale");
+    expect(JSON.stringify(response.body)).toContain("Updating");
+    expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.candidates?.[0]?.state).toBe(
+      "qualified",
+    );
+    expect(asked).toEqual([]);
+  });
+
+  it("refuses a superseded candidate, and the line run's own engine", async () => {
+    const w = await setup();
+    const superseded = candidateIn(w, "superseded");
+    const { me } = await seedLine(w, { candidates: [superseded] });
+    const { world } = await withGitHub(w, true);
+    const refused = await call(world, "POST", lineUrl(w, BRANCH, "/candidates/deploy"), {
+      candidateId: superseded.candidateId,
+    });
+    expect(refused.status).toBe(409);
+    expect(code(refused)).toBe("candidate_refused");
+    const engine = await call(
+      world,
+      "POST",
+      lineUrl(w, BRANCH, "/candidates/deploy"),
+      {
+        candidateId: superseded.candidateId,
+      },
+      me,
+    );
+    expect(engine.status).toBe(403);
   });
 });

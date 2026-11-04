@@ -1080,3 +1080,36 @@ export const markCandidateClosed = (
   at: string,
 ): LineRecord =>
   withCandidate(record, candidateId, (candidate) => ({ ...candidate, state: "closed" }), at);
+
+/**
+ * A person asks to deploy a candidate (P25, D-P25-12): only a `qualified` one
+ * with a pull request, which nothing has superseded, becomes `deploying`; the
+ * GitHub writer then merges it. Whether main has moved past it is the route's
+ * to ask GitHub first.
+ */
+export const requestDeploy = (
+  record: LineRecord,
+  candidateId: CandidateId,
+  by: string,
+  at: string,
+): LineChange => {
+  const candidate = (record.candidates ?? []).find((found) => found.candidateId === candidateId);
+  const refusal =
+    candidate === undefined
+      ? `the line has no candidate ${candidateId}`
+      : candidate.state !== "qualified"
+        ? `candidate ${candidateId} is ${candidate.state}, so it cannot be deployed`
+        : candidate.pr === undefined
+          ? `candidate ${candidateId} has no pull request yet${candidate.prDetail === undefined ? "" : `: ${candidate.prDetail}`}`
+          : undefined;
+  if (refusal !== undefined) return refuse({ reason: "candidate_refused", detail: refusal });
+  return {
+    ok: true,
+    record: withCandidate(
+      record,
+      candidateId,
+      ({ prDetail: _said, ...found }) => ({ ...found, state: "deploying", deployedBy: by }),
+      at,
+    ),
+  };
+};

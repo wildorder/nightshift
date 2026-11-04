@@ -199,6 +199,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "line.ship": "forbidden",
   "line.cutCandidate": "forbidden",
   "line.settleCandidate": "forbidden",
+  "line.deployCandidate": "forbidden",
   "publication.request": "forbidden",
   "publication.strand": "forbidden",
   "publication.list": "forbidden",
@@ -629,6 +630,7 @@ describe("the project line (Pipkin M1b)", () => {
         "line.ship",
         "line.cutCandidate",
         "line.settleCandidate",
+        "line.deployCandidate",
       ].sort(),
     );
   });
