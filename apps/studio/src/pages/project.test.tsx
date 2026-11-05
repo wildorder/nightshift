@@ -367,7 +367,6 @@ describe("the project page", () => {
                 candidates: [
                   {
                     candidateId: f.ids.next("cand"),
-                    program: seeded.plan.programId,
                     commit: "abcdef1234".padEnd(40, "0") as never,
                     mainAt: "9".repeat(40) as never,
                     programs: [{ program: seeded.plan.programId, upTo: "2".repeat(40) as never }],
@@ -399,7 +398,7 @@ describe("the project page", () => {
     await waitFor(() =>
       expect(line.getByTestId("line-candidate-state").textContent).toBe("Ready to deploy."),
     );
-    expect(line.getByTestId("line-candidate").textContent).toContain("pull request #12");
+    expect(line.getByTestId("line-candidate").textContent).toContain("This deploy includes:");
     // Work that did not ship is listed with its draft pull request (D-P25-17).
     const notShipped = line.getByTestId("line-not-shipped");
     expect(notShipped.textContent).toContain("Not shipped");

@@ -39,7 +39,7 @@ import {
   type NightshiftConfig,
   NightshiftConfigSchema,
 } from "@nightshift/contracts";
-import { type Clock, type IdGenerator, LINE_IDLE_SECONDS, programsDue } from "@nightshift/core";
+import { type Clock, candidateDue, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
 import {
   createLineCheckout,
   createLineComposer,
@@ -532,37 +532,28 @@ const ownLine = async (
     const cutCandidate = plane.cutCandidate;
     const settleCandidate = plane.settleCandidate;
     if (cutCandidate === undefined || settleCandidate === undefined) return false;
-    const due = programsDue(record);
-    if (due.length === 0) return false;
+    if (!candidateDue(record)) return false;
     const { lineHead, mainHead } = await heads();
     // The line at GitHub is not where the record says yet: the next pass decides.
     if (lineHead !== record.head) return false;
-    // One candidate, and one pull request, per program (D-P25-16).
-    const cut = [];
-    for (const program of due) {
-      say(`cutting a candidate for ${program} at ${lineHead.slice(0, 12)}`);
-      cut.push(await cutCandidate({ commit: lineHead, mainAt: mainHead, program }));
-    }
-    const qualifying = cut.filter((candidate) => candidate.state === "qualifying");
-    if (qualifying.length === 0) return true;
-    // They share one commit, so one full verification qualifies them all.
-    say(`qualifying ${qualifying.length} candidate(s): every gate on ${lineHead.slice(0, 12)}`);
+    // One candidate, and one pull request, for everything main lacks (the owner, 2026-11-05).
+    say(`cutting a candidate at ${lineHead.slice(0, 12)}`);
+    const candidate = await cutCandidate({ commit: lineHead, mainAt: mainHead });
+    if (candidate.state !== "qualifying") return true;
+    say(`qualifying candidate ${candidate.candidateId}: every gate on ${lineHead.slice(0, 12)}`);
     const verification = await verifySnapshot(line.environment, line.session, lineHead, mainHead);
     const failing = verification.commands
       .filter((command) => command.exitCode !== undefined && command.exitCode !== 0)
       .map((command) => command.stepId);
-    let red: string | undefined;
-    for (const candidate of qualifying) {
-      const settled = await settleCandidate({
-        candidateId: candidate.candidateId,
-        outcome: verification.outcome,
-        verificationId: verification.verificationId,
-        ...(failing.length === 0 ? {} : { detail: `failing gates: ${failing.join(", ")}` }),
-      });
-      log(`candidate ${settled.candidateId}: ${settled.state}`);
-      if (settled.state === "failed") red ??= settled.candidateId;
-    }
-    if (red !== undefined) await repairCandidate(red, lineHead, verification);
+    const settled = await settleCandidate({
+      candidateId: candidate.candidateId,
+      outcome: verification.outcome,
+      verificationId: verification.verificationId,
+      ...(failing.length === 0 ? {} : { detail: `failing gates: ${failing.join(", ")}` }),
+    });
+    log(`candidate ${settled.candidateId}: ${settled.state}`);
+    if (settled.state === "failed")
+      await repairCandidate(settled.candidateId, lineHead, verification);
     return true;
   };
 

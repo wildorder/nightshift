@@ -730,6 +730,8 @@ export const candidatePullRequestBody = (input: {
     readonly program: string;
     readonly name: string;
     readonly objective?: string;
+    /** Where its branch is on GitHub, to review it on its own. */
+    readonly url?: string;
   }[];
   readonly repairs: readonly {
     readonly commit: string;
@@ -755,7 +757,7 @@ export const candidatePullRequestBody = (input: {
     "",
     ...input.programs.map(
       (program) =>
-        `- **${program.name}** (\`${program.program}\`)${program.objective === undefined ? "" : `: ${program.objective}`}`,
+        `- **${program.url === undefined ? program.name : `[${program.name}](${program.url})`}** (\`${program.program}\`)${program.objective === undefined ? "" : `: ${program.objective}`}`,
     ),
     "",
     "## How the line got here",
@@ -848,6 +850,11 @@ export const publishCandidates = async (
             programs.push({
               program: entry.program,
               name: contract?.repository.programBranch ?? entry.program,
+              ...(contract === undefined
+                ? {}
+                : {
+                    url: `https://github.com/${repository}/tree/${contract.repository.programBranch}`,
+                  }),
               ...(contract === undefined
                 ? {}
                 : { objective: contract.objective.split("\n")[0]?.trim().slice(0, 200) ?? "" }),

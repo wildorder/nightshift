@@ -855,8 +855,6 @@ describe("candidates (P25, D-P25-09)", () => {
     const [candidate] = candidates;
     expect(candidate).toMatchObject({
       state: "qualified",
-      // One candidate, and one pull request, per program (D-P25-16).
-      program: world.programs.a,
       commit: world.head(LINE),
       programs: [{ program: world.programs.a }],
       runId: f.scope.runId,
