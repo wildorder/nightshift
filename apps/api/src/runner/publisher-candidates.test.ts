@@ -48,7 +48,9 @@ const fakeGitHub = (): FakeGitHub => {
     },
     open: async (_i, _r, request) => {
       if (github.refuseOpen !== undefined) throw new Error(github.refuseOpen);
-      github.calls.push(`open ${request.head} -> ${request.base}`);
+      github.calls.push(
+        `open ${request.head} -> ${request.base}${request.draft === true ? " (draft)" : ""}: ${request.title}`,
+      );
       const number = github.pulls.size + 7;
       const pr: GitHubPullRequest = {
         number,
@@ -141,7 +143,9 @@ const world = async (
     return found;
   };
   const publish = () => publishCandidates(deps, { projectId: f.scope.projectId, branch: LINE });
-  return { f, github, record, publish };
+  const update = (next: Awaited<ReturnType<typeof record>>) =>
+    stores.lines.update(f.scope.projectId, LINE, () => next);
+  return { f, github, record, publish, update };
 };
 
 const candidateOf = (
@@ -173,7 +177,7 @@ describe("the GitHub writer and a line's candidates", () => {
     const after = (await w.record()).candidates?.[0];
     expect(w.github.calls).toEqual([
       `branch nightshift/candidates/${candidate.candidateId} cccc`,
-      `open nightshift/candidates/${candidate.candidateId} -> main`,
+      `open nightshift/candidates/${candidate.candidateId} -> main: Nightshift: ship ${candidate.programs[0]?.program}`,
     ]);
     expect(after?.pr).toEqual({
       number: 7,
@@ -320,5 +324,86 @@ describe("a candidate pull request's words", () => {
     expect(body).toContain("**program/tablet-check**");
     expect(body).toContain("job `job_x`");
     expect(body).toContain("merge commit");
+  });
+});
+
+describe("a pull request per program, and drafts (P25, D-P25-16, D-P25-17)", () => {
+  it("titles a candidate's pull request with its program, and says what else it ships", async () => {
+    const other = createFixtures().ids.next("prog");
+    const w = await world((f) => [
+      candidateOf(f, {
+        program: f.scope.programId,
+        programs: [
+          { program: f.scope.programId, upTo: UPTO as never },
+          { program: other, upTo: UPTO as never },
+        ],
+      }),
+    ]);
+    await w.publish();
+    expect(w.github.calls.at(-1)).toContain(
+      "-> main: Nightshift: program/tablet-check: Show the tablet's check page.",
+    );
+    expect(lastBody).toContain("This also ships one other program not deployed yet");
+  });
+
+  it("closes the pull request of a candidate a later merge included", async () => {
+    const w = await world((f) => {
+      const merged = candidateOf(f, {
+        state: "deployed",
+        pr: { number: 8, url: "https://github.com/wildorder/fixture/pull/8", branch: "m" },
+      });
+      return [
+        candidateOf(f, {
+          state: "deployed",
+          includedIn: merged.candidateId,
+          pr: { number: 7, url: "https://github.com/wildorder/fixture/pull/7", branch: "i" },
+        }),
+        merged,
+      ];
+    });
+    w.github.pulls.set(7, {
+      number: 7,
+      url: "https://github.com/wildorder/fixture/pull/7",
+      state: "open",
+      merged: false,
+      headSha: HEAD,
+    });
+    await w.publish();
+    expect(w.github.calls).toContain(
+      "close #7: Deployed: included in https://github.com/wildorder/fixture/pull/8, which was merged.",
+    );
+    expect((await w.record()).candidates?.[0]?.prClosedAt).toBe(NOW);
+  });
+
+  it("opens a draft for work that did not ship, from its branch, and closes it once a candidate ships it", async () => {
+    const w = await world([]);
+    const { f } = w;
+    const draft = {
+      draftId: f.scope.runId,
+      kind: "run" as const,
+      program: f.scope.programId,
+      runId: f.scope.runId,
+      reason: "The run ended failed: S-03 could not log in.",
+      createdAt: NOW,
+    };
+    const seeded = await w.record();
+    await w.update({ ...seeded, drafts: [draft] });
+    await w.publish();
+    expect(w.github.calls).toEqual([
+      "open program/tablet-check -> main (draft): Not shipped: program/tablet-check",
+    ]);
+    expect(lastBody).toContain("S-03 could not log in");
+    expect((await w.record()).drafts?.[0]?.pr?.number).toBe(7);
+
+    const later = await w.record();
+    await w.update({
+      ...later,
+      candidates: [candidateOf(f, { createdAt: "2026-11-04T13:00:00.000Z" })],
+    });
+    await w.publish();
+    expect(
+      w.github.calls.some((call) => call.startsWith("close #7: This work reached the line")),
+    ).toBe(true);
+    expect((await w.record()).drafts?.[0]?.closedAt).toBe(NOW);
   });
 });

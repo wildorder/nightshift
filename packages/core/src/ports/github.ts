@@ -52,6 +52,8 @@ export interface GitHubPullRequests {
       readonly base: string;
       readonly title: string;
       readonly body: string;
+      /** A draft (D-P25-17): visible, not ready to merge. */
+      readonly draft?: boolean;
     },
   ): Promise<GitHubPullRequest>;
   get(

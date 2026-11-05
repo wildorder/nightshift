@@ -305,6 +305,8 @@ export type LineCandidateState = z.infer<typeof LineCandidateStateSchema>;
  */
 export const LineCandidateSchema = z.strictObject({
   candidateId: CandidateIdSchema,
+  /** The program this candidate's pull request is for (D-P25-16); absent on candidates cut before it. */
+  program: ProgramIdSchema.optional(),
   commit: CommitShaSchema,
   /** Main's head when it was cut, which the line held. */
   mainAt: CommitShaSchema,
@@ -325,8 +327,10 @@ export const LineCandidateSchema = z.strictObject({
     })
     .optional(),
   supersededBy: CandidateIdSchema.optional(),
-  /** When the GitHub writer closed its pull request, superseded. */
+  /** When the GitHub writer closed its pull request, superseded or included in another's merge. */
   prClosedAt: IsoTimestampSchema.optional(),
+  /** Deployed because a later candidate, which holds this one's commit, was merged (D-P25-16). */
+  includedIn: CandidateIdSchema.optional(),
   /** Why its pull request could not be opened, or a deploy could not merge it; the reconciler asks again. */
   prDetail: z.string().min(1).optional(),
   deployedAt: IsoTimestampSchema.optional(),
@@ -336,6 +340,28 @@ export const LineCandidateSchema = z.strictObject({
   updatedAt: IsoTimestampSchema,
 });
 export type LineCandidate = z.infer<typeof LineCandidateSchema>;
+
+/**
+ * Work that did not ship, as a draft pull request (P25, D-P25-17): a run of a
+ * line program that ended without succeeding (`run`), or a program's range
+ * the line parked (`parked`). Closed when that work later reaches a candidate.
+ */
+export const LineDraftSchema = z.strictObject({
+  /** The run's id, or the parked entry's id: one draft each. */
+  draftId: z.string().min(1),
+  kind: z.enum(["run", "parked"]),
+  program: ProgramIdSchema,
+  runId: RunIdSchema.optional(),
+  /** Why it did not ship, in words. */
+  reason: z.string().min(1).max(MAX_LINE_WORDS_CHARS),
+  pr: z
+    .strictObject({ number: z.int().min(1), url: z.string().min(1), branch: z.string().min(1) })
+    .optional(),
+  prDetail: z.string().min(1).optional(),
+  closedAt: IsoTimestampSchema.optional(),
+  createdAt: IsoTimestampSchema,
+});
+export type LineDraft = z.infer<typeof LineDraftSchema>;
 
 const LineRecordShape = z.strictObject({
   ...projectScoped,
@@ -384,6 +410,8 @@ const LineRecordShape = z.strictObject({
     .optional(),
   /** The candidates cut from the line, newest `MAX_LINE_CANDIDATES` kept (P25). */
   candidates: z.array(LineCandidateSchema).optional(),
+  /** Work that did not ship, each a draft pull request, newest `MAX_LINE_PARKED` kept (D-P25-17). */
+  drafts: z.array(LineDraftSchema).optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**
@@ -592,11 +620,13 @@ export const LineRepairQueueBodySchema = z.strictObject({
 });
 export type LineRepairQueueBody = z.infer<typeof LineRepairQueueBodySchema>;
 
-/** `POST …/line/candidates?branch=`: the line run cuts a candidate at the line's head. */
+/** `POST …/line/candidates?branch=`: the line run cuts a candidate at the line's head, for one program. */
 export const LineCandidateCutBodySchema = z.strictObject({
   generation: z.int().min(1),
   commit: CommitShaSchema,
   mainAt: CommitShaSchema,
+  /** The program it is for (D-P25-16); absent: one candidate for every undeployed program. */
+  program: ProgramIdSchema.optional(),
 });
 export type LineCandidateCutBody = z.infer<typeof LineCandidateCutBodySchema>;
 

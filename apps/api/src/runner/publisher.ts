@@ -26,6 +26,7 @@ import type {
   CandidateId,
   Dispatch,
   LineCandidate,
+  LineDraft,
   LineRecord,
   ProgramContract,
   ProjectId,
@@ -38,6 +39,8 @@ import {
   type Clock,
   candidateNeedsWriter,
   chainOrder,
+  draftNeedsWriter,
+  draftShippedBy,
   type GitHubAppClient,
   hasPendingIntent,
   holdBehind,
@@ -60,6 +63,7 @@ import {
   resolvePush,
   resolveStrandPublication,
   runJoinsLine,
+  withDraft,
 } from "@nightshift/core";
 import {
   advertiseReceivePack,
@@ -733,11 +737,20 @@ export const candidatePullRequestBody = (input: {
     readonly jobContractId: string;
   }[];
   readonly verification?: Verification | undefined;
+  /** The other programs this commit also ships, not deployed yet, with their pull requests (D-P25-16). */
+  readonly alsoShips?: readonly { readonly name: string; readonly url?: string }[];
 }): string => {
   const { candidate, verification } = input;
+  const also = input.alsoShips ?? [];
   const lines = [
     `Nightshift candidate \`${candidate.candidateId}\`: the project line at \`${candidate.commit.slice(0, 12)}\`, which holds main at \`${candidate.mainAt.slice(0, 12)}\`.`,
     "",
+    ...(also.length === 0
+      ? []
+      : [
+          `> **This also ships ${also.length === 1 ? "one other program" : `${also.length} other programs`} not deployed yet**, because the line is one queue and they are in this commit: ${also.map((other) => (other.url === undefined ? other.name : `${other.name} (${other.url})`)).join(", ")}. Merging this deploys them too and closes their pull requests.`,
+          "",
+        ]),
     "## What this ships",
     "",
     ...input.programs.map(
@@ -824,8 +837,13 @@ export const publishCandidates = async (
         if (candidate.state === "qualified" && candidate.pr === undefined) {
           const head = `nightshift/candidates/${id}`;
           await pulls.createBranch(installationId, repository, head, candidate.commit);
+          // Its own program first (D-P25-16); the rest are shipped alongside it.
+          const ordered = [
+            ...candidate.programs.filter((entry) => entry.program === candidate.program),
+            ...candidate.programs.filter((entry) => entry.program !== candidate.program),
+          ];
           const programs = [];
-          for (const entry of candidate.programs) {
+          for (const entry of ordered) {
             const contract = await deps.stores.programContracts.get(projectId, entry.program);
             programs.push({
               program: entry.program,
@@ -851,13 +869,38 @@ export const publishCandidates = async (
               runId: composition.repair?.runId ?? "",
               jobContractId: composition.repair?.jobContractId ?? "",
             }));
-          const title =
-            `Nightshift: ship ${programs.map((program) => program.name).join(", ")}`.slice(0, 250);
+          const own = candidate.program === undefined ? undefined : programs[0];
+          const title = (
+            own === undefined
+              ? `Nightshift: ship ${programs.map((program) => program.name).join(", ")}`
+              : `Nightshift: ${own.name}${own.objective === undefined || own.objective === "" ? "" : `: ${own.objective}`}`
+          ).slice(0, 250);
+          const alsoShips =
+            own === undefined
+              ? []
+              : programs.slice(1).map((other) => {
+                  const theirs = (record.candidates ?? []).find(
+                    (found) =>
+                      found.program === other.program &&
+                      found.pr !== undefined &&
+                      found.state !== "deployed" &&
+                      found.state !== "closed",
+                  );
+                  return theirs?.pr === undefined
+                    ? { name: other.name }
+                    : { name: other.name, url: theirs.pr.url };
+                });
           const pr = await pulls.open(installationId, repository, {
             head,
             base,
             title,
-            body: candidatePullRequestBody({ candidate, programs, repairs, verification }),
+            body: candidatePullRequestBody({
+              candidate,
+              programs,
+              repairs,
+              verification,
+              alsoShips,
+            }),
           });
           await update((current) =>
             recordCandidatePr(current, id, { number: pr.number, url: pr.url, branch: head }, at()),
@@ -867,6 +910,25 @@ export const publishCandidates = async (
           continue;
         }
         if (candidate.pr === undefined) continue;
+        if (candidate.state === "deployed" && candidate.includedIn !== undefined) {
+          const by = (record.candidates ?? []).find(
+            (found) => found.candidateId === candidate.includedIn,
+          );
+          const open = await pulls.get(installationId, repository, candidate.pr.number);
+          if (open?.state === "open") {
+            await pulls.close(
+              installationId,
+              repository,
+              candidate.pr.number,
+              by?.pr === undefined
+                ? `Deployed: included in Nightshift candidate \`${candidate.includedIn}\`, which was merged.`
+                : `Deployed: included in ${by.pr.url}, which was merged.`,
+            );
+          }
+          await update((current) => recordCandidatePrClosed(current, id, at()));
+          count("pr_closed_included");
+          continue;
+        }
         const pr = await pulls.get(installationId, repository, candidate.pr.number);
         if (pr?.merged === true) {
           await update((current) => markCandidateDeployed(current, id, at()));
@@ -932,10 +994,133 @@ export const publishCandidates = async (
         count("error");
       }
     }
+
+    // Work that did not ship, as draft pull requests (D-P25-17).
+    const latest = (await deps.stores.lines.get(projectId, branch)) ?? record;
+    for (const draft of (latest.drafts ?? []).filter((found) => draftNeedsWriter(latest, found))) {
+      try {
+        const contract = await deps.stores.programContracts.get(projectId, draft.program);
+        const name = contract?.repository.programBranch ?? draft.program;
+        if (draft.pr === undefined) {
+          if (contract === undefined) continue;
+          const body = await notShippedBody(deps, projectId, draft, name);
+          const pr = await pulls.open(installationId, repository, {
+            head: contract.repository.programBranch,
+            base,
+            title: `Not shipped: ${name}`.slice(0, 250),
+            body,
+            draft: true,
+          });
+          await update((current) =>
+            withDraft(
+              current,
+              draft.draftId,
+              ({ prDetail: _said, ...found }) => ({
+                ...found,
+                pr: { number: pr.number, url: pr.url, branch: contract.repository.programBranch },
+              }),
+              at(),
+            ),
+          );
+          log(`line ${branch}: not shipped ${name}: opened draft #${pr.number}`);
+          count("draft_opened");
+          continue;
+        }
+        const shipped = draftShippedBy(latest, draft);
+        if (shipped === undefined) continue;
+        const open = await pulls.get(installationId, repository, draft.pr.number);
+        if (open?.state === "open") {
+          await pulls.close(
+            installationId,
+            repository,
+            draft.pr.number,
+            shipped.pr === undefined
+              ? `This work reached the line: Nightshift candidate \`${shipped.candidateId}\` ships it.`
+              : `This work reached the line: ${shipped.pr.url} ships it.`,
+          );
+        }
+        await update((current) =>
+          withDraft(current, draft.draftId, (found) => ({ ...found, closedAt: at() }), at()),
+        );
+        count("draft_closed");
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        log(`line ${branch}: draft ${draft.draftId}: ${detail}`);
+        await update((current) =>
+          withDraft(
+            current,
+            draft.draftId,
+            (found) => ({ ...found, prDetail: detail.slice(0, 1000) }),
+            at(),
+          ),
+        );
+        count("error");
+      }
+    }
     return counts;
   } finally {
     await lock.release(key);
   }
+};
+
+/**
+ * The words of a "Not shipped" draft (D-P25-17): why, what landed and what did
+ * not (for a run), and what the person can do about it.
+ */
+const notShippedBody = async (
+  deps: PublisherDeps,
+  projectId: ProjectId,
+  draft: LineDraft,
+  name: string,
+): Promise<string> => {
+  const lines = [
+    `**${name}** did not reach the project line, so it is not on its way to main.`,
+    "",
+    `> ${draft.reason}`,
+    "",
+  ];
+  if (draft.kind === "run" && draft.runId !== undefined) {
+    const scope = { projectId, programId: draft.program, runId: draft.runId };
+    const nodes = (await deps.stores.executionNodes.listByRun(scope)).items.filter(
+      (node) => node.depth === 1,
+    );
+    const labelled = async (node: (typeof nodes)[number]) => {
+      const job =
+        node.jobContractId === null || node.jobContractId === undefined
+          ? undefined
+          : await deps.stores.jobContracts.get(scope, node.jobContractId);
+      return `- ${job?.objective.split("\n")[0]?.trim().slice(0, 120) ?? node.executionNodeId} (${node.status})`;
+    };
+    const landed = nodes.filter((node) => node.status === "integrated");
+    const missing = nodes.filter((node) => node.status !== "integrated");
+    lines.push(
+      `Run \`${draft.runId}\`.`,
+      "",
+      `### Landed (${landed.length})`,
+      "",
+      ...(await Promise.all(landed.map(labelled))),
+      "",
+      `### Not landed (${missing.length})`,
+      "",
+      ...(await Promise.all(missing.map(labelled))),
+      "",
+      "What you can do:",
+      "",
+      `- Finish it: \`nightshift resume ${name}\``,
+      `- Ship what landed anyway: \`nightshift line ship ${name} --yes\``,
+    );
+  } else {
+    lines.push(
+      "What you can do:",
+      "",
+      `- Try again once the cause is fixed: \`nightshift line requeue --program ${name}\``,
+    );
+  }
+  lines.push(
+    "",
+    "This is a draft so it is never mistaken for work ready to merge. Nightshift closes it when this work reaches the line.",
+  );
+  return `${lines.join("\n")}\n`;
 };
 
 /** A deploy GitHub refused: the candidate is qualified again, to deploy once current. */

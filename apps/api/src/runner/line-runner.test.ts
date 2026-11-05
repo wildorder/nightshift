@@ -479,3 +479,54 @@ describe("reconcile: sweeping machines no live dispatch owns (2026-11-05)", () =
     expect(counts["sweep:terminated"]).toBe(3);
   });
 });
+
+describe("reconcile: work that did not ship (P25, D-P25-17)", () => {
+  it("notes a failed run of a line program, and a parked range, each once, for a draft pull request", async () => {
+    const w = await world();
+    const f = await w.addLine({ work: false });
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        status: "stopped",
+        cleanup: { volumeDeleted: true, failures: [] },
+        publication: { intents: [], lineOwed: true, head: FIXTURE_COMMIT },
+      }),
+    );
+    await w.stores.runs.put(
+      makeRun(f, { status: "failed", location: "remote", outcomeReason: "S-03 could not log in." }),
+    );
+    const other = f.ids.next("prog");
+    await w.stores.lines.update(f.scope.projectId, BRANCH, (row) =>
+      row === undefined
+        ? undefined
+        : {
+            ...row,
+            parked: [
+              {
+                compositionId: "b9-p0",
+                ranges: [{ program: other, upTo: FIXTURE_COMMIT }],
+                reason: "the merge conflicted in a.ts",
+                parkedAt: new Date(START).toISOString(),
+              },
+            ],
+          },
+    );
+    const counts = await w.reconcile();
+    expect(counts["not-shipped:run"]).toBe(1);
+    expect(counts["not-shipped:parked"]).toBe(1);
+    const drafts = (await w.stores.lines.get(f.scope.projectId, BRANCH))?.drafts ?? [];
+    expect(drafts.map((d) => [d.kind, d.program, d.reason])).toEqual([
+      ["run", f.scope.programId, "S-03 could not log in."],
+      ["parked", other, "The line could not take it: the merge conflicted in a.ts"],
+    ]);
+    // The writer is asked about the line's drafts.
+    expect(w.asked).toContainEqual({
+      kind: "candidates",
+      projectId: f.scope.projectId,
+      branch: BRANCH,
+    });
+    const again = await w.reconcile();
+    expect(again["not-shipped:run"]).toBeUndefined();
+    expect(again["not-shipped:parked"]).toBeUndefined();
+  });
+});

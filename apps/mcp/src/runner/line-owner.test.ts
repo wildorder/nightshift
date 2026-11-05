@@ -392,11 +392,12 @@ const makePlane = (
             commit: body.commit,
             mainAt: body.mainAt,
             runId: f.scope.runId,
+            program: body.program,
           },
           iso(),
         ),
       );
-      return candidateOf((c) => c.commit === body.commit);
+      return candidateOf((c) => c.commit === body.commit && c.program === body.program);
     };
     plane.queueRepair = async (body) => {
       plane.events.push(`queueRepair:${body.upTo}`);
@@ -854,6 +855,8 @@ describe("candidates (P25, D-P25-09)", () => {
     const [candidate] = candidates;
     expect(candidate).toMatchObject({
       state: "qualified",
+      // One candidate, and one pull request, per program (D-P25-16).
+      program: world.programs.a,
       commit: world.head(LINE),
       programs: [{ program: world.programs.a }],
       runId: f.scope.runId,

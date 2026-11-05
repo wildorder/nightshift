@@ -18,10 +18,14 @@ import type { LineRecord, ProgramContract, ProjectId } from "@nightshift/contrac
 import { DispatchStatusSchema } from "@nightshift/contracts";
 import {
   candidateNeedsWriter,
+  draftNeedsWriter,
   hasPendingIntent,
   installationGranting,
+  isRequeued,
+  isRunTerminal,
   lineProgramId,
   lineQueueOwed,
+  noteNotShipped,
   nowIso,
   repositoryNameOf,
   runJoinsLine,
@@ -251,7 +255,10 @@ export const reconcileLineMain = async (deps: ReconcileDeps, count: Counter): Pr
  */
 export const reconcileCandidates = async (deps: ReconcileDeps, count: Counter): Promise<void> => {
   for (const record of await deps.provision.stores.lines.listAll()) {
-    if (!(record.candidates ?? []).some(candidateNeedsWriter)) continue;
+    const writerOwed =
+      (record.candidates ?? []).some(candidateNeedsWriter) ||
+      (record.drafts ?? []).some((draft) => draftNeedsWriter(record, draft));
+    if (!writerOwed) continue;
     try {
       await deps.askPublisher({
         kind: "candidates",
@@ -262,6 +269,93 @@ export const reconcileCandidates = async (deps: ReconcileDeps, count: Counter): 
     } catch (error) {
       count("error");
       console.error(`reconciler: candidates of ${record.projectId}/${record.branch}:`, error);
+    }
+  }
+};
+
+/**
+ * Work that did not ship (P25, D-P25-17), noted on its line so the GitHub
+ * writer opens a "Not shipped" draft: a run of a line program that ended
+ * without succeeding with work on GitHub, and a program's range the line
+ * parked and nobody sent back. Each is noted once.
+ */
+export const noteWorkNotShipped = async (deps: ReconcileDeps, count: Counter): Promise<void> => {
+  const { stores, clock } = deps.provision;
+  const at = () => new Date(clock.now()).toISOString();
+  for (const dispatch of await stores.dispatches.listByStatus(ALL_STATUSES)) {
+    try {
+      if (!lineQueueOwed(dispatch)) continue;
+      const scope = {
+        projectId: dispatch.projectId,
+        programId: dispatch.programId,
+        runId: dispatch.runId,
+      };
+      const run = await stores.runs.get(scope, scope.runId);
+      if (run === undefined || !isRunTerminal(run.status) || run.status === "succeeded") continue;
+      const program = await stores.programContracts.get(scope.projectId, scope.programId);
+      const branch = program?.line?.branch;
+      if (branch === undefined) continue;
+      const record = await stores.lines.get(scope.projectId, branch);
+      const noted = (record?.drafts ?? []).some(
+        (d) =>
+          d.draftId === run.runId || (d.program === scope.programId && d.closedAt === undefined),
+      );
+      if (record === undefined || noted) continue;
+      await stores.lines.update(scope.projectId, branch, (current) =>
+        current === undefined
+          ? undefined
+          : noteNotShipped(
+              current,
+              {
+                draftId: run.runId,
+                kind: "run",
+                program: scope.programId,
+                runId: run.runId,
+                reason: (run.outcomeReason ?? `The run ended ${run.status}.`).slice(0, 2000),
+              },
+              at(),
+            ),
+      );
+      count("not-shipped:run");
+    } catch (error) {
+      count("error");
+      console.error(`reconciler: not shipped ${dispatch.runId}:`, error);
+    }
+  }
+  for (const record of await stores.lines.listAll()) {
+    const main = lineProgramId(record.projectId as ProjectId, record.branch);
+    for (const parked of record.parked) {
+      if (isRequeued(record, parked.compositionId)) continue;
+      for (const range of parked.ranges) {
+        if (range.program === main) continue;
+        const draftId = `${parked.compositionId}:${range.program}`;
+        const noted = (record.drafts ?? []).some(
+          (draft) =>
+            draft.draftId === draftId ||
+            (draft.program === range.program && draft.closedAt === undefined),
+        );
+        if (noted) continue;
+        try {
+          await stores.lines.update(record.projectId as ProjectId, record.branch, (current) =>
+            current === undefined
+              ? undefined
+              : noteNotShipped(
+                  current,
+                  {
+                    draftId,
+                    kind: "parked",
+                    program: range.program,
+                    reason: `The line could not take it: ${parked.reason}`.slice(0, 2000),
+                  },
+                  at(),
+                ),
+          );
+          count("not-shipped:parked");
+        } catch (error) {
+          count("error");
+          console.error(`reconciler: not shipped ${draftId}:`, error);
+        }
+      }
     }
   }
 };
@@ -296,6 +390,7 @@ export const reconcile = async (deps: ReconcileDeps): Promise<Record<string, num
   await sweepMachines(deps, count);
   // Main moving without the line queues it before lines with work are started.
   await reconcileLineMain(deps, count);
+  await noteWorkNotShipped(deps, count);
   await reconcileCandidates(deps, count);
   await reconcileLinesWithWork(deps, count);
   return counts;

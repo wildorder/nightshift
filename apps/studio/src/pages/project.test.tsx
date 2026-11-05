@@ -342,9 +342,28 @@ describe("the project page", () => {
             : {
                 ...row,
                 mainSeen: "9".repeat(40) as never,
+                undeployed: [
+                  {
+                    program: seeded.plan.programId,
+                    upTo: "2".repeat(40) as never,
+                    since: "abcdef1234".padEnd(40, "0") as never,
+                    at: "2026-09-27T12:00:00.000Z",
+                  },
+                ],
+                drafts: [
+                  {
+                    draftId: "run_x",
+                    kind: "run" as const,
+                    program: f.ids.next("prog"),
+                    reason: "The run ended failed: S-03 could not log in.",
+                    pr: { number: 13, url: "https://github.com/example/keyart/pull/13", branch: "program/other" },
+                    createdAt: "2026-09-27T12:00:00.000Z",
+                  },
+                ],
                 candidates: [
                   {
                     candidateId: f.ids.next("cand"),
+                    program: seeded.plan.programId,
                     commit: "abcdef1234".padEnd(40, "0") as never,
                     mainAt: "9".repeat(40) as never,
                     programs: [{ program: seeded.plan.programId, upTo: "2".repeat(40) as never }],
@@ -376,7 +395,12 @@ describe("the project page", () => {
     await waitFor(() =>
       expect(line.getByTestId("line-candidate-state").textContent).toBe("Ready to deploy."),
     );
-    expect(line.getByTestId("line-candidate").textContent).toContain("This deploy includes:");
+    expect(line.getByTestId("line-candidate").textContent).toContain("pull request #12");
+    // Work that did not ship is listed with its draft pull request (D-P25-17).
+    const notShipped = line.getByTestId("line-not-shipped");
+    expect(notShipped.textContent).toContain("Not shipped");
+    expect(notShipped.textContent).toContain("S-03 could not log in");
+    expect(within(notShipped).getByRole("link", { name: "draft #13" })).toBeTruthy();
     expect(line.getByRole("link", { name: "pull request #12" }).getAttribute("href")).toBe(
       "https://github.com/example/keyart/pull/12",
     );

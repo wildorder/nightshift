@@ -16,6 +16,7 @@ import {
   DEFAULT_LINE_MONTHLY_USD,
   dispatchChargeDue,
   dispatchChargeKey,
+  draftNeedsWriter,
   isRequeued,
   LINE_COMPOSITION_SECONDS,
   LINE_IDLE_SECONDS,
@@ -23,10 +24,13 @@ import {
   lineHasWork,
   lineQueueOwed,
   MAX_LINE_BATCH_ENTRIES,
+  markCandidateDeployed,
   meterProjectUsage,
+  noteNotShipped,
   occupiesComputeSlot,
   parkBatch,
   previousMonthOf,
+  programsDue,
   recordAttempt,
   requestPush,
   requeueParked,
@@ -1068,5 +1072,92 @@ describe("candidates (P25, D-P25-09)", () => {
       state: "failed",
       detail: "failing gates: e2e",
     });
+  });
+});
+
+describe("a pull request per program, and drafts for work that did not ship (P25, D-P25-16, D-P25-17)", () => {
+  const RUN = f.ids.next("run");
+  const VER = f.ids.next("ver");
+  const two = (): LineRecord => ({
+    ...empty(),
+    head: C as never,
+    undeployed: [
+      { program: P1, upTo: A as never, since: C as never, at: AT },
+      { program: P2, upTo: B as never, since: C as never, at: AT },
+    ],
+  });
+  const cutFor = (record: LineRecord, program: ProgramId, commit = C) => {
+    const change = cutCandidate(
+      record,
+      {
+        candidateId: f.ids.next("cand"),
+        commit: commit as never,
+        mainAt: A as never,
+        runId: RUN,
+        program,
+      },
+      AT,
+    );
+    if (!change.ok) throw new Error(change.detail);
+    return change.record;
+  };
+  const qualify = (record: LineRecord, index: number, at = AT) => {
+    const id = record.candidates?.[index]?.candidateId;
+    if (id === undefined) throw new Error("no candidate");
+    const change = settleCandidate(
+      record,
+      { candidateId: id, outcome: "passed", verificationId: VER },
+      at,
+    );
+    if (!change.ok) throw new Error(change.detail);
+    return change.record;
+  };
+
+  it("is due for each program main lacks, once each, and not again at the same head", () => {
+    expect(programsDue(two())).toEqual([P1, P2]);
+    const one = cutFor(two(), P1);
+    expect(programsDue(one)).toEqual([P2]);
+    expect(programsDue(cutFor(one, P2))).toEqual([]);
+  });
+
+  it("supersedes only older candidates of the same program", () => {
+    let record = qualify(qualify(cutFor(cutFor(two(), P1), P2), 0), 1);
+    record = { ...record, head: B as never };
+    record = qualify(cutFor(record, P1, B), 2, LATER);
+    expect(record.candidates?.map((c) => [c.program, c.state])).toEqual([
+      [P1, "superseded"],
+      [P2, "qualified"],
+      [P1, "qualified"],
+    ]);
+  });
+
+  it("deploys every candidate cut at or before the merged one, as included, and clears what they shipped", () => {
+    const record = qualify(qualify(cutFor(cutFor(two(), P1), P2), 0), 1);
+    const merged = record.candidates?.[1]?.candidateId as never;
+    const deployed = markCandidateDeployed(record, merged, LATER);
+    expect(deployed.candidates?.map((c) => [c.state, c.includedIn])).toEqual([
+      ["deployed", merged],
+      ["deployed", undefined],
+    ]);
+    expect(deployed.undeployed).toEqual([]);
+  });
+
+  it("notes work that did not ship once, and wants the writer until a candidate ships it", () => {
+    const noted = noteNotShipped(
+      empty(),
+      { draftId: "run_1", kind: "run", program: P1, runId: RUN, reason: "S-03 failed" },
+      AT,
+    );
+    expect(noted.drafts).toHaveLength(1);
+    expect(
+      noteNotShipped(noted, { draftId: "run_2", kind: "run", program: P1, reason: "again" }, LATER),
+    ).toBe(noted);
+    const draft = noted.drafts?.[0];
+    if (draft === undefined) throw new Error("no draft");
+    expect(draftNeedsWriter(noted, draft)).toBe(true);
+    const opened = { ...noted, drafts: [{ ...draft, pr: { number: 3, url: "u", branch: "b" } }] };
+    expect(draftNeedsWriter(opened, opened.drafts[0] as never)).toBe(false);
+    const shipping = cutFor({ ...opened, head: C as never, undeployed: two().undeployed }, P1);
+    expect(draftNeedsWriter(shipping, shipping.drafts?.[0] as never)).toBe(true);
   });
 });

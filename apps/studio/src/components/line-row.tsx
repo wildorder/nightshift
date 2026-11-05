@@ -126,21 +126,34 @@ const TONE: Readonly<Record<ReturnType<typeof candidateWords>["tone"], string>> 
   quiet: "text-muted-foreground",
 };
 
-/** The line's newest candidate: what a deploy would ship, where it stands, and Deploy (D-P25-13). */
-const CandidatePanel = ({
+/** The newest candidate of one program, or of the line when it predates per-program candidates. */
+const candidateFor = (record: LineRecord, program: string): LineCandidate | undefined =>
+  [...(record.candidates ?? [])]
+    .reverse()
+    .find(
+      (candidate) =>
+        candidate.program === program ||
+        (candidate.program === undefined &&
+          candidate.programs.some((entry) => entry.program === program)),
+    );
+
+/** One program waiting to ship: where its candidate stands, its pull request, and Deploy. */
+const ProgramToShip = ({
   projectId,
   branch,
   record,
+  program,
   nameOf,
 }: {
   readonly projectId: ProjectId;
   readonly branch: string;
   readonly record: LineRecord;
+  readonly program: string;
   readonly nameOf: (programId: string) => string;
 }) => {
   const { line } = useStudio();
   const client = useQueryClient();
-  const candidate = record.candidates?.at(-1);
+  const candidate = candidateFor(record, program);
   const words = candidateWords(record, candidate);
   const [said, setSaid] = useState<string | undefined>(undefined);
   const deploy = useMutation({
@@ -155,39 +168,104 @@ const CandidatePanel = ({
     },
     onError: (error) => setSaid(String(error)),
   });
-  const ships = candidate?.programs ?? record.undeployed ?? [];
+  const alsoShips = (candidate?.programs ?? [])
+    .map((entry) => entry.program)
+    .filter((other) => other !== program);
   return (
-    <div className="grid gap-1 rounded-md border p-2" data-testid="line-candidate">
-      <p className={TONE[words.tone]} data-testid="line-candidate-state">
-        {words.says}
-      </p>
-      {ships.length === 0 ? null : (
-        <p>
-          <span className="text-muted-foreground">This deploy includes: </span>
-          {[...new Set(ships.map((entry) => nameOf(entry.program)))].join(", ")}
+    <li className="grid gap-1" data-testid="line-candidate">
+      <div className="flex flex-wrap items-baseline gap-x-3">
+        <span className="font-medium">{nameOf(program)}</span>
+        <span className={TONE[words.tone]} data-testid="line-candidate-state">
+          {words.says}
+        </span>
+        {candidate?.pr === undefined ? null : (
+          <a className="underline-offset-4 hover:underline" href={candidate.pr.url}>
+            pull request #{candidate.pr.number}
+          </a>
+        )}
+        {words.deployable && line !== undefined ? (
+          <Button size="sm" disabled={deploy.isPending} onClick={() => deploy.mutate()}>
+            {deploy.isPending ? "Deploying…" : "Deploy"}
+          </Button>
+        ) : null}
+      </div>
+      {alsoShips.length === 0 ? null : (
+        <p className="text-muted-foreground">
+          This deploy also includes: {[...new Set(alsoShips.map(nameOf))].join(", ")}
         </p>
-      )}
-      {candidate?.pr === undefined ? null : (
-        <a className="underline-offset-4 hover:underline" href={candidate.pr.url}>
-          pull request #{candidate.pr.number}
-        </a>
       )}
       {candidate?.state === "qualified" &&
       candidate.prDetail !== undefined &&
       candidate.pr !== undefined ? (
         <p className="text-status-warning-foreground">{candidate.prDetail}</p>
       ) : null}
-      {words.deployable && line !== undefined ? (
-        <div>
-          <Button size="sm" disabled={deploy.isPending} onClick={() => deploy.mutate()}>
-            {deploy.isPending ? "Deploying…" : "Deploy"}
-          </Button>
-        </div>
-      ) : null}
       {said === undefined ? null : (
         <p role="alert" className="text-status-warning-foreground">
           {said}
         </p>
+      )}
+    </li>
+  );
+};
+
+/**
+ * The line as a status board (D-P25-16 … 18): each program waiting to ship,
+ * with its pull request and Deploy, and each piece of work that did not ship,
+ * with its draft pull request. Review happens in GitHub; this says where to look.
+ */
+const CandidatePanel = ({
+  projectId,
+  branch,
+  record,
+  nameOf,
+}: {
+  readonly projectId: ProjectId;
+  readonly branch: string;
+  readonly record: LineRecord;
+  readonly nameOf: (programId: string) => string;
+}) => {
+  const waiting = [...new Set((record.undeployed ?? []).map((entry) => entry.program))];
+  const drafts = (record.drafts ?? []).filter((draft) => draft.closedAt === undefined);
+  const last = record.candidates?.at(-1);
+  return (
+    <div className="grid gap-2 rounded-md border p-2" data-testid="line-ship">
+      {waiting.length === 0 ? (
+        <p className="text-muted-foreground" data-testid="line-candidate-state">
+          {candidateWords(record, last).says}
+        </p>
+      ) : (
+        <ul className="grid gap-2" aria-label="Waiting to ship">
+          {waiting.map((program) => (
+            <ProgramToShip
+              key={program}
+              projectId={projectId}
+              branch={branch}
+              record={record}
+              program={program}
+              nameOf={nameOf}
+            />
+          ))}
+        </ul>
+      )}
+      {drafts.length === 0 ? null : (
+        <ul className="grid gap-1 border-t pt-2" aria-label="Not shipped">
+          {drafts.map((draft) => (
+            <li key={draft.draftId} className="grid" data-testid="line-not-shipped">
+              <span>
+                <span className="font-medium text-status-warning-foreground">Not shipped: </span>
+                {nameOf(draft.program)}{" "}
+                {draft.pr === undefined ? (
+                  <span className="text-muted-foreground">(opening its draft pull request)</span>
+                ) : (
+                  <a className="underline-offset-4 hover:underline" href={draft.pr.url}>
+                    draft #{draft.pr.number}
+                  </a>
+                )}
+              </span>
+              <span className="text-muted-foreground">{draft.reason}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

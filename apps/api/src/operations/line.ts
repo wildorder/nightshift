@@ -779,8 +779,10 @@ export const postLineShip: Handler = async (context) => {
   return { status: 200, body: response };
 };
 
-const candidateOf = (record: LineRecord, commit: string) => {
-  const found = (record.candidates ?? []).find((candidate) => candidate.commit === commit);
+const candidateOf = (record: LineRecord, commit: string, program?: string) => {
+  const found = (record.candidates ?? []).find(
+    (candidate) => candidate.commit === commit && candidate.program === program,
+  );
   if (found === undefined) throw new Error(`the line kept no candidate at ${commit}`);
   return found;
 };
@@ -800,9 +802,15 @@ export const postLineCandidateCut: Handler = async (context) => {
   const at = nowIso(deps.clock);
   const candidateId = (deps.ids ?? createUlidIdGenerator(deps.clock)).next("cand");
   const record = await applyLineChange(deps, target, (latest) =>
-    cutCandidate(latest, { candidateId, commit: body.commit, mainAt: body.mainAt, runId }, at),
+    cutCandidate(
+      latest,
+      { candidateId, commit: body.commit, mainAt: body.mainAt, runId, program: body.program },
+      at,
+    ),
   );
-  const response: LineCandidateResponse = { candidate: candidateOf(record, body.commit) };
+  const response: LineCandidateResponse = {
+    candidate: candidateOf(record, body.commit, body.program),
+  };
   return { status: 200, body: response };
 };
 

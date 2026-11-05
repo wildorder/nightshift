@@ -19,6 +19,7 @@ import type {
   LineCandidate,
   LineCandidateSettleBody,
   LineCompositionBody,
+  LineDraft,
   LineParkBody,
   LinePushBody,
   LinePushStatus,
@@ -873,14 +874,38 @@ const SLOT_STATUSES: readonly DispatchStatus[] = ["provisioning", "ready", "runn
 export const occupiesComputeSlot = (status: DispatchStatus): boolean =>
   SLOT_STATUSES.includes(status);
 
+/** Whether a candidate is still in play: being checked, ready, or being deployed. */
+const liveCandidate = (candidate: LineCandidate): boolean =>
+  candidate.state === "qualifying" ||
+  candidate.state === "qualified" ||
+  candidate.state === "deploying";
+
 /**
- * Whether the line has something to cut a candidate from (P25, D-P25-09):
- * programs main lacks, at a head no candidate was cut at.
+ * The programs a candidate is due for (P25, D-P25-09, D-P25-16): each program
+ * main lacks that has no live candidate at its current range, and no candidate
+ * at all at the line's head (a failed one is not cut again at the same head).
  */
-export const candidateDue = (record: LineRecord): boolean =>
-  record.head !== undefined &&
-  (record.undeployed ?? []).length > 0 &&
-  !(record.candidates ?? []).some((candidate) => candidate.commit === record.head);
+export const programsDue = (record: LineRecord): ProgramId[] => {
+  if (record.head === undefined) return [];
+  const candidates = record.candidates ?? [];
+  return (record.undeployed ?? [])
+    .filter(
+      (entry) =>
+        !candidates.some(
+          (candidate) =>
+            (candidate.program === entry.program || candidate.program === undefined) &&
+            (candidate.commit === record.head ||
+              (liveCandidate(candidate) &&
+                candidate.programs.some(
+                  (shipped) => shipped.program === entry.program && shipped.upTo === entry.upTo,
+                ))),
+        ),
+    )
+    .map((entry) => entry.program);
+};
+
+/** Whether the line has a candidate to cut. */
+export const candidateDue = (record: LineRecord): boolean => programsDue(record).length > 0;
 
 /**
  * Cuts a candidate at the line's head (P25, D-P25-09): `qualifying`, shipping
@@ -894,11 +919,26 @@ export const cutCandidate = (
     readonly commit: CommitSha;
     readonly mainAt: CommitSha;
     readonly runId: RunId;
+    /** The program it is for (D-P25-16). */
+    readonly program?: ProgramId | undefined;
   },
   at: string,
 ): LineChange => {
-  if ((record.candidates ?? []).some((candidate) => candidate.commit === cut.commit)) {
+  if (
+    (record.candidates ?? []).some(
+      (candidate) => candidate.commit === cut.commit && candidate.program === cut.program,
+    )
+  ) {
     return { ok: true, record };
+  }
+  if (
+    cut.program !== undefined &&
+    !(record.undeployed ?? []).some((entry) => entry.program === cut.program)
+  ) {
+    return refuse({
+      reason: "candidate_refused",
+      detail: `${cut.program} is not waiting to ship on the line`,
+    });
   }
   if (record.head !== cut.commit) {
     return refuse({
@@ -912,6 +952,7 @@ export const cutCandidate = (
   }
   const candidate: LineCandidate = {
     candidateId: cut.candidateId,
+    ...(cut.program === undefined ? {} : { program: cut.program }),
     commit: cut.commit,
     mainAt: cut.mainAt,
     programs,
@@ -974,7 +1015,12 @@ export const settleCandidate = (
             updatedAt: at,
           };
         }
-        return passed && candidate.state === "qualified"
+        // A newer candidate replaces only the older ones of its own program (D-P25-16).
+        return passed &&
+          candidate.state === "qualified" &&
+          (target.program === undefined ||
+            candidate.program === undefined ||
+            candidate.program === target.program)
           ? {
               ...candidate,
               state: "superseded" as const,
@@ -1039,10 +1085,10 @@ export const recordCandidatePrClosed = (
 
 /** Whether a candidate still needs the GitHub writer: a pull request to open, close, merge, or watch. */
 export const candidateNeedsWriter = (candidate: LineCandidate): boolean =>
-  (candidate.state === "qualified" && candidate.pr === undefined) ||
-  (candidate.state === "qualified" && candidate.pr !== undefined) ||
+  candidate.state === "qualified" ||
   candidate.state === "deploying" ||
-  (candidate.state === "superseded" &&
+  ((candidate.state === "superseded" ||
+    (candidate.state === "deployed" && candidate.includedIn !== undefined)) &&
     candidate.pr !== undefined &&
     candidate.prClosedAt === undefined);
 
@@ -1056,20 +1102,46 @@ export const markCandidateDeployed = (
   candidateId: CandidateId,
   at: string,
 ): LineRecord => {
-  const candidate = (record.candidates ?? []).find((found) => found.candidateId === candidateId);
+  const candidates = record.candidates ?? [];
+  const index = candidates.findIndex((found) => found.candidateId === candidateId);
+  const candidate = candidates[index];
   if (candidate === undefined || candidate.state === "deployed") return record;
-  const shipped = new Map(candidate.programs.map((entry) => [entry.program, entry.upTo]));
-  const deployed = withCandidate(
-    record,
-    candidateId,
-    ({ prDetail: _said, ...found }) => ({ ...found, state: "deployed", deployedAt: at }),
-    at,
+  // The line is one queue: every candidate cut at or before this one is in its
+  // commit, so its merge deployed them too (D-P25-16).
+  const included = candidates.filter(
+    (found, at) =>
+      found.candidateId !== candidateId &&
+      liveCandidate(found) &&
+      (at < index || found.commit === candidate.commit),
   );
+  const shipped = new Map<string, string>();
+  for (const found of [candidate, ...included]) {
+    for (const entry of found.programs) shipped.set(entry.program, entry.upTo);
+  }
+  const includedIds = new Set(included.map((found) => found.candidateId));
   return {
-    ...deployed,
+    ...record,
+    candidates: candidates.map((found) => {
+      if (found.candidateId === candidateId) {
+        const { prDetail: _said, ...rest } = found;
+        return { ...rest, state: "deployed" as const, deployedAt: at, updatedAt: at };
+      }
+      if (includedIds.has(found.candidateId)) {
+        const { prDetail: _said, ...rest } = found;
+        return {
+          ...rest,
+          state: "deployed" as const,
+          deployedAt: at,
+          includedIn: candidateId,
+          updatedAt: at,
+        };
+      }
+      return found;
+    }),
     undeployed: (record.undeployed ?? []).filter(
       (entry) => shipped.get(entry.program) !== entry.upTo,
     ),
+    updatedAt: at,
   };
 };
 
@@ -1113,3 +1185,55 @@ export const requestDeploy = (
     ),
   };
 };
+
+/**
+ * Notes work that did not ship (P25, D-P25-17), once per `draftId`: the GitHub
+ * writer opens its draft pull request. A program that already has an open
+ * draft of the same kind is not given a second.
+ */
+export const noteNotShipped = (
+  record: LineRecord,
+  draft: Omit<LineDraft, "createdAt" | "pr" | "prDetail" | "closedAt">,
+  at: string,
+): LineRecord => {
+  const drafts = record.drafts ?? [];
+  if (drafts.some((found) => found.draftId === draft.draftId)) return record;
+  if (drafts.some((found) => found.program === draft.program && found.closedAt === undefined)) {
+    return record;
+  }
+  return {
+    ...record,
+    drafts: [...drafts, { ...draft, createdAt: at }].slice(-MAX_LINE_PARKED),
+    updatedAt: at,
+  };
+};
+
+/** One draft changed by `change`. */
+export const withDraft = (
+  record: LineRecord,
+  draftId: string,
+  change: (draft: LineDraft) => LineDraft,
+  at: string,
+): LineRecord => ({
+  ...record,
+  drafts: (record.drafts ?? []).map((draft) => (draft.draftId === draftId ? change(draft) : draft)),
+  updatedAt: at,
+});
+
+/**
+ * Whether a draft still needs the GitHub writer: one to open, or one to close
+ * because its program has since reached a candidate.
+ */
+export const draftNeedsWriter = (record: LineRecord, draft: LineDraft): boolean => {
+  if (draft.closedAt !== undefined) return false;
+  if (draft.pr === undefined) return true;
+  return draftShippedBy(record, draft) !== undefined;
+};
+
+/** The candidate, cut after the draft, that ships its program: the draft is then closed. */
+export const draftShippedBy = (record: LineRecord, draft: LineDraft): LineCandidate | undefined =>
+  (record.candidates ?? []).find(
+    (candidate) =>
+      candidate.createdAt >= draft.createdAt &&
+      candidate.programs.some((entry) => entry.program === draft.program),
+  );
