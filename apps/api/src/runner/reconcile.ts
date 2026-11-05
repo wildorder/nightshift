@@ -282,6 +282,23 @@ export const reconcileCandidates = async (deps: ReconcileDeps, count: Counter): 
 export const noteWorkNotShipped = async (deps: ReconcileDeps, count: Counter): Promise<void> => {
   const { stores, clock } = deps.provision;
   const at = () => new Date(clock.now()).toISOString();
+  // A line first seen here starts its drafts now: what came before is history.
+  const lines = await stores.lines.listAll();
+  const since = new Map<string, string>();
+  for (const record of lines) {
+    const key = `${record.projectId}\u0000${record.branch}`;
+    if (record.draftsFrom !== undefined) {
+      since.set(key, record.draftsFrom);
+      continue;
+    }
+    const now = at();
+    await stores.lines.update(record.projectId as ProjectId, record.branch, (current) =>
+      current === undefined || current.draftsFrom !== undefined
+        ? undefined
+        : { ...current, draftsFrom: now },
+    );
+    since.set(key, now);
+  }
   for (const dispatch of await stores.dispatches.listByStatus(ALL_STATUSES)) {
     try {
       if (!lineQueueOwed(dispatch)) continue;
@@ -295,6 +312,8 @@ export const noteWorkNotShipped = async (deps: ReconcileDeps, count: Counter): P
       const program = await stores.programContracts.get(scope.projectId, scope.programId);
       const branch = program?.line?.branch;
       if (branch === undefined) continue;
+      const from = since.get(`${scope.projectId}\u0000${branch}`);
+      if (from === undefined || (run.endedAt ?? run.startedAt) < from) continue;
       const record = await stores.lines.get(scope.projectId, branch);
       const noted = (record?.drafts ?? []).some(
         (d) =>
@@ -322,10 +341,12 @@ export const noteWorkNotShipped = async (deps: ReconcileDeps, count: Counter): P
       console.error(`reconciler: not shipped ${dispatch.runId}:`, error);
     }
   }
-  for (const record of await stores.lines.listAll()) {
+  for (const record of lines) {
     const main = lineProgramId(record.projectId as ProjectId, record.branch);
+    const from = since.get(`${record.projectId}\u0000${record.branch}`);
+    if (from === undefined) continue;
     for (const parked of record.parked) {
-      if (isRequeued(record, parked.compositionId)) continue;
+      if (isRequeued(record, parked.compositionId) || parked.parkedAt < from) continue;
       for (const range of parked.ranges) {
         if (range.program === main) continue;
         const draftId = `${parked.compositionId}:${range.program}`;

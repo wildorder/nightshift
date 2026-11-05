@@ -493,7 +493,12 @@ describe("reconcile: work that did not ship (P25, D-P25-17)", () => {
       }),
     );
     await w.stores.runs.put(
-      makeRun(f, { status: "failed", location: "remote", outcomeReason: "S-03 could not log in." }),
+      makeRun(f, {
+        status: "failed",
+        location: "remote",
+        outcomeReason: "S-03 could not log in.",
+        endedAt: new Date(START).toISOString(),
+      }),
     );
     const other = f.ids.next("prog");
     await w.stores.lines.update(f.scope.projectId, BRANCH, (row) =>
@@ -501,7 +506,15 @@ describe("reconcile: work that did not ship (P25, D-P25-17)", () => {
         ? undefined
         : {
             ...row,
+            // Drafts are noted from here on: the older parked entry is history.
+            draftsFrom: new Date(START - 60 * 60_000).toISOString(),
             parked: [
+              {
+                compositionId: "b1-p0",
+                ranges: [{ program: f.ids.next("prog"), upTo: FIXTURE_COMMIT }],
+                reason: "an old resolver crash",
+                parkedAt: new Date(START - 2 * 60 * 60_000).toISOString(),
+              },
               {
                 compositionId: "b9-p0",
                 ranges: [{ program: other, upTo: FIXTURE_COMMIT }],

@@ -412,6 +412,11 @@ const LineRecordShape = z.strictObject({
   candidates: z.array(LineCandidateSchema).optional(),
   /** Work that did not ship, each a draft pull request, newest `MAX_LINE_PARKED` kept (D-P25-17). */
   drafts: z.array(LineDraftSchema).optional(),
+  /**
+   * When the reconciler began noting work that did not ship on this line: what
+   * was parked, or runs that ended, before it are history, not drafts.
+   */
+  draftsFrom: IsoTimestampSchema.optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**
