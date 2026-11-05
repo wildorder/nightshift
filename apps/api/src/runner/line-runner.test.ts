@@ -407,3 +407,75 @@ describe("reconcile: main that moved without the line (P25, D-P25-06)", () => {
     expect((await w.stores.lines.get(f.scope.projectId, BRANCH))?.queue).toEqual([]);
   });
 });
+
+describe("reconcile: sweeping machines no live dispatch owns (2026-11-05)", () => {
+  it("terminates a machine whose run is over, unknown, or moved to another machine, and spares the rest", async () => {
+    const w = await world();
+    const f = createFixtures();
+    await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
+    const liveProgram = f.ids.next("prog");
+    const tagsOf = (runId: string, stage = "dev", programId: string = f.scope.programId) => ({
+      "nightshift:managed": "true",
+      "nightshift-stage": stage,
+      "nightshift-project": f.scope.projectId,
+      "nightshift-program": programId,
+      "nightshift-run": runId,
+    });
+    // A run whose dispatch has stopped, and one whose dispatch is live on i-live.
+    const stopped = f.scope.runId;
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    await w.stores.dispatches.put(
+      makeDispatch(f, { status: "stopped", cleanup: { volumeDeleted: true, failures: [] } }),
+    );
+    const liveRun = f.ids.next("run");
+    await w.stores.runs.put(
+      makeRun(f, { programId: liveProgram, runId: liveRun, status: "pending", location: "remote" }),
+    );
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        programId: liveProgram,
+        runId: liveRun,
+        status: "running",
+        instanceId: "i-live",
+      }),
+    );
+    const old = new Date(START - 60 * 60_000).toISOString();
+    const fresh = new Date(START - 60_000).toISOString();
+    w.compute.listManaged = async () => [
+      { instanceId: "i-stopped", state: "running", launchedAt: old, tags: tagsOf(stopped) },
+      {
+        instanceId: "i-unknown",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(f.ids.next("run")),
+      },
+      {
+        instanceId: "i-replaced",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(liveRun, "dev", liveProgram),
+      },
+      {
+        instanceId: "i-live",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(liveRun, "dev", liveProgram),
+      },
+      {
+        instanceId: "i-launching",
+        state: "pending",
+        launchedAt: fresh,
+        tags: tagsOf(f.ids.next("run")),
+      },
+      {
+        instanceId: "i-other-stage",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(stopped, "prod"),
+      },
+    ];
+    const counts = await w.reconcile();
+    expect([...w.compute.terminated].sort()).toEqual(["i-replaced", "i-stopped", "i-unknown"]);
+    expect(counts["sweep:terminated"]).toBe(3);
+  });
+});

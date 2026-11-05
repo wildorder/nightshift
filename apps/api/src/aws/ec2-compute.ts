@@ -22,6 +22,7 @@ import type {
   FirstTokenStore,
   InstanceDescription,
   LaunchRequest,
+  ManagedInstance,
 } from "@nightshift/core";
 
 export interface Ec2ComputeOptions {
@@ -135,6 +136,41 @@ export const createEc2Compute = (options: Ec2ComputeOptions): ComputeControl => 
       await ec2.send(
         new AttachVolumeCommand({ VolumeId: volumeId, InstanceId: instanceId, Device: device }),
       );
+    },
+    listManaged: async () => {
+      const found: ManagedInstance[] = [];
+      let token: string | undefined;
+      do {
+        const page = await ec2.send(
+          new DescribeInstancesCommand({
+            Filters: [
+              { Name: "tag:nightshift:managed", Values: ["true"] },
+              {
+                Name: "instance-state-name",
+                Values: ["pending", "running", "stopping", "stopped"],
+              },
+            ],
+            ...(token === undefined ? {} : { NextToken: token }),
+          }),
+        );
+        for (const reservation of page.Reservations ?? []) {
+          for (const instance of reservation.Instances ?? []) {
+            if (instance.InstanceId === undefined) continue;
+            found.push({
+              instanceId: instance.InstanceId,
+              state: (instance.State?.Name ?? "pending") as InstanceDescription["state"],
+              launchedAt: (instance.LaunchTime ?? new Date(0)).toISOString(),
+              tags: Object.fromEntries(
+                (instance.Tags ?? []).flatMap((tag) =>
+                  tag.Key === undefined || tag.Value === undefined ? [] : [[tag.Key, tag.Value]],
+                ),
+              ),
+            });
+          }
+        }
+        token = page.NextToken;
+      } while (token !== undefined);
+      return found;
     },
     terminate: async (instanceId) => {
       await ec2

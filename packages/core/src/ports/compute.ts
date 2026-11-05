@@ -68,6 +68,15 @@ export interface InstanceDescription {
   readonly workspaceVolumeId?: string;
 }
 
+/** A machine Nightshift launched, as the provider lists it (`nightshift:managed=true`). */
+export interface ManagedInstance {
+  readonly instanceId: string;
+  readonly state: InstanceDescription["state"];
+  /** ISO timestamp. */
+  readonly launchedAt: string;
+  readonly tags: Readonly<Record<string, string>>;
+}
+
 export interface SnapshotDescription {
   readonly snapshotId: string;
   readonly state: "pending" | "completed" | "error";
@@ -91,6 +100,11 @@ export interface ComputeControl {
     readonly device: string;
   }): Promise<void>;
   terminate(instanceId: string): Promise<void>;
+  /**
+   * Every machine Nightshift launched that is not yet terminated, across runs
+   * (the reconciler's sweep). Optional: a provider without it is never swept.
+   */
+  listManaged?(): Promise<readonly ManagedInstance[]>;
   snapshot(input: {
     readonly volumeId: string;
     readonly tags: Readonly<Record<string, string>>;
