@@ -126,6 +126,56 @@ export const reconcileLinesWithWork = async (
   }
 };
 
+/** How long a machine may run before its dispatch names it: a launch being recorded. */
+export const SWEEP_GRACE_MS = 15 * 60_000;
+
+/**
+ * Machines no live dispatch owns (2026-11-05: two machines of an interrupted
+ * line run ran idle for four days): every machine of this stage Nightshift
+ * launched, older than `SWEEP_GRACE_MS`, is terminated when its run's dispatch
+ * is unknown, has ended (stopped or failed), or names another machine. Each is
+ * logged with why, so the sweep is never silent.
+ */
+export const sweepMachines = async (deps: ReconcileDeps, count: Counter): Promise<void> => {
+  const { compute, stores, clock, stage } = deps.provision;
+  if (compute.listManaged === undefined) return;
+  for (const machine of await compute.listManaged()) {
+    try {
+      const tags = machine.tags;
+      if (tags["nightshift-stage"] !== stage) continue;
+      if (clock.now() - Date.parse(machine.launchedAt) < SWEEP_GRACE_MS) continue;
+      const projectId = tags["nightshift-project"];
+      const programId = tags["nightshift-program"];
+      const runId = tags["nightshift-run"];
+      const dispatch =
+        projectId === undefined || programId === undefined || runId === undefined
+          ? undefined
+          : await stores.dispatches.get({
+              projectId: projectId as never,
+              programId: programId as never,
+              runId: runId as never,
+            });
+      const why =
+        dispatch === undefined
+          ? "no dispatch owns it"
+          : dispatch.status === "stopped" || dispatch.status === "failed"
+            ? `its run's dispatch is ${dispatch.status}`
+            : dispatch.instanceId !== undefined && dispatch.instanceId !== machine.instanceId
+              ? `its run's dispatch is on ${dispatch.instanceId} now`
+              : undefined;
+      if (why === undefined) continue;
+      console.warn(
+        `reconciler: terminating ${machine.instanceId} (${runId ?? "no run"}, launched ${machine.launchedAt}): ${why}`,
+      );
+      await compute.terminate(machine.instanceId);
+      count("sweep:terminated");
+    } catch (error) {
+      count("error");
+      console.error(`reconciler: sweeping ${machine.instanceId}:`, error);
+    }
+  }
+};
+
 /** A program of the project that names the line's branch: the line program is made from it. */
 const namingProgramOf = async (
   stores: Pick<ProvisionDeps["stores"], "programContracts">,
@@ -152,6 +202,8 @@ export const reconcile = async (deps: ReconcileDeps): Promise<Record<string, num
     counts[key] = (counts[key] ?? 0) + 1;
   };
   await reconcileRuns(deps, count);
+  // A machine no live dispatch owns is terminated before anything else is started.
+  await sweepMachines(deps, count);
   await reconcileLinesWithWork(deps, count);
   return counts;
 };
