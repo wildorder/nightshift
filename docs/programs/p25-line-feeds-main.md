@@ -10,7 +10,7 @@
 | Status | **Ratified 2026-11-04** (all of §3.2); building |
 | Built by | An agent **in a coding session**, not a Nightshift run (the owner, 2026-10-15; reaffirmed 2026-11-04) |
 | Depends on | P22 (evidence names its inputs, A-65), P23 (the project line, A-66), P24 (the line owner is a run, A-67), P10 (the publisher and the GitHub App) |
-| Blocking decisions | D-P25-01 … D-P25-15, proposed in §3.2 from the owner's answers in §3.1 |
+| Blocking decisions | D-P25-01 … D-P25-18 (16 to 18 amended in on 2026-11-05) |
 
 This contract is the stable authority for P25. The implementation plan may be
 revised continuously; this contract may not be revised to make an implementation
@@ -108,6 +108,9 @@ machine image is needed because the line owner changes.
 | D-P25-13 | **The Studio line page.** The project's line shows the current candidate: what it ships ("This deploy includes: …"), its state in words ("Ready", "Checking", "Updating: main changed, Nightshift is re-checking", "Needs an engineer: …" with the reason), the **Deploy** button when ready, and the history of candidates and deploys. | Q7. The deploy unit is the line, not one feature, so the page must say everything it ships. |
 | D-P25-14 | **Program pull requests stop for line projects.** Nothing opens them today, so the change is in words: the run report's "for the morning", the run-program skill and the README say the program "joins the line and ships in the next candidate", and the CLI's `line status` shows the candidate. Projects without a line are unchanged. | Q1. Two roads to main is the defect. |
 | D-P25-15 | **Built in a coding session, verified by the repository's gates, proven live on foodfly.** The live proof: two real programs with a deliberate conflict succeed; both join the line; the conflict is repaired once; a candidate qualifies and opens one PR; a hand commit to main makes it stale; the line repairs, supersedes and re-qualifies; the owner presses Deploy in the Studio (H-P25-04). | P24's own exit trial (two programs, a conflict) was never run; this one covers it. |
+| D-P25-16 | **A pull request per program** (amends D-P25-09 and D-P25-11; the owner, 2026-11-05: "i want to come back to a PR ready to review"). When the line is idle, every undeployed program without a live candidate gets its own candidate at the line's head, titled with that program; all candidates at one commit share one full verification. A newer candidate supersedes only older candidates *of the same program*. A program's pull request says at the top which other programs it also ships because they are not deployed yet, with links to their pull requests. Deploying one marks every candidate cut at or before it deployed, as included, and closes their pull requests with a link to the merged one. | The owner reviews in GitHub, one program at a time. The line is one queue, so a later program's commit holds the earlier ones; saying so, and closing what a merge included, keeps that honest. |
+| D-P25-17 | **Work that did not ship gets a draft pull request** (the owner, 2026-11-05). A run of a line program that ends `failed`, `cancelled` or `interrupted` with work on GitHub, and a program whose range the line parked, each get a draft pull request from the program's branch to main, titled "Not shipped: <program>", saying what landed, what did not and why, and pointing at `nightshift line ship`, `nightshift resume` and `nightshift line requeue`. It is closed with a link when that work later reaches a candidate. Never merged by Nightshift. | Today that work sits silently on a branch: "i think work is getting lost". A draft is visible where the owner already looks, and cannot be mistaken for something ready. |
+| D-P25-18 | **The Studio is the status board, GitHub is where review happens.** The line panel lists each undeployed program with its pull request and state, and the not-shipped drafts, linking to GitHub. | "how else will i see what has landed on the line?" |
 
 ### Non-guarantees
 
@@ -263,6 +266,7 @@ T4 → T5 → T6 → T7 are in dependency order; T2 and T3 can be built beside T
 | 2026-11-04 | The owner merges candidates; candidates are cut automatically; partial work only by the owner's word | Owner |
 | 2026-11-04 | The Studio Deploy button is part of P25 | Owner |
 | 2026-11-04 | D-P25-01 … D-P25-15 ratified as drafted; Pull requests permission granted | Owner |
+| 2026-11-05 | D-P25-16 … D-P25-18: a pull request per program, draft pull requests for work that did not ship, the Studio as status board | Owner |
 
 ## 13. As built
 
