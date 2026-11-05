@@ -867,9 +867,19 @@ export const publishCandidates = async (
                   { projectId, programId: linePrograms, runId: candidate.runId },
                   candidate.verificationId,
                 );
+          // Only the repairs since this work joined the line, not the line's whole history.
+          const joined = (record.undeployed ?? [])
+            .filter((entry) =>
+              candidate.programs.some((shipped) => shipped.program === entry.program),
+            )
+            .map((entry) => entry.at)
+            .sort()[0];
           const repairs = (record.compositions ?? [])
             .filter(
-              (composition) => composition.repair !== undefined && composition.pushed !== undefined,
+              (composition) =>
+                composition.repair !== undefined &&
+                composition.pushed !== undefined &&
+                composition.pushed.at >= (joined ?? candidate.createdAt),
             )
             .map((composition) => ({
               commit: composition.commit,

@@ -177,7 +177,10 @@ export const sweepMachines = async (deps: ReconcileDeps, count: Counter): Promis
         dispatch === undefined
           ? "no dispatch owns it"
           : dispatch.status === "stopped" || dispatch.status === "failed"
-            ? `its run's dispatch is ${dispatch.status}`
+            ? // A machine that has just reported its end gets time to shut down by itself.
+              clock.now() - Date.parse(dispatch.updatedAt) < SWEEP_GRACE_MS
+              ? undefined
+              : `its run's dispatch has been ${dispatch.status} since ${dispatch.updatedAt}`
             : dispatch.instanceId !== undefined && dispatch.instanceId !== machine.instanceId
               ? `its run's dispatch is on ${dispatch.instanceId} now`
               : undefined;

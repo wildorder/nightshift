@@ -439,9 +439,30 @@ describe("reconcile: sweeping machines no live dispatch owns (2026-11-05)", () =
         instanceId: "i-live",
       }),
     );
+    // A run that stopped a moment ago: its machine gets time to shut down by itself.
+    const justProgram = f.ids.next("prog");
+    const justRun = f.ids.next("run");
+    await w.stores.runs.put(
+      makeRun(f, { programId: justProgram, runId: justRun, status: "pending", location: "remote" }),
+    );
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        programId: justProgram,
+        runId: justRun,
+        status: "stopped",
+        cleanup: { volumeDeleted: true, failures: [] },
+        updatedAt: new Date(START - 60_000).toISOString(),
+      }),
+    );
     const old = new Date(START - 60 * 60_000).toISOString();
     const fresh = new Date(START - 60_000).toISOString();
     w.compute.listManaged = async () => [
+      {
+        instanceId: "i-just-stopped",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(justRun, "dev", justProgram),
+      },
       { instanceId: "i-stopped", state: "running", launchedAt: old, tags: tagsOf(stopped) },
       {
         instanceId: "i-unknown",
