@@ -356,7 +356,11 @@ describe("the project page", () => {
                     kind: "run" as const,
                     program: f.ids.next("prog"),
                     reason: "The run ended failed: S-03 could not log in.",
-                    pr: { number: 13, url: "https://github.com/example/keyart/pull/13", branch: "program/other" },
+                    pr: {
+                      number: 13,
+                      url: "https://github.com/example/keyart/pull/13",
+                      branch: "program/other",
+                    },
                     createdAt: "2026-09-27T12:00:00.000Z",
                   },
                 ],
