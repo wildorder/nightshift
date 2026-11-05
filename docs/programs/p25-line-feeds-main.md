@@ -337,6 +337,14 @@ done; T9 (deploy and the live proof) waits on the owner (H-P25-03, H-P25-04).
   execution and parallel suites that remove worktrees). The runner image's git
   is newer; upgrading Git for Windows makes the full suite meaningful here.
 
+- **A line run's machines outlived it.** foodfly's line run
+  `run_01M6AADSRMN8BYGCENZ6N42SF6` ended `interrupted` on 2026-11-01 after a
+  generation-2 launch; its two c8id.2xlarge machines (i-0242ff0549db32fdf,
+  i-02ee750e293a3794a) kept running, idle, until terminated by hand on
+  2026-11-05: about 100 hours each, roughly $89. Nothing tied them to a live
+  dispatch, so the reconciler never stopped them. A sweep that terminates any
+  Nightshift-tagged machine whose run is over or unknown is proposed.
+
 ### For the owner's trial (SC-P25-13)
 
 1. `aws sso login --profile nightshift`, then deploy the API and runner stacks
