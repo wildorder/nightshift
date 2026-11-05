@@ -9,6 +9,7 @@
  * compare-and-swap `update`. The line run's heartbeat is a run's own
  * (`dispatch.ts`).
  */
+
 import { createHash } from "node:crypto";
 import {
   calendarMonthOf,
@@ -35,6 +36,7 @@ import {
   type LineShipResponse,
   type LineView,
   LineViewSchema,
+  lineOfProgram,
   MAX_INLINE_PAYLOAD_BYTES,
   MAX_LINE_SETTLED_ENTRIES_PER_EVENT,
   type Principal,
@@ -715,7 +717,7 @@ export const postLineShip: Handler = async (context) => {
   const body = parseBody(LineShipBodySchema, request.body);
   await requireLine(deps, target);
   const program = await deps.stores.programContracts.get(target.projectId, body.program);
-  if (program?.line?.branch !== target.branch) {
+  if (program === undefined || lineOfProgram(program)?.branch !== target.branch) {
     throw new HttpError(
       409,
       "conflict",

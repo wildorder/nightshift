@@ -13,3 +13,21 @@ export const LineConfigSchema = z.strictObject({
   monthlyUsd: z.number().positive().optional(),
 });
 export type LineConfig = z.infer<typeof LineConfigSchema>;
+
+/** The branch every project's line lives on unless its config names another (P25, D-P25-19). */
+export const DEFAULT_LINE_BRANCH = "nightshift/develop";
+
+/**
+ * The `line` setting in `nightshift.config.json`: a line, or `false` to have
+ * none. Absent means the default line (D-P25-19).
+ */
+export const ConfigLineSchema = z.union([LineConfigSchema, z.literal(false)]);
+export type ConfigLine = z.infer<typeof ConfigLineSchema>;
+
+/**
+ * The line a project's config gives it (D-P25-19): the line it names, none for
+ * `false`, and `nightshift/develop` when it says nothing. Every project gets a
+ * line unless it opts out; nobody has to set one up.
+ */
+export const lineOfConfig = (line: ConfigLine | undefined): LineConfig | undefined =>
+  line === false ? undefined : (line ?? { branch: DEFAULT_LINE_BRANCH });

@@ -938,7 +938,10 @@ describe("run transitions (T2)", () => {
     await pendingRun(w);
     const listed = await call(w, "GET", `${paths(w.a).project}/programs`);
     expect(listed.status).toBe(200);
-    expect((listed.body as { items: unknown[] }).items).toEqual([makeProgramContract(w.a)]);
+    // Every project gets its line program beside its plans (P25, D-P25-19).
+    const items = (listed.body as { items: { kind?: string }[] }).items;
+    expect(items.filter((item) => item.kind !== "line")).toEqual([makeProgramContract(w.a)]);
+    expect(items.filter((item) => item.kind === "line")).toHaveLength(1);
   });
 });
 

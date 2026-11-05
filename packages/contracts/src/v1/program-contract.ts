@@ -15,7 +15,7 @@ import {
   RiskLevelSchema,
 } from "./common.js";
 import { ComputeChoiceSchema } from "./compute.js";
-import { LineConfigSchema } from "./line-config.js";
+import { ConfigLineSchema, type LineConfig, lineOfConfig } from "./line-config.js";
 import {
   MAX_RATIFICATION_HISTORY,
   PlanDocumentRefSchema,
@@ -364,8 +364,13 @@ export const ProgramContractSchema = z
      * recommendation, else `good`.
      */
     compute: ComputeChoiceSchema.optional(),
-    /** The project line this program's landed work is composed onto; inherited from `nightshift.config.json`. Absent means off. */
-    line: LineConfigSchema.optional(),
+    /**
+     * The project line this program's landed work is composed onto; inherited
+     * from `nightshift.config.json`. Absent means the default line,
+     * `nightshift/develop`; `false` means none (P25, D-P25-19). Read it with
+     * `lineOfProgram`, never directly.
+     */
+    line: ConfigLineSchema.optional(),
     /** Set only by the control plane, on a project's line program; a client may not send it. */
     kind: z.literal("line").optional(),
     createdAt: IsoTimestampSchema,
@@ -455,3 +460,11 @@ export const ProgramContractSchema = z
     },
   );
 export type ProgramContract = z.infer<typeof ProgramContractSchema>;
+
+/**
+ * The line a program's work goes to (P25, D-P25-19): the one it names, none
+ * for `false`, and the default line when it says nothing, so no project has
+ * to set one up. A line program's own contract always names its line.
+ */
+export const lineOfProgram = (contract: Pick<ProgramContract, "line">): LineConfig | undefined =>
+  lineOfConfig(contract.line);

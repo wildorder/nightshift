@@ -32,7 +32,14 @@ import {
   VerificationOutcomeSchema,
 } from "./verification.js";
 
-export { type LineConfig, LineConfigSchema } from "./line-config.js";
+export {
+  type ConfigLine,
+  ConfigLineSchema,
+  DEFAULT_LINE_BRANCH,
+  type LineConfig,
+  LineConfigSchema,
+  lineOfConfig,
+} from "./line-config.js";
 
 /** A line's branch is a project's key into its line, so it is the whole of the line's identity beside the project. */
 export const LineBranchSchema = z.string().min(1);

@@ -46,6 +46,7 @@ import {
   type LineRepairRef,
   LineSettledPayloadSchema,
   lifecycleObservationsOf,
+  lineOfProgram,
   type MeasurementSummary,
   type Prerequisite,
   type ProgramContract,
@@ -1482,7 +1483,7 @@ const gatherLine = async (
   repairs: readonly RepairReport[],
   events: readonly Event[],
 ): Promise<LineRunReport> => {
-  const branch = program.line?.branch ?? "";
+  const branch = lineOfProgram(program)?.branch ?? "";
   const record = await stores.lines.get(scope.projectId, branch);
   const union = <T extends { readonly compositionId: string }>(
     fromEvents: readonly T[],

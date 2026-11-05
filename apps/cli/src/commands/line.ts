@@ -14,6 +14,7 @@ import {
   LineShipResponseSchema,
   type LineView,
   LineViewSchema,
+  lineOfConfig,
   type ProgramContract,
   type ProgramId,
   type Run,
@@ -35,7 +36,7 @@ export interface LineRequeueOptions extends LineOptions {
 
 /** What `line status` says, and exits 1 on, for a project whose config has no `line`. */
 export const NO_LINE_CONFIGURED =
-  'this project has no line configured: add a `line` setting with the branch to nightshift.config.json (for example "line": { "branch": "nightshift/develop" })';
+  'this project has no line: its nightshift.config.json says "line": false. Remove that to give it the default line, nightshift/develop';
 
 const short = (sha: string): string => sha.slice(0, 7);
 
@@ -204,7 +205,8 @@ export const lineStatus = async (
     environment.err(`no nightshift.config.json in ${repoPath}`);
     return 1;
   }
-  if (config.line === undefined) {
+  const lineConfig = lineOfConfig(config.line);
+  if (lineConfig === undefined) {
     environment.out(NO_LINE_CONFIGURED);
     return 1;
   }
@@ -212,7 +214,7 @@ export const lineStatus = async (
   const view = LineViewSchema.parse(
     await send(session.transport, {
       method: "GET",
-      path: routes.line(config.projectId, config.line.branch),
+      path: routes.line(config.projectId, lineConfig.branch),
     }),
   );
   const program = { projectId: config.projectId, programId: view.programId };
@@ -277,7 +279,8 @@ export const lineRequeue = async (
     environment.err(`no nightshift.config.json in ${repoPath}`);
     return 1;
   }
-  if (config.line === undefined) {
+  const lineConfig = lineOfConfig(config.line);
+  if (lineConfig === undefined) {
     environment.out(NO_LINE_CONFIGURED);
     return 1;
   }
@@ -293,7 +296,7 @@ export const lineRequeue = async (
   const answer = LineRequeueResponseSchema.parse(
     await send(session.transport, {
       method: "POST",
-      path: routes.lineRequeue(config.projectId, config.line.branch),
+      path: routes.lineRequeue(config.projectId, lineConfig.branch),
       body: program === undefined ? {} : { program },
     }),
   );
@@ -338,7 +341,8 @@ export const lineShip = async (
     environment.err(`no nightshift.config.json in ${repoPath}`);
     return 1;
   }
-  if (config.line === undefined) {
+  const lineConfig = lineOfConfig(config.line);
+  if (lineConfig === undefined) {
     environment.out(NO_LINE_CONFIGURED);
     return 1;
   }
@@ -397,7 +401,7 @@ export const lineShip = async (
   const answer = LineShipResponseSchema.parse(
     await send(session.transport, {
       method: "POST",
-      path: routes.lineShip(config.projectId, config.line.branch),
+      path: routes.lineShip(config.projectId, lineConfig.branch),
       body: { program, runId: run.runId },
     }),
   );

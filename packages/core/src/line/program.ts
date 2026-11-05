@@ -7,6 +7,7 @@
  */
 import {
   type LineConfig,
+  lineOfProgram,
   type ProgramContract,
   type ProgramId,
   ProgramIdSchema,
@@ -93,7 +94,7 @@ export const ensureLineProgram = async (
     readonly createdAt: string;
   },
 ): Promise<ProgramContract> => {
-  const line = input.naming.line;
+  const line = lineOfProgram(input.naming);
   if (line === undefined) throw new Error("ensureLineProgram: the naming program has no line");
   const programId = lineProgramId(input.projectId, line.branch);
   const stored = await stores.programContracts.get(input.projectId, programId);

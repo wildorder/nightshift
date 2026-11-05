@@ -3,7 +3,9 @@
  * M1b): its monthly cap, and the `waiting` a line records when the plane
  * cannot start its owner.
  */
+
 import type { LineWaitingReason, ProgramContract, ProjectId } from "@nightshift/contracts";
+import { lineOfProgram } from "@nightshift/contracts";
 import {
   type Clock,
   DEFAULT_LINE_MONTHLY_USD,
@@ -29,8 +31,9 @@ export const lineCapUsd = async (
       cursor === undefined ? {} : { cursor },
     );
     for (const contract of page.items) {
-      if (contract.line?.branch === branch && contract.line.monthlyUsd !== undefined) {
-        caps.push(contract.line.monthlyUsd);
+      const line = lineOfProgram(contract);
+      if (line?.branch === branch && line.monthlyUsd !== undefined) {
+        caps.push(line.monthlyUsd);
       }
     }
     cursor = page.cursor;

@@ -111,6 +111,7 @@ machine image is needed because the line owner changes.
 | D-P25-16 | **Reversed the same day (the owner, 2026-11-05).** A pull request per program was built and taken back out before it was deployed: "i just needed SOME pr to be created so i knew what was finished and could be deployed". The line keeps one candidate, and one pull request, for everything main lacks; that pull request lists each program with a link to its branch. A merge marks every candidate cut at or before the merged one deployed, which is kept. | One queue means one pull request matches what a merge actually deploys; per-program pull requests would each ship the ones before them. |
 | D-P25-17 | **Work that did not ship gets a draft pull request** (the owner, 2026-11-05). A run of a line program that ends `failed`, `cancelled` or `interrupted` with work on GitHub, and a program whose range the line parked, each get a draft pull request from the program's branch to main, titled "Not shipped: <program>", saying what landed, what did not and why, and pointing at `nightshift line ship`, `nightshift resume` and `nightshift line requeue`. It is closed with a link when that work later reaches a candidate. Never merged by Nightshift. | Today that work sits silently on a branch: "i think work is getting lost". A draft is visible where the owner already looks, and cannot be mistaken for something ready. |
 | D-P25-18 | **The Studio is the status board, GitHub is where review happens.** The line panel lists each undeployed program with its pull request and state, and the not-shipped drafts, linking to GitHub. | "how else will i see what has landed on the line?" |
+| D-P25-19 | **Every project has a line unless it says no** (the owner, 2026-11-05: "why doesn't nightshift create the line when it doesn't exist?"). A program that names no line goes to the default line, `nightshift/develop`; `"line": false` in `nightshift.config.json` (inherited into the plan) opts out. The default is read by the plane (`lineOfProgram`), never written into a plan, so ratified plans keep their fingerprint and programs planned before this get the line too. The plane already creates the line's branch and program on the first work that reaches it. | foodfly-driver's run at 16:51 ended with its work on its branch and no pull request of any kind, because nobody had set its line up. |
 
 ### Non-guarantees
 
@@ -268,6 +269,7 @@ T4 → T5 → T6 → T7 are in dependency order; T2 and T3 can be built beside T
 | 2026-11-04 | D-P25-01 … D-P25-15 ratified as drafted; Pull requests permission granted | Owner |
 | 2026-11-05 | D-P25-16 … D-P25-18: a pull request per program, draft pull requests for work that did not ship, the Studio as status board | Owner |
 | 2026-11-05 | D-P25-16 reversed before deploy: one pull request for everything main lacks, as it was; D-P25-17 and 18 kept | Owner |
+| 2026-11-05 | D-P25-19: every project has a line unless its config says false | Owner |
 
 ## 13. As built
 

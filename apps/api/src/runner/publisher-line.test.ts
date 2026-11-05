@@ -154,7 +154,8 @@ const world = async (
         baseBranch: "main",
         programBranch: "program/fixture",
       },
-      ...(options.line === false ? {} : { line: { branch: LINE } }),
+      // A project opts out of the default line with false (P25, D-P25-19).
+      line: options.line === false ? false : { branch: LINE },
     }),
   );
   await stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));

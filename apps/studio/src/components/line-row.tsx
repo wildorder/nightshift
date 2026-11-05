@@ -3,14 +3,15 @@
  * it parked, and its live run. The line is a run of its own program, so the row
  * links to runs, never to a plan.
  */
-import type {
-  LineCandidate,
-  LineParked,
-  LineRange,
-  LineRecord,
-  ProgramContract,
-  ProjectId,
-  Run,
+import {
+  type LineCandidate,
+  type LineParked,
+  type LineRange,
+  type LineRecord,
+  lineOfProgram,
+  type ProgramContract,
+  type ProjectId,
+  type Run,
 } from "@nightshift/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight } from "lucide-react";
@@ -236,7 +237,7 @@ export const LineRow = ({
   readonly now: number;
 }) => {
   const { stores } = useStudio();
-  const branch = program.line?.branch;
+  const branch = lineOfProgram(program)?.branch;
   const [all, setAll] = useState(false);
   const line = useQuery({
     queryKey: ["line", projectId, branch],

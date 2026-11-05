@@ -4,8 +4,10 @@
  * See `plans.ts` for why the control plane hashes and checks what it holds
  * rather than what it was told.
  */
+
 import { createHash } from "node:crypto";
 import {
+  lineOfProgram,
   MAX_RATIFICATION_HISTORY,
   type Prerequisite,
   type ProgramContract,
@@ -155,7 +157,7 @@ export const ensureLineProgramFor = async (
   deps: ApiDeps,
   contract: ProgramContract,
 ): Promise<void> => {
-  if (contract.line === undefined || contract.kind === "line") return;
+  if (lineOfProgram(contract) === undefined || contract.kind === "line") return;
   await ensureLineProgram(deps.stores, {
     projectId: contract.projectId,
     naming: contract,

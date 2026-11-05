@@ -304,7 +304,8 @@ describe("programs and runs", () => {
       program,
     );
     const listed = await world.http.programContracts.listByProject(project.projectId);
-    expect(listed.items).toEqual([program]);
+    // Every project gets its line program beside its plans (P25, D-P25-19).
+    expect(listed.items.filter((item) => item.kind !== "line")).toEqual([program]);
   });
 
   it("round trips a run, moves it through the table, and lists a program's runs", async () => {

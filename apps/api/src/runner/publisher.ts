@@ -22,6 +22,7 @@
  * lock row for the run, resolves every pending intent, releases, and looks
  * once more, so an intent recorded while it held the lock is not left behind.
  */
+
 import type {
   CandidateId,
   Dispatch,
@@ -33,6 +34,7 @@ import type {
   PublicationIntent,
   Verification,
 } from "@nightshift/contracts";
+import { lineOfProgram } from "@nightshift/contracts";
 import {
   appendQueueEntry,
   blocksPublication,
@@ -230,7 +232,7 @@ const targetOf = async (deps: PublisherDeps, scope: RunScope) => {
 
 /** A published resolution, plus the line's claim on the range when the program feeds one. */
 const owing = (next: Dispatch, program: ProgramContract): Dispatch =>
-  program.line === undefined
+  lineOfProgram(program) === undefined
     ? next
     : { ...next, publication: { ...next.publication, lineOwed: true } };
 
@@ -471,7 +473,7 @@ const lineRefHead = async (
   scope: RunScope,
   program: ProgramContract,
 ): Promise<string | undefined> => {
-  const branch = program.line?.branch;
+  const branch = lineOfProgram(program)?.branch;
   const target = await targetOf(deps, scope);
   if (branch === undefined || target === undefined) return undefined;
   const { token } = await deps.github.writeToken(
@@ -500,11 +502,12 @@ const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promi
     const upTo = dispatch.publication.head;
     if (upTo === undefined) return;
     const program = await deps.stores.programContracts.get(scope.projectId, scope.programId);
-    if (program?.line === undefined) return;
+    const line = program === undefined ? undefined : lineOfProgram(program);
+    if (program === undefined || line === undefined) return;
     // A program joins the line whole, once its run has succeeded (P25, D-P25-01):
     // until then the obligation stands, and the reconciler asks again.
     if (!runJoinsLine(await deps.stores.runs.get(scope, scope.runId))) return;
-    const { branch } = program.line;
+    const { branch } = line;
     const at = nowIso(deps.clock);
     // A line is created by its first range, with one look at where its ref stands.
     const existing = await deps.stores.lines.get(scope.projectId, branch);
@@ -1168,7 +1171,7 @@ const firstNamingProgram = async (
       cursor === undefined ? {} : { cursor },
     );
     const found = page.items.find(
-      (program) => program.line?.branch === branch && program.kind !== "line",
+      (program) => lineOfProgram(program)?.branch === branch && program.kind !== "line",
     );
     if (found !== undefined) return found;
     cursor = page.cursor;

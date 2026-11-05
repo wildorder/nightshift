@@ -13,7 +13,7 @@ import {
   LineViewSchema,
   TakeLineBatchBodySchema,
 } from "./line.js";
-import { ProgramContractSchema } from "./program-contract.js";
+import { lineOfProgram, ProgramContractSchema } from "./program-contract.js";
 
 const PROJECT = "proj_01J0000000000000000000000A";
 const PROGRAM = "prog_01J0000000000000000000000A";
@@ -91,7 +91,21 @@ describe("the line setting", () => {
     });
     const stated = inheritFromConfig({ line: { branch: "other" } }, on) as Record<string, unknown>;
     expect(stated.line).toEqual({ branch: "other" });
+    // A plan states only what its config says; the default is read, never written (D-P25-19).
     expect("line" in (inheritFromConfig({ objective: "x" }, base) as object)).toBe(false);
+    const off = NightshiftConfigSchema.parse({ ...base, line: false });
+    expect((inheritFromConfig({ objective: "x" }, off) as Record<string, unknown>).line).toBe(
+      false,
+    );
+  });
+
+  it("gives every program the default line unless it says false (P25, D-P25-19)", () => {
+    expect(lineOfProgram({})).toEqual({ branch: "nightshift/develop" });
+    expect(lineOfProgram({ line: { branch: "other", monthlyUsd: 9 } })).toEqual({
+      branch: "other",
+      monthlyUsd: 9,
+    });
+    expect(lineOfProgram({ line: false })).toBeUndefined();
   });
 
   it("leaves a contract without it parsing exactly as before, and carries it when stated", () => {

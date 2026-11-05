@@ -275,7 +275,7 @@ describe("describeLine", () => {
 });
 
 describe("nightshift line status", () => {
-  it("says the project has no line and exits 1", async () => {
+  it("says the project has no line, when its config turns it off, and exits 1", async () => {
     const created = await createTestEnvironment();
     live.push(created);
     await writeFile(
@@ -288,10 +288,11 @@ describe("nightshift line status", () => {
         modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
         delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
         costPolicy: {},
+        line: false,
       }),
     );
     expect(await lineStatus(created.environment, {})).toBe(1);
     expect(created.out.join("\n")).toBe(NO_LINE_CONFIGURED);
-    expect(NO_LINE_CONFIGURED).toContain("`line`");
+    expect(NO_LINE_CONFIGURED).toContain("nightshift/develop");
   });
 });

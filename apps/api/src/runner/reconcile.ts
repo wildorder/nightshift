@@ -14,8 +14,9 @@
  * the rest. Lines with work and no live run have one started again (`startLineRun`),
  * which restores a start that was lost or a month that rolled over.
  */
+
 import type { LineRecord, ProgramContract, ProjectId } from "@nightshift/contracts";
-import { DispatchStatusSchema } from "@nightshift/contracts";
+import { DispatchStatusSchema, lineOfProgram } from "@nightshift/contracts";
 import {
   candidateNeedsWriter,
   draftNeedsWriter,
@@ -313,7 +314,7 @@ export const noteWorkNotShipped = async (deps: ReconcileDeps, count: Counter): P
       const run = await stores.runs.get(scope, scope.runId);
       if (run === undefined || !isRunTerminal(run.status) || run.status === "succeeded") continue;
       const program = await stores.programContracts.get(scope.projectId, scope.programId);
-      const branch = program?.line?.branch;
+      const branch = program === undefined ? undefined : lineOfProgram(program)?.branch;
       if (branch === undefined) continue;
       const from = since.get(`${scope.projectId}\u0000${branch}`);
       if (from === undefined || (run.endedAt ?? run.startedAt) < from) continue;
@@ -396,7 +397,7 @@ const namingProgramOf = async (
       cursor === undefined ? {} : { cursor },
     );
     const found = page.items.find(
-      (contract) => contract.kind !== "line" && contract.line?.branch === line.branch,
+      (contract) => contract.kind !== "line" && lineOfProgram(contract)?.branch === line.branch,
     );
     if (found !== undefined) return found;
     cursor = page.cursor;
