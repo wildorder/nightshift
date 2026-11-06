@@ -308,6 +308,16 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
     expect((await provisionDispatch(done.deps(), done.f.scope)).kind).toBe("skipped");
   });
 
+  it("launches on the newest older image while the configured one is still building, and records that version (2026-11-06)", async () => {
+    const w = await world();
+    w.compute.image = undefined;
+    w.compute.previousImage = async (version) =>
+      version === "1.0.5" ? { imageId: "ami-older", version: "1.0.4" } : undefined;
+    expect((await provisionDispatch(w.deps(), w.f.scope)).kind).not.toBe("failed");
+    expect(w.compute.launches.at(-1)?.imageId).toBe("ami-older");
+    expect((await w.stores.dispatches.get(w.f.scope))?.amiVersion).toBe("1.0.4");
+  });
+
   it("spreads runs across subnets and always picks the same one for a run", () => {
     const f = createFixtures();
     const ids = Array.from({ length: 20 }, () => f.ids.next("run"));
