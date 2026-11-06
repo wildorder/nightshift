@@ -211,7 +211,12 @@ const ownLine = async (
     ]);
     if (cloned.exitCode !== 0) throw new Error(`clone: ${cloned.stderr.trim()}`);
   }
+  // Main is the branch the project's programs start from and merge into, as the
+  // line's program records it, not GitHub's default (2026-11-06: foodfly-driver's
+  // default `main` is an empty first commit; its programs work on `dev`).
   const mainBranch = await (async (): Promise<string> => {
+    const based = context.program.repository.baseBranch;
+    if (based !== "") return based;
     const named = await machine.exec("git", [
       "-C",
       layout.mirror,
