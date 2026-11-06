@@ -564,3 +564,33 @@ describe("reconcile: work that did not ship (P25, D-P25-17)", () => {
     expect(again["not-shipped:parked"]).toBeUndefined();
   });
 });
+
+describe("reconcile: a run whose machine ended before it started (2026-11-06)", () => {
+  it("interrupts a pending program run with the machine's reason, so resume can start it", async () => {
+    const w = await world();
+    const f = createFixtures();
+    await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
+    await w.stores.programContracts.put(makeProgramContract(f));
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        status: "failed",
+        cleanup: { volumeDeleted: true, failures: [] },
+        failure: {
+          code: "setup_failed",
+          message: "the workspace could not be prepared: a branch is used by a worktree",
+        },
+      }),
+    );
+    const counts = await w.reconcile();
+    expect(counts["run:never-started"]).toBe(1);
+    const run = await w.stores.runs.get(f.scope, f.scope.runId);
+    expect(run?.status).toBe("interrupted");
+    expect(run?.outcomeReason).toContain(
+      "The run never started: the workspace could not be prepared",
+    );
+    expect(run?.outcomeReason).toContain("nightshift resume");
+    const again = await w.reconcile();
+    expect(again["run:never-started"]).toBeUndefined();
+  });
+});

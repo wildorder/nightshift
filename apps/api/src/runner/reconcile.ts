@@ -34,7 +34,7 @@ import {
 } from "@nightshift/core";
 import type { ApiDeps } from "../http.js";
 import { cleanupStopped, enforceStop } from "./cleanup.js";
-import { followLineRun } from "./line-lifecycle.js";
+import { followLineRun, followUnstartedRun } from "./line-lifecycle.js";
 import { startLineRun } from "./line-run.js";
 import { type ProvisionDeps, provisionDispatch } from "./provision.js";
 import { recoverLostLease } from "./recover.js";
@@ -96,6 +96,7 @@ export const reconcileRuns = async (deps: ReconcileDeps, count: Counter): Promis
           count(`cleanup:${await cleanupStopped(cleanup, dispatch)}`);
         // A line run has no engine to end it: the plane ends it with its dispatch.
         await followLineRun(stores, clock, dispatch);
+        if (await followUnstartedRun(stores, clock, dispatch)) count("run:never-started");
       }
       // A push that failed for a passing reason is retried, the last landing of
       // a run is never left waiting for a next one that will not come, and a
