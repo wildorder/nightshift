@@ -91,6 +91,16 @@ export interface SnapshotDescription {
 export interface ComputeControl {
   /** The newest available image carrying the version tag. */
   latestImage(imageVersion: string, architecture: ComputeArchitecture): Promise<string | undefined>;
+  /**
+   * The newest available image of a version older than `imageVersion` (by
+   * dotted number), with its version: what a machine launches on while the
+   * configured version's image is still being built, so a deploy has no
+   * downtime (2026-11-06). Optional: without it, a launch waits for the image.
+   */
+  previousImage?(
+    imageVersion: string,
+    architecture: ComputeArchitecture,
+  ): Promise<{ readonly imageId: string; readonly version: string } | undefined>;
   launch(request: LaunchRequest): Promise<{ readonly instanceId: string }>;
   describe(instanceId: string): Promise<InstanceDescription | undefined>;
   /** A replacement's volume onto its machine, at the workspace device (T6). */
