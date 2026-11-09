@@ -358,6 +358,11 @@ export const explainRun = async (context: SliceContext, scope: RunScope): Promis
       `${node.executionNodeId} ${node.kind} ${node.status}${node.outcomeReason === undefined ? "" : `: ${node.outcomeReason}`}`,
   );
   const said: string[] = [];
+  // What a node still running last did: which call it is stuck in.
+  const running = new Set(
+    nodes.filter((node) => node.status === "running").map((node) => node.executionNodeId),
+  );
+  const trails = new Map<string, string[]>();
   let cursor: string | undefined;
   do {
     const page = await context.stores.events.listByRun(
@@ -368,8 +373,20 @@ export const explainRun = async (context: SliceContext, scope: RunScope): Promis
       const stderr = (event.payload as { stderr?: unknown } | undefined)?.stderr;
       if (typeof stderr === "string")
         said.push(`${event.executionNodeId} ${event.type}: ${stderr}`);
+      const nodeId = event.executionNodeId;
+      if (nodeId !== null && nodeId !== undefined && running.has(nodeId)) {
+        const payload = JSON.stringify(event.payload ?? {}).slice(0, 160);
+        const trail = [
+          ...(trails.get(nodeId) ?? []),
+          `${event.occurredAt} ${event.type} ${payload}`,
+        ];
+        trails.set(nodeId, trail.slice(-12));
+      }
     }
     cursor = page.cursor;
   } while (cursor !== undefined);
-  return `${scope.runId}'s nodes:\n${lines.join("\n")}\nworkers' stderr:\n${said.join("\n")}`;
+  const last = [...trails].map(
+    ([nodeId, trail]) => `${nodeId}, still running, last did:\n  ${trail.join("\n  ")}`,
+  );
+  return `${scope.runId}'s nodes:\n${lines.join("\n")}\nworkers' stderr:\n${said.join("\n")}\n${last.join("\n")}`;
 };
