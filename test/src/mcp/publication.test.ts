@@ -446,8 +446,12 @@ describe("run.finish of a planned run publishes its documents (D-03)", () => {
     expect(await at("plan.md")).toBe(PLAN);
     expect(await at("conversation.md")).toBe(CONVERSATION);
     expect(await at("report.md")).toContain("stopped by the test");
-    // Nothing is left untracked in the checkout.
-    expect((await run(world, ["status", "--porcelain"])).trim()).toBe("");
+    // Nothing is left untracked in the checkout, as the operator's git sees it.
+    const status = await git(nodeGitRunner, ["status", "--porcelain"], {
+      cwd: world.repo,
+      operatorCheckout: true,
+    });
+    expect(status.trim()).toBe("");
 
     expect(machine.origin).toEqual([after]);
     expect(machine.dispatch().publication.intents.map((i) => i.head)).toEqual([after]);

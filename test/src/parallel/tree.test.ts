@@ -29,7 +29,7 @@ import { git, nodeGitRunner } from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createLocalContext,
-  explainOnFailure,
+  explainRun,
   type Orchestrator,
   type SliceContext,
   type Structured,
@@ -40,8 +40,15 @@ import { PROGRAM_BRANCH } from "../slice/fixture-repo.js";
 
 let context: SliceContext | undefined;
 let mcp: Orchestrator | undefined;
+/** Every run a test made, to explain if it fails. */
+const explained: (() => Promise<string>)[] = [];
 
-afterEach(async () => {
+afterEach(async ({ task }) => {
+  // Before anything closes: a timed-out run is still there to read.
+  const runs = explained.splice(0);
+  if (task.result?.state === "fail" || (task.result?.errors?.length ?? 0) > 0) {
+    for (const explain of runs) console.error(await explain().catch(String));
+  }
   await mcp?.close().catch(() => {});
   mcp = undefined;
   await context?.close().catch(() => {});
@@ -63,7 +70,7 @@ const begin = async (limits: { maxDepth: number; maxConcurrency: number }) => {
     programId: ctx.program.programId,
     runId: String(started.runId) as never,
   };
-  explainOnFailure(ctx, scope);
+  explained.push(() => explainRun(ctx, scope));
   const delegate = async (objective: string, extra: Record<string, unknown> = {}) => {
     const result = await driver.call("delegate", {
       objective,

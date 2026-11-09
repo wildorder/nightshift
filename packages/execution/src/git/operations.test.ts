@@ -486,8 +486,10 @@ describe("sealing, integrating and checkpointing", () => {
 
     expect(merged.ok).toBe(true);
     expect(await revParse(nodeGitRunner, repo, PROGRAM_BRANCH)).toBe(sha);
-    // The operator's working tree moved with the branch, and only that way.
-    expect(await readFile(join(repo, "src", "a.ts"), "utf8")).toBe("verified\n");
+    // The operator's working tree moved with the branch, and only that way: in
+    // their line endings, which on a Windows runner are `\r\n`.
+    const moved = await readFile(join(repo, "src", "a.ts"), "utf8");
+    expect(moved.replace(/\r\n/g, "\n")).toBe("verified\n");
     expect(await isDirty(nodeGitRunner, repo)).toBe(false);
 
     await updateRef(nodeGitRunner, repo, checkpointRef("ckpt_1"), sha);
