@@ -316,8 +316,13 @@ export const createScriptedHarness = (options: ScriptedHarnessOptions): Harness 
       });
 
       const exit = new Promise<HarnessExit>((resolve) => {
-        const settle = (outcome: HarnessExit): void => {
+        const settle = (given: HarnessExit): void => {
           if (state.settled !== undefined) return;
+          // A failure carries the child's stderr, as the real adapters' do.
+          const outcome: HarnessExit =
+            given.kind === "failed" && stderr.trim() !== ""
+              ? { ...given, detail: stderr.trim().slice(-500) }
+              : given;
           // A cancel in flight wins: the process stopped because we asked.
           const final = state.cancelling ? ({ kind: "cancelled" } as const) : outcome;
           state.settled = final;

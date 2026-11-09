@@ -15,6 +15,7 @@ import { git, nodeGitRunner } from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createLocalContext,
+  explainRun,
   type Orchestrator,
   type SliceContext,
   startOrchestrator,
@@ -25,8 +26,15 @@ const DELAY_MS = Number(process.env.NIGHTSHIFT_BENCHMARK_DELAY_MS ?? "400");
 
 let context: SliceContext | undefined;
 let mcp: Orchestrator | undefined;
+/** Every run a test made, to explain if it fails. */
+const explained: (() => Promise<string>)[] = [];
 
-afterEach(async () => {
+afterEach(async ({ task }) => {
+  // Before anything closes: a timed-out run is still there to read.
+  const runs = explained.splice(0);
+  if (task.result?.state === "fail" || (task.result?.errors?.length ?? 0) > 0) {
+    for (const explain of runs) console.error(await explain().catch(String));
+  }
   await mcp?.close().catch(() => {});
   await context?.close().catch(() => {});
   mcp = undefined;
@@ -47,6 +55,7 @@ const runTree = async (maxConcurrency: number) => {
     programId: ctx.program.programId,
     runId: String(started.runId) as never,
   };
+  explained.push(() => explainRun(ctx, scope));
 
   const beganAt = Date.now();
   const jobs: string[] = [];

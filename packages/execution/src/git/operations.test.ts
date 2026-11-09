@@ -114,6 +114,29 @@ describe("the working tree", () => {
     expect(await isDirty(nodeGitRunner, repo)).toBe(true);
   });
 
+  it("reads and moves the operator's checkout under their line endings, not Nightshift's", async () => {
+    const { repo } = await repository();
+    // The operator's git converts on checkout: the default on Windows.
+    const theirs = (args: readonly string[]) =>
+      git(nodeGitRunner, args, { cwd: repo, operatorCheckout: true });
+    await theirs(["config", "core.autocrlf", "true"]);
+    await rm(join(repo, "README.md"));
+    await theirs(["checkout", "--", "README.md"]);
+    expect(await readFile(join(repo, "README.md"), "utf8")).toBe("# fixture\r\n");
+    expect(await isDirty(nodeGitRunner, repo)).toBe(false);
+
+    // A commit Nightshift made elsewhere, fast-forwarded in: written as their
+    // git would write it, and still clean.
+    const worktree = join(repo, "..", "elsewhere");
+    await git(nodeGitRunner, ["worktree", "add", "--detach", worktree, "HEAD"], { cwd: repo });
+    await writeFile(join(worktree, "README.md"), "# fixture, changed\n", "utf8");
+    await git(nodeGitRunner, ["commit", "-qam", "change"], { cwd: worktree, atMs: AT });
+    const sha = await revParse(nodeGitRunner, worktree, "HEAD");
+    expect((await fastForward(nodeGitRunner, repo, sha, AT)).ok).toBe(true);
+    expect(await readFile(join(repo, "README.md"), "utf8")).toBe("# fixture, changed\r\n");
+    expect(await isDirty(nodeGitRunner, repo)).toBe(false);
+  });
+
   it("does not count an ignored file as dirty", async () => {
     const { repo } = await repository();
     await mkdir(join(repo, "ignored"), { recursive: true });
@@ -463,8 +486,10 @@ describe("sealing, integrating and checkpointing", () => {
 
     expect(merged.ok).toBe(true);
     expect(await revParse(nodeGitRunner, repo, PROGRAM_BRANCH)).toBe(sha);
-    // The operator's working tree moved with the branch, and only that way.
-    expect(await readFile(join(repo, "src", "a.ts"), "utf8")).toBe("verified\n");
+    // The operator's working tree moved with the branch, and only that way: in
+    // their line endings, which on a Windows runner are `\r\n`.
+    const moved = await readFile(join(repo, "src", "a.ts"), "utf8");
+    expect(moved.replace(/\r\n/g, "\n")).toBe("verified\n");
     expect(await isDirty(nodeGitRunner, repo)).toBe(false);
 
     await updateRef(nodeGitRunner, repo, checkpointRef("ckpt_1"), sha);

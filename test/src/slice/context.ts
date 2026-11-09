@@ -343,3 +343,33 @@ export const waitFor = async <T>(
 };
 
 export { spawn };
+
+/**
+ * What every node of a run did, and what each worker said on stderr as it
+ * ended: for a test's `afterEach` to print when it failed, timeouts included,
+ * before the control plane closes. A tree test that only says "timed out"
+ * leaves the next person to guess which of five processes stopped and why (the
+ * Windows runner, 2026-10 and 11).
+ */
+export const explainRun = async (context: SliceContext, scope: RunScope): Promise<string> => {
+  const nodes = (await context.stores.executionNodes.listByRun(scope)).items;
+  const lines = nodes.map(
+    (node) =>
+      `${node.executionNodeId} ${node.kind} ${node.status}${node.outcomeReason === undefined ? "" : `: ${node.outcomeReason}`}`,
+  );
+  const said: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await context.stores.events.listByRun(
+      scope,
+      cursor === undefined ? {} : { cursor },
+    );
+    for (const event of page.items) {
+      const stderr = (event.payload as { stderr?: unknown } | undefined)?.stderr;
+      if (typeof stderr === "string")
+        said.push(`${event.executionNodeId} ${event.type}: ${stderr}`);
+    }
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return `${scope.runId}'s nodes:\n${lines.join("\n")}\nworkers' stderr:\n${said.join("\n")}`;
+};

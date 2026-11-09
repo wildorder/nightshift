@@ -247,8 +247,12 @@ describe("a planned program, from a plan on disk to a landed program, through th
       `${PROGRAM_BRANCH}..refs/nightshift/provisional/${runId}`,
     );
     for (const name of ["a1", "a2", "b1", "b2", "c1", "c2"]) expect(provisional).toContain(name);
-    // S-02 depends on S-01, and was built on S-01's provisional work.
-    expect(provisional.indexOf("b1")).toBeLessThan(provisional.indexOf("a1"));
+    // S-02 depends on S-01, and was built on S-01's provisional work. By the
+    // workers' own subjects: a merge's subject carries shas, and "a1" is hex.
+    const subjects = provisional.split("\n");
+    const built = (name: string) => subjects.indexOf(`Added the ${name} module and its test.`);
+    expect(built("a1")).toBeGreaterThanOrEqual(0);
+    expect(built("b1")).toBeLessThan(built("a1"));
 
     const reportPath = join(fixture.repo, "docs", "programs", PROGRAM, "report.md");
     const deferredReport = await readFile(reportPath, "utf8");
