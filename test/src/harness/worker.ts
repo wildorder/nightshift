@@ -74,6 +74,17 @@ const connect = async (launch: McpLaunch): Promise<Worker> => {
     call: async (name, args = {}) => {
       frame({ hook: "tool.called", payload: { tool: name } });
       const result = (await client.callTool({ name, arguments: args })) as CallToolResult;
+      // A refusal carries its structured reply; an error with none is the
+      // tool failing outright, and its words are all there is. Answering `{}`
+      // hid it: `waitAll` read no jobs and asked again, forever (the Windows
+      // runner, 2026-11).
+      if (result.structuredContent === undefined && result.isError === true) {
+        const said = result.content
+          .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
+          .join("\n");
+        frame({ hook: "tool.completed", payload: { tool: name, ok: false } });
+        throw new Error(`${name} failed: ${said || "no words"}`);
+      }
       const structured = (result.structuredContent ?? {}) as Record<string, unknown>;
       frame({
         hook: "tool.completed",
@@ -258,6 +269,7 @@ main()
     process.exit(code);
   })
   .catch((error: unknown) => {
-    note(error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error));
+    // The message last: what is kept of stderr is its tail.
+    note(error instanceof Error ? `${error.stack ?? ""}\n${error.message}` : String(error));
     process.exit(1);
   });
