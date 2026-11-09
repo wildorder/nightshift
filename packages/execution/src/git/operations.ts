@@ -70,12 +70,16 @@ export const currentBranch = async (runner: GitRunner, repo: string): Promise<st
  * a fast-forward over an untracked file that the incoming commit also adds fails
  * halfway, which is the worst of both outcomes.
  */
-export const isDirty = async (
+/**
+ * What `git status` shows that is the operator's: every line but Nightshift's
+ * own untracked report. Named, so a refusal can say what it saw.
+ */
+export const uncommittedPaths = async (
   runner: GitRunner,
   repo: string,
   /** The contract's `programsDirectory`, where the report is written; `docs/programs` when absent. */
   programsDirectory: string = DEFAULT_PROGRAMS_DIRECTORY,
-): Promise<boolean> => {
+): Promise<string[]> => {
   const report = nightshiftReport(programsDirectory);
   // Every untracked file by name: by default git folds a new directory into one
   // line (`?? docs/`), which would hide what is in it.
@@ -83,8 +87,14 @@ export const isDirty = async (
     await git(runner, ["status", "--porcelain", "--untracked-files=all"], { cwd: repo }),
   )
     .split("\n")
-    .some((line) => line.trim() !== "" && !report.test(line.trimEnd()));
+    .filter((line) => line.trim() !== "" && !report.test(line.trimEnd()));
 };
+
+export const isDirty = async (
+  runner: GitRunner,
+  repo: string,
+  programsDirectory: string = DEFAULT_PROGRAMS_DIRECTORY,
+): Promise<boolean> => (await uncommittedPaths(runner, repo, programsDirectory)).length > 0;
 
 /**
  * `nightshift run` writes `{programsDirectory}/{id}/report.md` into the checkout (P7,

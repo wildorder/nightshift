@@ -570,7 +570,9 @@ export const describeExit = (exit: HarnessExit): string => {
     case "completed":
       return "the worker process completed";
     case "failed":
-      return `the worker process exited ${exit.exitCode}`;
+      // The adapter's own words, when it has them (2026-10-28): a bare exit
+      // code cannot tell a missing program from a failing one.
+      return `the worker process exited ${exit.exitCode}${exit.detail === undefined ? "" : `: ${exit.detail.slice(-400)}`}`;
     case "interrupted":
       return `the worker process was killed by ${exit.signal}`;
     case "cancelled":

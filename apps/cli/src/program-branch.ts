@@ -16,12 +16,19 @@ import {
   currentBranch,
   fastForward,
   type GitRunner,
-  isDirty,
   tryGit,
   tryRevParse,
+  uncommittedPaths,
   updateRef,
 } from "@nightshift/execution";
 import { UsageError } from "./failures.js";
+
+/** Up to five of what `git status` shows, for a refusal that names what it saw. */
+const named = (paths: readonly string[]): string =>
+  `${paths
+    .slice(0, 5)
+    .map((path) => path.trim())
+    .join(", ")}${paths.length > 5 ? `, and ${paths.length - 5} more` : ""}`;
 
 export interface PublishOptions {
   /** False to refuse rather than push, as `--no-push` asks. */
@@ -152,9 +159,10 @@ export const followOrigin = async (
     );
   }
   if ((await currentBranch(runner, repo).catch(() => undefined)) === branch) {
-    if (await isDirty(runner, repo)) {
+    const uncommitted = await uncommittedPaths(runner, repo);
+    if (uncommitted.length > 0) {
       throw new UsageError(
-        `${branch} is checked out in ${repo} with uncommitted changes, and origin is ahead at ${short(origin)}`,
+        `${branch} is checked out in ${repo} with uncommitted changes (${named(uncommitted)}), and origin is ahead at ${short(origin)}`,
         `Commit or stash them, then run it again: ${branch} must take origin's work first.`,
       );
     }
@@ -260,9 +268,10 @@ export const checkOutProgramBranch = async (
   branch: string,
 ): Promise<void> => {
   if ((await currentBranch(runner, repo)) === branch) return;
-  if (await isDirty(runner, repo)) {
+  const uncommitted = await uncommittedPaths(runner, repo);
+  if (uncommitted.length > 0) {
     throw new UsageError(
-      `the working tree in ${repo} has uncommitted changes, so ${branch} cannot be checked out`,
+      `the working tree in ${repo} has uncommitted changes (${named(uncommitted)}), so ${branch} cannot be checked out`,
       `Commit or stash them, or \`git switch ${branch}\` yourself, then run it again.`,
     );
   }
