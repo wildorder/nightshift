@@ -778,7 +778,10 @@ describe("a range that conflicts", () => {
     expect(agents.filter((agent) => agent.role === "orchestrator")).toHaveLength(1);
     expect(decisions.every((decision) => decision.agentId === agents[0]?.agentId)).toBe(true);
     expect((await stores.checkpoints.listByRun(f.scope)).items).toHaveLength(1);
-  });
+    // Three real repair jobs over real git: 2-3 s on Linux, 15-22 s on the
+    // Windows runner, where every process spawn costs more (main's Windows leg,
+    // 2026-10-29 to 11-03). The default 20 s is a hang detector, not its cost.
+  }, 60_000);
 });
 
 describe("idling and stopping", () => {

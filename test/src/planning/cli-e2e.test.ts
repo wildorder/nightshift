@@ -8,7 +8,7 @@
  * server it starts, the engine and merge queue, the verification runner, git.
  * Scripted: the models.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -359,7 +359,16 @@ describe("a remote run whose final documents never left its machine (P21, F-01)"
       expect(file.startsWith(`docs/programs/${PROGRAM}/`), file).toBe(true);
     }
     git("push", "-q", "origin", `${work}:refs/heads/${PROGRAM_BRANCH}`);
-    git("reset", "-q", "--hard", base);
+    // DIAGNOSTIC (temporary, 2026-11-09): what reset leaves behind on Windows.
+    const resetRun = spawnSync("git", ["reset", "--hard", base], { cwd: fixture.repo, encoding: "utf8" });
+    const diagnostic = [
+      `reset exit ${resetRun.status} stderr: ${resetRun.stderr}`,
+      `status: ${git("status", "--porcelain", "--untracked-files=all")}`,
+      `autocrlf: ${spawnSync("git", ["config", "--get", "core.autocrlf"], { cwd: fixture.repo, encoding: "utf8" }).stdout}`,
+      `eol: ${spawnSync("git", ["ls-files", "--eol", "docs"], { cwd: fixture.repo, encoding: "utf8" }).stdout}`,
+      `diff: ${spawnSync("git", ["diff", "--stat", "--", "docs"], { cwd: fixture.repo, encoding: "utf8" }).stdout}`,
+      `diff head: ${spawnSync("git", ["diff", "--", "docs"], { cwd: fixture.repo, encoding: "utf8" }).stdout.slice(0, 1500)}`,
+    ].join("\n");
     const scope = { ...ratifiedIds, runId } as never;
     const recorded = await op.stores.runs.get(scope, runId as never);
     if (recorded === undefined) throw new Error("the run is not recorded");
@@ -372,7 +381,7 @@ describe("a remote run whose final documents never left its machine (P21, F-01)"
 
     const resumed = await cli("resume", PROGRAM);
     const said = `${op.out.join("\n")}\n${op.err.join("\n")}`;
-    expect(resumed, said).toBe(0);
+    expect(resumed, `${said}\n--- DIAGNOSTIC\n${diagnostic}`).toBe(0);
     expect(said).not.toContain("nothing to resume");
 
     // GitHub now has the documents, in one commit on top of its landings that
