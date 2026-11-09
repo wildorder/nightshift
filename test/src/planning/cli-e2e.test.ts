@@ -8,7 +8,7 @@
  * server it starts, the engine and merge queue, the verification runner, git.
  * Scripted: the models.
  */
-import { execFileSync, spawnSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -360,7 +360,10 @@ describe("a remote run whose final documents never left its machine (P21, F-01)"
     }
     git("push", "-q", "origin", `${work}:refs/heads/${PROGRAM_BRANCH}`);
     // DIAGNOSTIC (temporary, 2026-11-09): what reset leaves behind on Windows.
-    const resetRun = spawnSync("git", ["reset", "--hard", base], { cwd: fixture.repo, encoding: "utf8" });
+    const resetRun = spawnSync("git", ["reset", "--hard", base], {
+      cwd: fixture.repo,
+      encoding: "utf8",
+    });
     const diagnostic = [
       `reset exit ${resetRun.status} stderr: ${resetRun.stderr}`,
       `status: ${git("status", "--porcelain", "--untracked-files=all")}`,
