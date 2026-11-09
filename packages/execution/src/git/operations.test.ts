@@ -114,6 +114,29 @@ describe("the working tree", () => {
     expect(await isDirty(nodeGitRunner, repo)).toBe(true);
   });
 
+  it("reads and moves the operator's checkout under their line endings, not Nightshift's", async () => {
+    const { repo } = await repository();
+    // The operator's git converts on checkout: the default on Windows.
+    const theirs = (args: readonly string[]) =>
+      git(nodeGitRunner, args, { cwd: repo, operatorCheckout: true });
+    await theirs(["config", "core.autocrlf", "true"]);
+    await rm(join(repo, "README.md"));
+    await theirs(["checkout", "--", "README.md"]);
+    expect(await readFile(join(repo, "README.md"), "utf8")).toBe("# fixture\r\n");
+    expect(await isDirty(nodeGitRunner, repo)).toBe(false);
+
+    // A commit Nightshift made elsewhere, fast-forwarded in: written as their
+    // git would write it, and still clean.
+    const worktree = join(repo, "..", "elsewhere");
+    await git(nodeGitRunner, ["worktree", "add", "--detach", worktree, "HEAD"], { cwd: repo });
+    await writeFile(join(worktree, "README.md"), "# fixture, changed\n", "utf8");
+    await git(nodeGitRunner, ["commit", "-qam", "change"], { cwd: worktree, atMs: AT });
+    const sha = await revParse(nodeGitRunner, worktree, "HEAD");
+    expect((await fastForward(nodeGitRunner, repo, sha, AT)).ok).toBe(true);
+    expect(await readFile(join(repo, "README.md"), "utf8")).toBe("# fixture, changed\r\n");
+    expect(await isDirty(nodeGitRunner, repo)).toBe(false);
+  });
+
   it("does not count an ignored file as dirty", async () => {
     const { repo } = await repository();
     await mkdir(join(repo, "ignored"), { recursive: true });

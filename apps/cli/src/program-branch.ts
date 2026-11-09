@@ -275,7 +275,7 @@ export const checkOutProgramBranch = async (
       `Commit or stash them, or \`git switch ${branch}\` yourself, then run it again.`,
     );
   }
-  const switched = await tryGit(runner, ["switch", branch], { cwd: repo });
+  const switched = await tryGit(runner, ["switch", branch], { cwd: repo, operatorCheckout: true });
   if (switched.exitCode !== 0) {
     throw new UsageError(
       `could not check out ${branch}: ${switched.stderr.trim() || `git switch exited ${switched.exitCode}`}`,

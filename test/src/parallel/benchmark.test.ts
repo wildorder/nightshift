@@ -15,6 +15,7 @@ import { git, nodeGitRunner } from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createLocalContext,
+  explainOnFailure,
   type Orchestrator,
   type SliceContext,
   startOrchestrator,
@@ -47,6 +48,7 @@ const runTree = async (maxConcurrency: number) => {
     programId: ctx.program.programId,
     runId: String(started.runId) as never,
   };
+  explainOnFailure(ctx, scope);
 
   const beganAt = Date.now();
   const jobs: string[] = [];

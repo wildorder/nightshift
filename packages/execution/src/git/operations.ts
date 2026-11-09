@@ -64,15 +64,13 @@ export const currentBranch = async (runner: GitRunner, repo: string): Promise<st
   trimmed(await git(runner, ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo }));
 
 /**
- * Whether the working tree has uncommitted changes.
+ * What `git status` shows in the operator's checkout that is theirs: every line
+ * but Nightshift's own untracked report. Named, so a refusal can say what it saw.
  *
  * Untracked files count. Integration fast-forwards the operator's checkout, and
  * a fast-forward over an untracked file that the incoming commit also adds fails
- * halfway, which is the worst of both outcomes.
- */
-/**
- * What `git status` shows that is the operator's: every line but Nightshift's
- * own untracked report. Named, so a refusal can say what it saw.
+ * halfway, which is the worst of both outcomes. Read under the operator's line
+ * endings (`operatorCheckout`), or a file their `git` wrote as `\r\n` counts.
  */
 export const uncommittedPaths = async (
   runner: GitRunner,
@@ -84,7 +82,10 @@ export const uncommittedPaths = async (
   // Every untracked file by name: by default git folds a new directory into one
   // line (`?? docs/`), which would hide what is in it.
   return trimmed(
-    await git(runner, ["status", "--porcelain", "--untracked-files=all"], { cwd: repo }),
+    await git(runner, ["status", "--porcelain", "--untracked-files=all"], {
+      cwd: repo,
+      operatorCheckout: true,
+    }),
   )
     .split("\n")
     .filter((line) => line.trim() !== "" && !report.test(line.trimEnd()));
@@ -392,7 +393,9 @@ export interface FastForwardResult {
 }
 
 /**
- * Fast-forwards the checked-out branch onto `sha`.
+ * Fast-forwards the operator's checked-out branch onto `sha`, writing its
+ * working tree under their line endings (`operatorCheckout`), as their own
+ * `git` would.
  *
  * `--ff-only` is the whole guarantee: a program branch that has moved since the
  * worktree was cut cannot be merged, and the caller turns that into a durable
@@ -408,7 +411,11 @@ export const fastForward = async (
   sha: CommitSha,
   atMs: number,
 ): Promise<FastForwardResult> => {
-  const result = await tryGit(runner, ["merge", "--ff-only", sha], { cwd: repo, atMs });
+  const result = await tryGit(runner, ["merge", "--ff-only", sha], {
+    cwd: repo,
+    atMs,
+    operatorCheckout: true,
+  });
   return result.exitCode === 0
     ? { ok: true, detail: trimmed(result.stdout) }
     : { ok: false, detail: trimmed(result.stderr) || trimmed(result.stdout) };

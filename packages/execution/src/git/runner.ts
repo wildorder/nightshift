@@ -27,6 +27,13 @@ export interface GitOptions {
   readonly cwd: string;
   /** Epoch milliseconds stamped as both author and committer date, where relevant. */
   readonly atMs?: number;
+  /**
+   * The command acts on the operator's own checkout, whose working tree their
+   * `git` wrote: it runs under their line-ending settings, not Nightshift's
+   * (see {@link lineEndingOverrides}). Nightshift never commits there; it only
+   * reads its status, fast-forwards it and switches its branch.
+   */
+  readonly operatorCheckout?: boolean;
 }
 
 /** The seam to `git`, so tests can drive the whole layer without a repository. */
@@ -49,6 +56,13 @@ export const identityOverrides = (): readonly string[] => [
   // resolves to the repository root, where there is no `pre-commit` to run.
   "-c",
   "core.hooksPath=",
+];
+
+/**
+ * Prepended to every command in a worktree Nightshift made. Never in the
+ * operator's checkout (`GitOptions.operatorCheckout`).
+ */
+export const lineEndingOverrides = (): readonly string[] => [
   // Line endings are Nightshift's, not the machine's.
   //
   // A-29 says Nightshift owns every commit, and owning a commit means owning
@@ -64,6 +78,12 @@ export const identityOverrides = (): readonly string[] => [
   // declares `text eol=crlf` in `.gitattributes` still gets CRLF, because
   // attributes outrank both of these — so an operator who means it keeps it,
   // and one who never asked gets what they wrote.
+  //
+  // Not in the operator's checkout. Their `git` wrote its working tree under
+  // their settings; read under these, every file it converted to `\r\n` looks
+  // modified, and Nightshift refuses to land onto, or follow origin over,
+  // changes nobody made. Found by CI (2026-11-09): `nightshift resume` refused
+  // over an untouched `contract.json` on the Windows runner.
   "-c",
   "core.autocrlf=false",
   "-c",
@@ -132,7 +152,11 @@ export const nodeGitRunner: GitRunner = (args, options) =>
   new Promise((resolve) => {
     execFile(
       "git",
-      [...identityOverrides(), ...args],
+      [
+        ...identityOverrides(),
+        ...(options.operatorCheckout === true ? [] : lineEndingOverrides()),
+        ...args,
+      ],
       {
         cwd: options.cwd,
         env: gitEnvironment(options.atMs),

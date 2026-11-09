@@ -44,6 +44,7 @@ import {
 } from "@nightshift/persistence/http";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { sanitizeEnvironment } from "@nightshift/verification";
+import { onTestFailed } from "vitest";
 import type { ScriptName } from "../harness/scripted.js";
 import {
   type MaterialisedRepo,
@@ -343,3 +344,34 @@ export const waitFor = async <T>(
 };
 
 export { spawn };
+
+/**
+ * When the test that calls this fails, timeouts included, prints what every
+ * node of the run did and what each worker said on stderr as it ended. A tree
+ * test that only says "timed out" leaves the next person to guess which of five
+ * processes stopped and why (the Windows runner, 2026-10 and 11).
+ */
+export const explainOnFailure = (context: SliceContext, scope: RunScope): void => {
+  onTestFailed(async () => {
+    const nodes = (await context.stores.executionNodes.listByRun(scope)).items;
+    const lines = nodes.map(
+      (node) =>
+        `${node.executionNodeId} ${node.kind} ${node.status}${node.outcomeReason === undefined ? "" : `: ${node.outcomeReason}`}`,
+    );
+    const said: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await context.stores.events.listByRun(
+        scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      for (const event of page.items) {
+        const stderr = (event.payload as { stderr?: unknown } | undefined)?.stderr;
+        if (typeof stderr === "string")
+          said.push(`${event.executionNodeId} ${event.type}: ${stderr}`);
+      }
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    console.error(`the run's nodes:\n${lines.join("\n")}\nworkers' stderr:\n${said.join("\n")}`);
+  });
+};
