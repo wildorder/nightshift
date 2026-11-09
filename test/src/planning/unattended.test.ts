@@ -93,7 +93,6 @@ const prepare = async (
 ) => {
   const ctx = await createLocalContext({
     delegationLimits: { maxDepth: 2, maxConcurrency: 3 },
-    realTime: true,
   });
   context = ctx;
   const criteria = ctx.program.successCriteria.map((criterion) => criterion.id);

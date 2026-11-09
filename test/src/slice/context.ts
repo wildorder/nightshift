@@ -26,7 +26,6 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { type LocalControlPlane, startLocalControlPlane } from "@nightshift/api/testing";
 import type { ProgramContract } from "@nightshift/contracts";
 import {
-  createSteppingClock,
   createUlidIdGenerator,
   type IdGenerator,
   makeMembership,
@@ -132,18 +131,17 @@ export const configuredUrls = (context: SliceContext): readonly string[] =>
 /**
  * The offline pair: the production handler over loopback, in-memory stores with
  * deferred numbering, and a fixture repository in a temporary directory.
+ *
+ * On real time, always. Every run here is real processes holding execution
+ * tokens, and a token lives the program's `maxWallClockSeconds` (900 in the
+ * fixture) by the plane's clock. A stepping clock advances a second per reading,
+ * so a token's life became a count of requests: a first real Codex worker's
+ * `job.complete` was refused as expired, and on the slower Windows runner a
+ * sub-orchestrator that polled its jobs outlived its own token, so
+ * `subprogram.complete` was refused 401 and the tree tests failed or hung
+ * (2026-10 and 11). A local run reads at about 180 a second.
  */
-export interface LocalContextOptions
-  extends Pick<MaterialiseOptions, "modelPolicy" | "delegationLimits"> {
-  /**
-   * Real time rather than the stepping clock. The stepping clock advances a
-   * second per reading, which makes a scripted run's records deterministic and
-   * makes a **real** worker's execution token expire in fake time: a job that
-   * takes minutes reads the clock thousands of times. Found by the first real
-   * Codex worker, whose `job.complete` was refused as expired.
-   */
-  readonly realTime?: boolean;
-}
+export type LocalContextOptions = Pick<MaterialiseOptions, "modelPolicy" | "delegationLimits">;
 
 export const createLocalContext = async (
   options: LocalContextOptions = {},
@@ -155,10 +153,7 @@ export const createLocalContext = async (
   const orgId = ids.next("org");
   await backing.memberships.put(makeMembership(subject as never, orgId));
 
-  const clock =
-    options.realTime === true
-      ? systemClock
-      : createSteppingClock(Date.parse("2026-09-15T12:00:00.000Z"), 1_000);
+  const clock = systemClock;
   const plane: LocalControlPlane = await startLocalControlPlane({
     stores: backing,
     principal: { kind: "user", userId: subject as never, activeOrg: orgId },

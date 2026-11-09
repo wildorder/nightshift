@@ -43,8 +43,6 @@ if (real === "claude" || real === "codex") {
   describeAdapterConformance(`${real}, against the local control plane`, {
     open: () =>
       createLocalContext({
-        // A real worker takes real minutes; see `LocalContextOptions.realTime`.
-        realTime: true,
         modelPolicy: {
           allowedProviders: ["anthropic", "openai"],
           allowedModels: ["claude-sonnet-5", "gpt-5.5"],
