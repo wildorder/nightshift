@@ -1687,7 +1687,7 @@ const renderLandings = (publication: PublicationReport): string[] => {
     `${landings} of this run are not on GitHub's \`${branch}\`. ${state.blocked ?? ""}`.trimEnd(),
     "",
     `GitHub's \`${branch}\` is at \`${state.head?.slice(0, 12) ?? "the run's base"}\`; the run's work ends at \`${state.tip?.slice(0, 12) ?? "?"}\`.`,
-    "Every landing is kept in the run's stored bundles. Once the cause is fixed, `nightshift resume <program>` publishes them in order; no machine is needed.",
+    "Every landing is kept in the run's stored bundles. Once the cause is fixed, `nightshift land <program>` publishes them in order; no machine is needed.",
     "",
     "| Landing | State | Why |",
     "|---|---|---|",
@@ -2078,7 +2078,7 @@ const renderDeferred = (strands: readonly StrandReport[]): string[] => {
     "",
     `1. Do what is pending below${waitingOn.length === 0 ? "" : ` (${waitingOn.join(", ")})`}.`,
     "2. `nightshift preflight <program>` until it passes.",
-    "3. `nightshift resume <program>`: the deferred checks run in order, what passes lands on the",
+    "3. `nightshift land <program>`: the deferred checks run in order, what passes lands on the",
     "   program branch unchanged, and anything built on a check that fails is discarded, saying so.",
     "",
   ];

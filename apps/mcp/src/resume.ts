@@ -1,5 +1,5 @@
 /**
- * `nightshift resume`'s landing, with an examiner (P8, D-P8-14).
+ * `nightshift land`'s landing, with an examiner (P8, D-P8-14).
  *
  * Deferred work whose risk the run's policy says to examine is examined at
  * resume, once its deferred checks pass. The CLI may not construct a harness

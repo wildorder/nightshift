@@ -49,7 +49,7 @@ human's attention there.
 ## 0. Make sure it is Nightshift v1 you are talking to
 
 Run `nightshift --help` once. It must list `plan put`, `plan show`, `plan check`, `plan ratify`,
-`preflight`, `run` and `resume`. If it does not, the `nightshift` on the PATH is
+`preflight`, `run` and `land`. If it does not, the `nightshift` on the PATH is
 an older tool with the same name, and nothing below will work: stop and say so
 (the fix on this machine is `npm link` from the Nightshift repository's
 `apps/cli`), rather than checking anything by hand.
@@ -317,7 +317,7 @@ Both the exit code and the line, or it is a failure like any other; Nightshift
 never guesses. Wrap any step that touches a credential, a network service or an
 account this way, with an `HP-nn` id the plan does not already use. The
 prerequisite is recorded as discovered, every other check runs, and the work
-carries on the provisional line until `nightshift resume`.
+carries on the provisional line until `nightshift land`.
 
 **Hoist first.** Every human step becomes a prerequisite done *before* the run,
 and the program stays whole. Propose **splitting the program in two only when

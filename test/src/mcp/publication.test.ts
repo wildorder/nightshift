@@ -654,7 +654,7 @@ describe("run.finish settles the documentation head like a landing (F-01)", () =
     expect(machine.dispatch().publication.intents).toEqual([]);
   });
 
-  describe("nightshift resume", () => {
+  describe("nightshift land", () => {
     it("has nothing to push locally", async () => {
       const { world } = await plannedWorld(true);
       const mcp = await start(world, undefined);

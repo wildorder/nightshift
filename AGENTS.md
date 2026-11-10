@@ -597,7 +597,7 @@ A-46.
 - **A cost nobody reported or priced is unknown** (`UsageRow.unpriced`), never
   $0.00. Budgets (`spendOf`) count only priced routes; the default price table is
   empty until the org fills it.
-- **`nightshift resume` lands through `apps/mcp`'s `nightshift-resume`** (a
+- **`nightshift land` lands through `apps/mcp`'s `nightshift-resume`** (a
   process, like `nightshift-orchestrate`), because deferred work the run's
   policy says to examine is examined there once its checks pass (D-P8-14) and
   the CLI may not start an agent (A-31). `resumeDeferred` handed an environment
@@ -682,7 +682,7 @@ decisions are A-42, A-43 and A-44.
   lands. A run that ends that way is `run.finish deferred`, recorded as run status
   `interrupted` because P7 was not authorised to touch the run table; the CLI
   exits 3.
-- **`nightshift resume` discards only on a verdict.** It checks the checkout
+- **`nightshift land` discards only on a verdict.** It checks the checkout
   before touching any node (`checkoutBlocked`), and only a check that *ran and
   failed* discards what was built on it; a refused landing leaves the rest
   deferred. There is **no automatic fix job or cone replay** at resume: the fix is

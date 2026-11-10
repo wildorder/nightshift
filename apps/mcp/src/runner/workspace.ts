@@ -282,8 +282,26 @@ const followMirror = async (machine: Machine, checkout: string, current: string)
       .filter((line) => line !== "");
   const locals = await refs("refs/heads/");
   const remotes = new Set(await refs("refs/remotes/origin/"));
+  // A branch a worktree has checked out cannot be moved (2026-11-06: a warm
+  // volume kept a failed strand's worktree from the run before, and preparing
+  // the next run stopped on it).
+  const checkedOut = new Set(
+    (
+      await run(
+        machine,
+        "git",
+        ["-C", checkout, "worktree", "list", "--porcelain"],
+        "list the worktrees",
+      )
+    ).stdout
+      .split("\n")
+      .filter((line) => line.startsWith("branch refs/heads/"))
+      .map((line) => line.slice("branch refs/heads/".length).trim()),
+  );
   for (const branch of locals) {
     if (branch === current || !remotes.has(`origin/${branch}`)) continue;
+    // A run's own branches are the engine's, never the mirror's to move.
+    if (branch.startsWith("nightshift/") || checkedOut.has(branch)) continue;
     await run(
       machine,
       "git",

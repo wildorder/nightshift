@@ -68,6 +68,15 @@ export interface InstanceDescription {
   readonly workspaceVolumeId?: string;
 }
 
+/** A machine Nightshift launched, as the provider lists it (`nightshift:managed=true`). */
+export interface ManagedInstance {
+  readonly instanceId: string;
+  readonly state: InstanceDescription["state"];
+  /** ISO timestamp. */
+  readonly launchedAt: string;
+  readonly tags: Readonly<Record<string, string>>;
+}
+
 export interface SnapshotDescription {
   readonly snapshotId: string;
   readonly state: "pending" | "completed" | "error";
@@ -82,6 +91,16 @@ export interface SnapshotDescription {
 export interface ComputeControl {
   /** The newest available image carrying the version tag. */
   latestImage(imageVersion: string, architecture: ComputeArchitecture): Promise<string | undefined>;
+  /**
+   * The newest available image of a version older than `imageVersion` (by
+   * dotted number), with its version: what a machine launches on while the
+   * configured version's image is still being built, so a deploy has no
+   * downtime (2026-11-06). Optional: without it, a launch waits for the image.
+   */
+  previousImage?(
+    imageVersion: string,
+    architecture: ComputeArchitecture,
+  ): Promise<{ readonly imageId: string; readonly version: string } | undefined>;
   launch(request: LaunchRequest): Promise<{ readonly instanceId: string }>;
   describe(instanceId: string): Promise<InstanceDescription | undefined>;
   /** A replacement's volume onto its machine, at the workspace device (T6). */
@@ -91,6 +110,11 @@ export interface ComputeControl {
     readonly device: string;
   }): Promise<void>;
   terminate(instanceId: string): Promise<void>;
+  /**
+   * Every machine Nightshift launched that is not yet terminated, across runs
+   * (the reconciler's sweep). Optional: a provider without it is never swept.
+   */
+  listManaged?(): Promise<readonly ManagedInstance[]>;
   snapshot(input: {
     readonly volumeId: string;
     readonly tags: Readonly<Record<string, string>>;

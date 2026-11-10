@@ -56,6 +56,7 @@ const FORBIDDEN: readonly Operation[] = [
   "orgConfig.get",
   "orgConfig.put",
   "dispatch.create",
+  "dispatch.pause",
   "dispatch.cancel",
   "dispatch.resume",
   "publication.retry",

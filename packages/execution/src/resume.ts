@@ -1,5 +1,5 @@
 /**
- * `nightshift resume`: the deferred checks, when the human is back (P7, D-P7-10).
+ * `nightshift land`: the deferred checks, when the human is back (P7, D-P7-10).
  *
  * Work whose checks could not all run sits on the run's provisional line, in the
  * order the merge queue put it there. Once preflight says the prerequisites are

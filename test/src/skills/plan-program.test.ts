@@ -96,7 +96,7 @@ describe("the run-program skill", () => {
       "Every **arbiter ruling**, before anything else",
       "nightshift ruling reverse {id} <decisionId>",
       "Every **departure** from the plan's approach",
-      "nightshift resume {id}",
+      "nightshift land {id}",
       "Edit the plan or the contract to get past a refusal",
       "nightshift plan check {id}",
       "makes and pushes the program branch",

@@ -128,7 +128,7 @@ describe("ending a program or sub-program node (D-P6-03)", () => {
       const { c, tree, kids } = subProgram(["integrated", status]);
       const check = mayEndProgramNode(tree, c.executionNodeId);
       // `deferred` (P7, D-P7-10) waits on a human, not on this sitting: whoever
-      // delegated it may end, and `nightshift resume` runs what is left.
+      // delegated it may end, and `nightshift land` runs what is left.
       expect(check.allowed, status).toBe(isSettled(status) || status === "deferred");
       if (!check.allowed) expect(check.unsettled).toEqual([kids[1]?.executionNodeId]);
     }

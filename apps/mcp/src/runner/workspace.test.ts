@@ -385,6 +385,31 @@ describe("prepareWorkspace in the project environment (P16 S-01)", () => {
     expect(resetAt).toBeGreaterThan(fetchAt);
   });
 
+  it("leaves a run's own branches, and any branch a worktree holds, where they are, even when GitHub has them (2026-11-06)", async () => {
+    const machine = fakeMachine({
+      exec: (_file, args) => {
+        const line = args.join(" ");
+        if (line.includes("for-each-ref") && line.endsWith("refs/heads/")) {
+          return ok("main\nprogram/fixture\nrelease/2\nnightshift/run_old/node_old\n");
+        }
+        if (line.includes("for-each-ref") && line.endsWith("refs/remotes/origin/")) {
+          return ok(
+            "origin/main\norigin/program/fixture\norigin/release/2\norigin/nightshift/run_old/node_old\n",
+          );
+        }
+        if (line.includes("worktree list --porcelain")) {
+          return ok(
+            `worktree ${layout.checkout}\nHEAD aaaa\nbranch refs/heads/program/fixture\n\nworktree /workspace/runs/run_old/wt/x\nHEAD bbbb\nbranch refs/heads/release/2\n`,
+          );
+        }
+        return undefined;
+      },
+    });
+    await prepare(machine);
+    const moved = machine.commands.filter((command) => command.includes(" branch -f "));
+    expect(moved).toEqual([`git -C ${layout.checkout} branch -f main origin/main`]);
+  });
+
   it("says where it has got to (P16 S-03): the mirror, the checkout, the exact runtimes, each setup step", async () => {
     const machine = fakeMachine();
     const progress: RunnerProgress[] = [];

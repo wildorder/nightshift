@@ -204,7 +204,7 @@ describe("commands that find a program only in the plane", () => {
   });
 
   it("resume finds it, and says it has no run rather than no program", async () => {
-    const code = await cli("resume", PROGRAM);
+    const code = await cli("land", PROGRAM);
     const said = [...op.out, ...op.err].join("\n");
     expect(said, `exit ${code}`).not.toMatch(/does not exist|has not been ratified|no program/);
     expect(said).toContain(PROGRAM);

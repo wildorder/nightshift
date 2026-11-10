@@ -330,3 +330,153 @@ describe("reconcile: lines with work and the publisher", () => {
     });
   });
 });
+
+describe("reconcile: sweeping machines no live dispatch owns (2026-11-05)", () => {
+  it("terminates a machine whose run is over, unknown, or moved to another machine, and spares the rest", async () => {
+    const w = await world();
+    const f = createFixtures();
+    await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
+    const liveProgram = f.ids.next("prog");
+    const tagsOf = (runId: string, stage = "dev", programId: string = f.scope.programId) => ({
+      "nightshift:managed": "true",
+      "nightshift-stage": stage,
+      "nightshift-project": f.scope.projectId,
+      "nightshift-program": programId,
+      "nightshift-run": runId,
+    });
+    // A run whose dispatch has stopped, and one whose dispatch is live on i-live.
+    const stopped = f.scope.runId;
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    await w.stores.dispatches.put(
+      makeDispatch(f, { status: "stopped", cleanup: { volumeDeleted: true, failures: [] } }),
+    );
+    const liveRun = f.ids.next("run");
+    await w.stores.runs.put(
+      makeRun(f, { programId: liveProgram, runId: liveRun, status: "pending", location: "remote" }),
+    );
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        programId: liveProgram,
+        runId: liveRun,
+        status: "running",
+        instanceId: "i-live",
+      }),
+    );
+    // A run that stopped a moment ago: its machine gets time to shut down by itself.
+    const justProgram = f.ids.next("prog");
+    const justRun = f.ids.next("run");
+    await w.stores.runs.put(
+      makeRun(f, { programId: justProgram, runId: justRun, status: "pending", location: "remote" }),
+    );
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        programId: justProgram,
+        runId: justRun,
+        status: "stopped",
+        cleanup: { volumeDeleted: true, failures: [] },
+        updatedAt: new Date(START - 60_000).toISOString(),
+      }),
+    );
+    const old = new Date(START - 60 * 60_000).toISOString();
+    const fresh = new Date(START - 60_000).toISOString();
+    w.compute.listManaged = async () => [
+      {
+        instanceId: "i-just-stopped",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(justRun, "dev", justProgram),
+      },
+      { instanceId: "i-stopped", state: "running", launchedAt: old, tags: tagsOf(stopped) },
+      {
+        instanceId: "i-unknown",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(f.ids.next("run")),
+      },
+      {
+        instanceId: "i-replaced",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(liveRun, "dev", liveProgram),
+      },
+      {
+        instanceId: "i-live",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(liveRun, "dev", liveProgram),
+      },
+      {
+        instanceId: "i-launching",
+        state: "pending",
+        launchedAt: fresh,
+        tags: tagsOf(f.ids.next("run")),
+      },
+      {
+        instanceId: "i-other-stage",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(stopped, "prod"),
+      },
+    ];
+    const counts = await w.reconcile();
+    expect([...w.compute.terminated].sort()).toEqual(["i-replaced", "i-stopped", "i-unknown"]);
+    expect(counts["sweep:terminated"]).toBe(3);
+  });
+});
+
+describe("reconcile: a program run that follows its dispatch", () => {
+  it("interrupts a pending program run whose machine ended before it started, with the machine's reason (2026-11-06)", async () => {
+    const w = await world();
+    const f = createFixtures();
+    await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
+    await w.stores.programContracts.put(makeProgramContract(f));
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        status: "failed",
+        cleanup: { volumeDeleted: true, failures: [] },
+        failure: {
+          code: "setup_failed",
+          message: "the workspace could not be prepared: a branch is used by a worktree",
+        },
+      }),
+    );
+    const counts = await w.reconcile();
+    expect(counts["run:never-started"]).toBe(1);
+    const run = await w.stores.runs.get(f.scope, f.scope.runId);
+    expect(run?.status).toBe("interrupted");
+    expect(run?.outcomeReason).toContain(
+      "The run never started: the workspace could not be prepared",
+    );
+    expect(run?.outcomeReason).toContain("nightshift run");
+    const again = await w.reconcile();
+    expect(again["run:never-started"]).toBeUndefined();
+  });
+
+  it("ends a cancelled run once its machine has stopped, and keeps a paused one", async () => {
+    const w = await world();
+    const f = createFixtures();
+    await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
+    await w.stores.programContracts.put(makeProgramContract(f));
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    const stopped = (code: "cancelled" | "paused", message: string) =>
+      makeDispatch(f, {
+        status: "stopped",
+        cleanup: { volumeDeleted: true, failures: [] },
+        failure: { code, message },
+      });
+
+    await w.stores.dispatches.put(stopped("paused", "paused by the operator"));
+    await w.stores.runs.put(makeRun(f, { status: "running", location: "remote" }));
+    expect((await w.reconcile())["run:cancelled"]).toBeUndefined();
+    expect((await w.stores.runs.get(f.scope, f.scope.runId))?.status).toBe("running");
+
+    await w.stores.dispatches.put(stopped("cancelled", "Cancelled by the operator."));
+    expect((await w.reconcile())["run:cancelled"]).toBe(1);
+    expect(await w.stores.runs.get(f.scope, f.scope.runId)).toMatchObject({
+      status: "cancelled",
+      outcomeReason: "Cancelled by the operator.",
+    });
+    expect((await w.reconcile())["run:cancelled"]).toBeUndefined();
+  });
+});

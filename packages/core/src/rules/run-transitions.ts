@@ -39,7 +39,7 @@ export const RUN_STATUSES: readonly RunStatus[] = [
 
 /**
  * The statuses a run ends in. Nothing leaves them but one edge: an
- * `interrupted` run that `nightshift resume` finds finished in its records
+ * `interrupted` run that `nightshift land` finds finished in its records
  * settles as `succeeded` (`settle`, `runSettles`), so a resumed run ends true.
  */
 export const RUN_TERMINAL_STATUSES: readonly RunStatus[] = [

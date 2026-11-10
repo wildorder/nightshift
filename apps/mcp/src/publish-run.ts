@@ -1,7 +1,7 @@
 /**
  * The publication of a planned run's documents and report onto its program
  * branch (P21, D-03), from the control plane's records alone. Shared by
- * `run.finish` and by `nightshift resume`, so every ending of a planned run
+ * `run.finish` and by `nightshift land`, so every ending of a planned run
  * publishes: a run that ends again commits the updated report as a new
  * publication commit, and one whose files have not changed commits nothing.
  */

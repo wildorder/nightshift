@@ -43,7 +43,7 @@ expensive decisions in a plan that lives in the control plane, as `plan.md` and
     (`strand_blocked`). Leave those; let the rest finish.
   - A job that ends `deferred` is done for now: one of its checks needs something
     only a human can supply. It is not a failure. Its work is kept on a
-    provisional line, and `nightshift resume {id}` lands it when they are back.
+    provisional line, and `nightshift land {id}` lands it when they are back.
   - **Baseline failures are context, not a separate workflow.** Ordinary
     authorized work may repair setup or failing checks. A red baseline does not
     hold every strand, and a flaky check does not mandate another job. The root

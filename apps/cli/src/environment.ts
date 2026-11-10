@@ -114,7 +114,7 @@ export interface CliAssets {
    */
   readonly orchestratePath?: string;
   /**
-   * `nightshift resume`'s landing, with an examiner (P8, D-P8-14). Started as a
+   * `nightshift land`'s landing, with an examiner (P8, D-P8-14). Started as a
    * process for the same reason: an examiner is an agent.
    */
   readonly resumePath?: string;

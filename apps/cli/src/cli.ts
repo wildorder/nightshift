@@ -24,6 +24,7 @@ import { recordedGates, recordGates } from "./commands/gate-health.js";
 import { gates } from "./commands/gates.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
+import { land } from "./commands/land.js";
 import { lineStatus } from "./commands/line.js";
 import { runLocal, useStage } from "./commands/local.js";
 import { login } from "./commands/login.js";
@@ -40,9 +41,8 @@ import { planCheck, planPut, planRatify, planShow } from "./commands/plan.js";
 import { preflight } from "./commands/preflight.js";
 import { createProject } from "./commands/project-create.js";
 import { rateRun } from "./commands/rate.js";
-import { remoteCancel, remoteResume, remoteStatus } from "./commands/remote.js";
+import { remoteCancel, remotePause, remoteResume, remoteStatus } from "./commands/remote.js";
 import { writeRunReport } from "./commands/report.js";
-import { resume } from "./commands/resume.js";
 import { exportRoutes } from "./commands/routes.js";
 import { reverseRuling } from "./commands/ruling.js";
 import { run } from "./commands/run.js";
@@ -71,9 +71,9 @@ Usage:
   nightshift run <program> [--attended] [--harness <name>] [--model <name>] [--confirm-irreversible <decisionId>]… [--repo <path>]
   nightshift run <program> --remote [--compute good|better|best] [--repo <path>]
   nightshift remote status <program> [--watch] [--run <id>] [--repo <path>]
-  nightshift remote cancel|resume <program> [--run <id>] [--repo <path>]
+  nightshift remote pause|resume|cancel <program> [--run <id>] [--repo <path>]
   nightshift line status [--repo <path>]
-  nightshift resume <program> [--run <id>] [--repo <path>]
+  nightshift land <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision brief <program> <decisionId> [--out <path>] [--run <id>] [--repo <path>]
@@ -118,7 +118,7 @@ directory: docs/programs/ unless nightshift.config.json names another in
 watching, and exits non-zero when anything was parked. --attended only creates
 the run, for your own orchestrator session to attach to. A check that needs
 something only you can supply does not stop the night: the work carries on a
-provisional line, and \`resume\` runs those checks and lands it when you are back.
+provisional line, and \`land\` runs those checks and lands it when you are back.
 \`gates <program>\` runs the program's setup and every check on the program
 branch, in a fresh checkout, as verification will. A local \`run\` records this
 baseline before starting; a remote run records its baseline on its machine.
@@ -136,8 +136,10 @@ WAIT while the machine comes up and prepares the repository, then OK GO once
 the orchestrator is running, and you can close the laptop. No laptop audit or
 laptop-to-machine gate agreement is required. A failed dispatch exits 1.
 Ctrl-C detaches without cancelling anything;
-\`remote status <program> --watch\` reattaches to the same display, and
-\`remote cancel <program>\` stops the machine.
+\`remote status <program> --watch\` reattaches to the same display.
+\`remote pause <program>\` stops the machine and keeps the run: \`remote resume\`
+takes it up again from its snapshot. \`remote cancel <program>\` ends the run; what it
+left unlanded is at GitHub, and the program's next \`run\` continues it.
 
 \`nightshift login\` needs no flags: the CLI knows where the control plane is.
 Over SSH, add --no-browser and paste the address your browser lands on.
@@ -531,8 +533,8 @@ const doGates = async (environment: CliEnvironment, args: readonly string[]): Pr
   ).exitCode;
 };
 
-const doResume = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift resume <program> [--run <id>] [--repo <path>]";
+const doLand = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
+  const usage = "nightshift land <program> [--run <id>] [--repo <path>]";
   const { values, positionals } = parse(
     {
       args: [...args],
@@ -546,7 +548,7 @@ const doResume = async (environment: CliEnvironment, args: readonly string[]): P
   if (id === undefined) throw new UsageError("a program id is required", usage);
   const repo = optional(values, "repo");
   const run = optional(values, "run");
-  return resume(environment, {
+  return land(environment, {
     id,
     ...(repo === undefined ? {} : { repo }),
     ...(run === undefined ? {} : { run }),
@@ -878,14 +880,17 @@ const doSecret = async (environment: CliEnvironment, args: readonly string[]): P
   throw new UsageError("`nightshift secret` takes `set <NAME>`, `list` or `rm <NAME>`", usage);
 };
 
-/** `nightshift remote status|cancel|resume <program>` (P10, D-P10-18). */
+/** `nightshift remote status|pause|resume|cancel <program>` (P10, D-P10-18). */
 const doRemote = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
   const usage =
     "nightshift remote status <program> [--watch] [--run <id>] [--repo <path>]\n" +
-    "nightshift remote cancel|resume <program> [--run <id>] [--repo <path>]";
+    "nightshift remote pause|resume|cancel <program> [--run <id>] [--repo <path>]";
   const [verb, ...rest] = args;
-  if (verb !== "status" && verb !== "cancel" && verb !== "resume") {
-    throw new UsageError("`nightshift remote` takes `status`, `cancel` or `resume`", usage);
+  if (verb !== "status" && verb !== "pause" && verb !== "resume" && verb !== "cancel") {
+    throw new UsageError(
+      "`nightshift remote` takes `status`, `pause`, `resume` or `cancel`",
+      usage,
+    );
   }
   const { id, repo, values } = programArgs(rest, usage, {
     run: { type: "string" },
@@ -902,6 +907,7 @@ const doRemote = async (environment: CliEnvironment, args: readonly string[]): P
     ...(values.watch === true ? { watch: true } : {}),
   };
   if (verb === "status") return remoteStatus(environment, options);
+  if (verb === "pause") return remotePause(environment, options);
   if (verb === "cancel") return remoteCancel(environment, options);
   return remoteResume(environment, options);
 };
@@ -999,8 +1005,8 @@ const dispatch = async (
       return doGates(environment, args);
     case "run":
       return doRun(environment, args);
-    case "resume":
-      return doResume(environment, args);
+    case "land":
+      return doLand(environment, args);
     case "ruling":
       return doRuling(environment, args);
     case "decision":

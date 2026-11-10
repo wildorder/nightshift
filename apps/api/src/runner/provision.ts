@@ -163,6 +163,8 @@ export type LaunchMachineResult =
       readonly ok: true;
       readonly instanceId: string;
       readonly description: InstanceDescription | undefined;
+      /** The image version it launched on: the configured one, or the newest older one while that builds. */
+      readonly imageVersion: string;
     }
   | { readonly ok: false; readonly reason: string };
 
@@ -179,7 +181,20 @@ export const launchMachine = async (
   const { stores, compute } = deps;
   const { replacing, retainedSnapshotId: retained } = input;
   const fail = (reason: string): LaunchMachineResult => ({ ok: false, reason });
-  const imageId = await compute.latestImage(deps.imageVersion, input.architecture);
+  // While a deploy's new image is still building, the newest older one is used,
+  // so a deploy never stops runs from starting (2026-11-06).
+  let imageVersion = deps.imageVersion;
+  let imageId = await compute.latestImage(deps.imageVersion, input.architecture);
+  if (imageId === undefined && compute.previousImage !== undefined) {
+    const previous = await compute.previousImage(deps.imageVersion, input.architecture);
+    if (previous !== undefined) {
+      console.warn(
+        `provision: no ${input.architecture} image for ${deps.imageVersion} yet; launching on ${previous.version}`,
+      );
+      imageId = previous.imageId;
+      imageVersion = previous.version;
+    }
+  }
   if (imageId === undefined) {
     return fail(`no available ${input.architecture} image for version ${deps.imageVersion}`);
   }
@@ -309,7 +324,7 @@ export const launchMachine = async (
     await sleep(5_000);
     description = await compute.describe(instanceId);
   }
-  return { ok: true, instanceId, description };
+  return { ok: true, instanceId, description, imageVersion };
 };
 
 export const provisionDispatch = async (
@@ -414,7 +429,7 @@ export const provisionDispatch = async (
     ...(description?.workspaceVolumeId === undefined
       ? {}
       : { volumeId: description.workspaceVolumeId }),
-    amiVersion: deps.imageVersion,
+    amiVersion: launched.imageVersion,
     attempts,
     cleanup: { ...dispatch.cleanup, volumeDeleted: false },
   };

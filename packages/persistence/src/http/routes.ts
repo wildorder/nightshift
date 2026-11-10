@@ -109,6 +109,7 @@ export const routes = {
 
   // The remote runner (P10, D-P10-18, D-P10-22, D-P10-14b).
   dispatch: (scope: RunScope) => `${routes.inRun(scope)}/dispatch`,
+  dispatchPause: (scope: RunScope) => `${routes.dispatch(scope)}/pause`,
   dispatchCancel: (scope: RunScope) => `${routes.dispatch(scope)}/cancel`,
   dispatchResume: (scope: RunScope) => `${routes.dispatch(scope)}/resume`,
   dispatchHeartbeat: (scope: RunScope) => `${routes.dispatch(scope)}/heartbeat`,

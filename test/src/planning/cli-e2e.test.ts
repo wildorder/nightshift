@@ -36,7 +36,7 @@ const PROGRAM = "p1-modules";
 const ORCHESTRATE = fileURLToPath(
   new URL("../../../apps/mcp/dist/bin/nightshift-orchestrate.js", import.meta.url),
 );
-/** `nightshift resume`'s landing runs here, where an examiner can be started (P8, D-P8-14). */
+/** `nightshift land`'s landing runs here, where an examiner can be started (P8, D-P8-14). */
 const RESUME = fileURLToPath(
   new URL("../../../apps/mcp/dist/bin/nightshift-resume.js", import.meta.url),
 );
@@ -260,17 +260,17 @@ describe("a planned program, from a plan on disk to a landed program, through th
     expect(deferredReport).toContain("### S-02 The b modules: PROVISIONAL");
     expect(deferredReport).toContain("Waiting on: HP-01");
     expect(deferredReport).toContain("- **HP-01** The release token is in place.");
-    expect(deferredReport).toContain(`nightshift resume <program>`);
+    expect(deferredReport).toContain(`nightshift land <program>`);
 
     // Resuming before the human has done it resumes nothing, and says what is unmet.
-    expect(await cli("resume", PROGRAM)).toBe(1);
+    expect(await cli("land", PROGRAM)).toBe(1);
     expect(op.err.join("\n")).toContain("UNMET HP-01");
     expect(git("rev-parse", PROGRAM_BRANCH)).toBe(published);
 
     // The human is back.
     await writeFile(join(outside, "release-token"), "present");
     expect(await cli("preflight", PROGRAM)).toBe(0);
-    const resumed = await cli("resume", PROGRAM);
+    const resumed = await cli("land", PROGRAM);
     expect(resumed, `${op.out.join("\n")}\n${op.err.join("\n")}`).toBe(0);
     // Each strand lands once, whole, with both its jobs (P18, D-P18-04).
     expect(op.out[0]).toContain("3 landed on the program branch");
@@ -344,7 +344,7 @@ describe("a planned program, from a plan on disk to a landed program, through th
 });
 
 describe("a remote run whose final documents never left its machine (P21, F-01)", () => {
-  it("nightshift resume rebuilds them from the control plane and pushes them to GitHub", async () => {
+  it("nightshift land rebuilds them from the control plane and pushes them to GitHub", async () => {
     const base = git("rev-parse", PROGRAM_BRANCH);
     // No hurdle this time: the run lands everything and publishes its documents.
     await writeFile(join(outside, "release-token"), "present");
@@ -374,7 +374,7 @@ describe("a remote run whose final documents never left its machine (P21, F-01)"
       outcomeReason: `GitHub does not have this run's final documentation commit ${docsHead.slice(0, 12)}.`,
     });
 
-    const resumed = await cli("resume", PROGRAM);
+    const resumed = await cli("land", PROGRAM);
     const said = `${op.out.join("\n")}\n${op.err.join("\n")}`;
     expect(resumed, said).toBe(0);
     expect(said).not.toContain("nothing to resume");
@@ -397,7 +397,7 @@ describe("a remote run whose final documents never left its machine (P21, F-01)"
     expect((await op.stores.runs.get(scope, runId as never))?.status).toBe("succeeded");
 
     // Again, with GitHub holding everything: nothing is committed or pushed.
-    expect(await cli("resume", PROGRAM)).toBe(0);
+    expect(await cli("land", PROGRAM)).toBe(0);
     git("fetch", "-q", "origin");
     expect(git("rev-parse", `origin/${PROGRAM_BRANCH}`)).toBe(atGitHub);
     expect(git("rev-parse", PROGRAM_BRANCH)).toBe(atGitHub);

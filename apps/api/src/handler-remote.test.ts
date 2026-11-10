@@ -942,16 +942,51 @@ describe("the heartbeat (D-P10-18, D-P10-20, D-P10-23)", () => {
   });
 });
 
-describe("cancel and resume", () => {
-  it("stops a dispatch with no machine outright, and marks one with a machine stopping", async () => {
+describe("pause, cancel and resume", () => {
+  const runOf = async (w: World) => w.stores.runs.get(w.f.scope, w.f.scope.runId);
+
+  it("pauses: stops the machine and keeps the run live, to be resumed", async () => {
     const w = await setup();
     const requested = await dispatched(w);
-    const cancelled = await call(w, "POST", `${w.paths.run}/dispatch/cancel`);
-    expect(cancelled.body).toMatchObject({ status: "stopped", failure: { code: "cancelled" } });
+    const paused = await call(w, "POST", `${w.paths.run}/dispatch/pause`);
+    expect(paused.body).toMatchObject({ status: "stopped", failure: { code: "paused" } });
+    expect((await runOf(w))?.status).toBe("pending");
 
     await w.stores.dispatches.put({ ...requested, status: "running", instanceId: "i-1" });
+    const stopping = await call(w, "POST", `${w.paths.run}/dispatch/pause`);
+    expect(stopping.body).toMatchObject({ status: "stopping", failure: { code: "paused" } });
+    expect((await runOf(w))?.status).toBe("pending");
+  });
+
+  it("cancels: a run with no machine, or whose machine had stopped, ends at once, in the operator's words", async () => {
+    const w = await setup();
+    await dispatched(w);
+    const cancelled = await call(w, "POST", `${w.paths.run}/dispatch/cancel`);
+    expect(cancelled.body).toMatchObject({ status: "stopped", failure: { code: "cancelled" } });
+    expect(await runOf(w)).toMatchObject({
+      status: "cancelled",
+      outcomeReason: "Cancelled by the operator.",
+    });
+
+    // A paused run: its machine has stopped, and cancelling ends it now.
+    const v = await setup();
+    await dispatched(v);
+    await call(v, "POST", `${v.paths.run}/dispatch/pause`);
+    const reason = "Superseded: the plan was revised (version 5).";
+    const ended = await call(v, "POST", `${v.paths.run}/dispatch/cancel`, { reason });
+    expect(ended.status, JSON.stringify(ended.body)).toBe(200);
+    expect(await runOf(v)).toMatchObject({ status: "cancelled", outcomeReason: reason });
+  });
+
+  it("cancels a run with a machine once the machine has stopped; a pause still stopping becomes a cancel", async () => {
+    const w = await setup();
+    const requested = await dispatched(w);
+    await w.stores.dispatches.put({ ...requested, status: "running", instanceId: "i-1" });
+    await call(w, "POST", `${w.paths.run}/dispatch/pause`);
     const stopping = await call(w, "POST", `${w.paths.run}/dispatch/cancel`);
-    expect(stopping.body).toMatchObject({ status: "stopping" });
+    expect(stopping.body).toMatchObject({ status: "stopping", failure: { code: "cancelled" } });
+    // Not yet: the machine is still stopping, and the reconciler ends the run when it has.
+    expect((await runOf(w))?.status).toBe("pending");
     const stopped = await call(
       w,
       "POST",
@@ -1056,6 +1091,20 @@ describe("cancel and resume", () => {
     await w.stores.dispatches.put({ ...settled, cleanup: { volumeDeleted: true, failures: [] } });
     const refused = await call(w, "POST", `${w.paths.run}/dispatch/resume`);
     expect(code(refused)).toBe("cannot_resume");
+  });
+
+  it("refuses to resume a run that has ended, naming `nightshift run`", async () => {
+    const w = await setup();
+    const dispatch = await dispatched(w);
+    await w.stores.dispatches.put({
+      ...dispatch,
+      status: "stopped",
+      cleanup: { snapshotId: "snap-1", snapshotTakenAt: NOW, volumeDeleted: true, failures: [] },
+    });
+    await call(w, "POST", `${w.paths.run}/dispatch/cancel`);
+    const refused = await call(w, "POST", `${w.paths.run}/dispatch/resume`);
+    expect(code(refused)).toBe("cannot_resume");
+    expect(JSON.stringify(refused.body)).toContain("nightshift run");
   });
 });
 

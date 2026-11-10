@@ -101,7 +101,7 @@ export const isDirty = async (
  * `nightshift run` writes `{programsDirectory}/{id}/report.md` into the checkout (P7,
  * D-P7-03), and it is the one thing Nightshift leaves there. Untracked, it is
  * not the operator's work in progress and must not stop the next landing: found
- * when the first `nightshift resume` was refused by the report of the run it was
+ * when the first `nightshift land` was refused by the report of the run it was
  * resuming. Only untracked (`??`): a finished planned run publishes the report
  * onto the program branch (P21) and the CLI no longer rewrites it there, so a
  * modified or staged report is a human's, like any other change.

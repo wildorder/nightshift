@@ -370,7 +370,10 @@ export const DispatchFailureCodeSchema = z.enum([
   "recovery_exhausted",
   "wall_clock",
   "run_cap",
+  /** `remote cancel`: the machine stopped and the run ends `cancelled` with it. */
   "cancelled",
+  /** `remote pause`: the machine stopped and the run is kept, for `remote resume`. */
+  "paused",
   "input_refused",
   /** The runner could not prepare the workspace: mount, clone, checkout or setup (P16 SC-07). */
   "setup_failed",
@@ -585,6 +588,15 @@ export const DispatchBodySchema = z.strictObject({
   idempotencyKey: z.string().min(1),
 });
 export type DispatchBody = z.infer<typeof DispatchBodySchema>;
+
+/**
+ * `POST …/dispatch/cancel`: why the run ends, in the operator's words, or the
+ * CLI's when a newer plan supersedes it. Absent: "cancelled by the operator".
+ */
+export const DispatchCancelBodySchema = z.strictObject({
+  reason: z.string().min(1).max(500).optional(),
+});
+export type DispatchCancelBody = z.infer<typeof DispatchCancelBodySchema>;
 
 /** One sample the runner took, folded by the API into the run's `ComputeUtilization`. */
 export const UtilizationSampleSchema = z.strictObject({

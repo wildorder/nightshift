@@ -237,7 +237,7 @@ export interface ExaminationServices {
 
 /**
  * What verifying and integrating a commit need, and no more: no harness, no
- * token minter, no worker environment. `nightshift resume` has exactly this
+ * token minter, no worker environment. `nightshift land` has exactly this
  * (P7, D-P7-10): it runs checks and lands commits, and starts no agent.
  */
 export type LandingEnvironment = Pick<

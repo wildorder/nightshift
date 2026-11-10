@@ -22,7 +22,7 @@ one where the human can watch**:
 
 ## 0. Make sure it is Nightshift v1
 
-`nightshift --help` must list `run`, `resume`, `preflight` and `gates`. If it does not,
+`nightshift --help` must list `run`, `land`, `preflight` and `gates`. If it does not,
 the `nightshift` on the PATH is an older tool of the same name: stop and say so.
 
 ## 1. Before starting
@@ -202,7 +202,7 @@ it, in this order:
    with **NOT ON GITHUB** has not delivered, whatever its strands did: say so
    first, with the cause it names (often a permission the Nightshift GitHub App
    lacks, such as Workflows for a change under `.github/workflows/`), and that
-   `nightshift resume {id}` publishes every held landing from the run's stored
+   `nightshift land {id}` publishes every held landing from the run's stored
    bundles once the human has fixed it. No machine is needed and nothing is lost.
 2. Every **arbiter ruling**, before anything else: an agent decided a disputed
    finding, the work moved on because of it, and the human has the last word.
@@ -215,7 +215,7 @@ it, in this order:
 4. What was **parked**, what blocked it, and the reason on the strand that broke.
 5. What is **deferred**, what it waits on, and the two commands to land it when
    the prerequisite is done: `nightshift preflight {id}`, then
-   `nightshift resume {id}`.
+   `nightshift land {id}`.
 6. What the examiners found that did not stop anything (minor findings), and
    where the routes climbed or fell back: the report's per-job lines.
 7. Where the **verification time** went (the report's *Verification time*
@@ -243,13 +243,27 @@ nightshift decision brief {id} <decisionId> --out <scratch>/brief.md
 
 then `/plan-program` to plan the correction from the brief, with them.
 
-## Resuming
+## Pausing, cancelling and landing
 
-`nightshift resume {id}` is for a run that ended deferred. When the latest run is
-remote and GitHub lacks some of its landings, resume first asks the plane to
+A remote run can be stopped two ways, and they mean different things:
+
+- `nightshift remote pause {id}` stops its machine and **keeps the run**. It still
+  holds the program's one live run; `nightshift remote resume {id}` takes it up
+  again from its snapshot (within seven days).
+- `nightshift remote cancel {id}` **ends the run**, `cancelled`, once its machine
+  has stopped. What it left unlanded is at GitHub, and the program's next
+  `nightshift run {id}` continues it.
+
+When the human changes their mind mid-run and the plan is revised and ratified
+again, cancel the old run (or pause it: `nightshift run` cancels a paused run of
+an earlier plan itself, and says so) and run the new plan. Never attach to an old
+run to end it by hand.
+
+`nightshift land {id}` is for a run that ended deferred. When the latest run is
+remote and GitHub lacks some of its landings, land first asks the plane to
 publish them from the run's stored bundles, waits for the publisher, and says
 what GitHub has; it exits 1 while anything is still refused. For deferred checks, run preflight first;
-resume refuses while anything the deferred checks need is unmet, and touches
+land refuses while anything the deferred checks need is unmet, and touches
 nothing if the checkout cannot be landed on. It runs the deferred checks over the
 provisional commits in order, lands what passes on the program branch unchanged,
 and on a check that fails records the failure and discards what was built on it,

@@ -223,7 +223,7 @@ export const maySucceed = (node: Pick<ExecutionNode, "kind" | "status">): boolea
   (node.kind === "program" && node.status === "cancelled");
 
 /**
- * The program node of a run that settled after `nightshift resume` (`settle`):
+ * The program node of a run that settled after `nightshift land` (`settle`):
  * `succeeded`, from the `cancelled` its interrupted ending left. Any other
  * node is returned as it is.
  */
