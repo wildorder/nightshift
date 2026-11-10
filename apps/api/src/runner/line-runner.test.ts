@@ -362,9 +362,30 @@ describe("reconcile: sweeping machines no live dispatch owns (2026-11-05)", () =
         instanceId: "i-live",
       }),
     );
+    // A run that stopped a moment ago: its machine gets time to shut down by itself.
+    const justProgram = f.ids.next("prog");
+    const justRun = f.ids.next("run");
+    await w.stores.runs.put(
+      makeRun(f, { programId: justProgram, runId: justRun, status: "pending", location: "remote" }),
+    );
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        programId: justProgram,
+        runId: justRun,
+        status: "stopped",
+        cleanup: { volumeDeleted: true, failures: [] },
+        updatedAt: new Date(START - 60_000).toISOString(),
+      }),
+    );
     const old = new Date(START - 60 * 60_000).toISOString();
     const fresh = new Date(START - 60_000).toISOString();
     w.compute.listManaged = async () => [
+      {
+        instanceId: "i-just-stopped",
+        state: "running",
+        launchedAt: old,
+        tags: tagsOf(justRun, "dev", justProgram),
+      },
       { instanceId: "i-stopped", state: "running", launchedAt: old, tags: tagsOf(stopped) },
       {
         instanceId: "i-unknown",
@@ -400,5 +421,35 @@ describe("reconcile: sweeping machines no live dispatch owns (2026-11-05)", () =
     const counts = await w.reconcile();
     expect([...w.compute.terminated].sort()).toEqual(["i-replaced", "i-stopped", "i-unknown"]);
     expect(counts["sweep:terminated"]).toBe(3);
+  });
+});
+
+describe("reconcile: a run whose machine ended before it started (2026-11-06)", () => {
+  it("interrupts a pending program run with the machine's reason, so resume can start it", async () => {
+    const w = await world();
+    const f = createFixtures();
+    await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
+    await w.stores.programContracts.put(makeProgramContract(f));
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    await w.stores.dispatches.put(
+      makeDispatch(f, {
+        status: "failed",
+        cleanup: { volumeDeleted: true, failures: [] },
+        failure: {
+          code: "setup_failed",
+          message: "the workspace could not be prepared: a branch is used by a worktree",
+        },
+      }),
+    );
+    const counts = await w.reconcile();
+    expect(counts["run:never-started"]).toBe(1);
+    const run = await w.stores.runs.get(f.scope, f.scope.runId);
+    expect(run?.status).toBe("interrupted");
+    expect(run?.outcomeReason).toContain(
+      "The run never started: the workspace could not be prepared",
+    );
+    expect(run?.outcomeReason).toContain("nightshift resume");
+    const again = await w.reconcile();
+    expect(again["run:never-started"]).toBeUndefined();
   });
 });
