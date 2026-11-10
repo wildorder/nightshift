@@ -46,7 +46,9 @@ export type ScriptName =
   /** A sub-program's orchestrator: delegates `[add-module c1]` and `[add-module c2]`, waits, completes. */
   | "orchestrate"
   /** P7: the root of a planned run. Attaches, delegates every strand, waits, finishes truthfully. */
-  | "follow-plan";
+  | "follow-plan"
+  /** P18: an examiner reviewing a strand's job plan. Finds it sound, through `plan.review.submit`. */
+  | "review-plan";
 
 export const SCRIPT_NAMES: readonly ScriptName[] = [
   "implement",
@@ -63,6 +65,7 @@ export const SCRIPT_NAMES: readonly ScriptName[] = [
   "call-sum",
   "orchestrate",
   "follow-plan",
+  "review-plan",
 ];
 
 /**
@@ -119,6 +122,12 @@ export interface RootSurface {
   finish(outcome: "succeeded" | "failed" | "deferred", reason?: string): Promise<boolean>;
 }
 
+/** What a strand's plan reviewer drives (P18): the examiner role's one plan tool. */
+export interface ReviewerSurface {
+  /** `plan.review.submit`, `sound` with no findings. */
+  submitSound(summary: string): Promise<void>;
+}
+
 export interface SurfaceDecision {
   readonly context: string;
   readonly alternatives: readonly { readonly summary: string; readonly rejectedBecause?: string }[];
@@ -152,6 +161,8 @@ export interface ScriptContext {
   readonly orchestrator?: OrchestratorSurface;
   /** Present when the node is the program's own, run headless from a plan (P7). */
   readonly root?: RootSurface;
+  /** Present when the agent is reviewing a strand's job plan (P18). */
+  readonly reviewer?: ReviewerSurface;
 }
 
 /** The helper every `implement` script adds. Correct, and its test passes. */
@@ -422,6 +433,17 @@ export const SCRIPTS: Readonly<Record<ScriptName, (context: ScriptContext) => Pr
       "utf8",
     );
     await surface.complete("Added range, which uses sum from src/math.js.");
+    return 0;
+  },
+
+  "review-plan": async ({ reviewer, note }) => {
+    if (reviewer === undefined) {
+      note("the review-plan script needs a plan reviewer's surface");
+      return 1;
+    }
+    await reviewer.submitSound(
+      "Two independent modules, each with its own test: build it as planned.",
+    );
     return 0;
   },
 

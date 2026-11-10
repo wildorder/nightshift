@@ -29,6 +29,7 @@ import {
 } from "./scripted.js";
 import {
   type OrchestratorSurface,
+  type ReviewerSurface,
   type RootSurface,
   SCRIPTS,
   type ScriptName,
@@ -219,6 +220,15 @@ const rootOver = (worker: Worker): RootSurface => ({
   },
 });
 
+/** A strand's plan reviewer (P18): the examiner role's plan tool, a real tool call. */
+const reviewerOver = (worker: Worker): ReviewerSurface => ({
+  submitSound: async (summary) => {
+    const result = await worker.call("plan.review.submit", { verdict: "sound", summary });
+    if (result.ok !== true)
+      throw new Error(`plan.review.submit was refused: ${JSON.stringify(result)}`);
+  },
+});
+
 /** A surface for the one script that must never speak to anything. */
 const NO_SURFACE = {} as WorkerSurface;
 
@@ -258,6 +268,7 @@ const main = async (): Promise<number> => {
         ? { orchestrator: orchestratorOver(worker) }
         : {}),
       ...(process.env[WORKER_KIND_ENV] === "program" ? { root: rootOver(worker) } : {}),
+      ...(script === "review-plan" ? { reviewer: reviewerOver(worker) } : {}),
     });
   } finally {
     await worker.close().catch(() => {});
