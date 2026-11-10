@@ -286,7 +286,7 @@ describe("a publication the App was not allowed to make (2026-10-14)", () => {
     let after = await w.dispatch();
     expect(after.publication.intents[0]?.status).toBe("forbidden");
     expect(after.publication.blocked).toContain("Workflows: Read and write");
-    expect(after.publication.blocked).toContain("nightshift resume");
+    expect(after.publication.blocked).toContain("nightshift land");
 
     // A landing after the block: held behind it, never "someone else moved".
     await w.intend(sha("3"), sha("2"), new Uint8Array([1]));

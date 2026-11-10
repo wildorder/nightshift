@@ -466,7 +466,7 @@ describe("headless sessions", () => {
             findingId: "F-01",
             decisionId: f.ids.next("dec") as never,
             summary: "resume never publishes the documents",
-            rationale: "a failed final upload must be recoverable by nightshift resume",
+            rationale: "a failed final upload must be recoverable by nightshift land",
           },
         ],
       },

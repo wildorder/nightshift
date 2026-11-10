@@ -31,6 +31,7 @@ export {
   type InitResult,
   init,
 } from "./commands/init.js";
+export { type LandOptions, land } from "./commands/land.js";
 export { runLocal, useStage } from "./commands/local.js";
 export {
   DEFAULT_STAGE,
@@ -67,7 +68,6 @@ export {
   remoteResume,
   remoteStatus,
 } from "./commands/remote.js";
-export { type ResumeOptions, resume } from "./commands/resume.js";
 export { REMOTE_REFUSAL, type RunOptions, type RunResult, run } from "./commands/run.js";
 export { ACTIVE_ORG_CLAIM, type WhoamiOrg, type WhoamiResult, whoami } from "./commands/whoami.js";
 export {

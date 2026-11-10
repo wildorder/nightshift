@@ -25,7 +25,7 @@ export const isSettled = (status: ExecutionNodeStatus): boolean =>
  * Settled, **or deferred** (P7, D-P7-10): nothing further happens to the node in
  * this sitting. A deferred node waits on a human, on the run's provisional line,
  * so whoever is waiting for it stops waiting and whoever delegated it may end;
- * it is still not settled, because `nightshift resume` has checks left to run.
+ * it is still not settled, because `nightshift land` has checks left to run.
  */
 export const isDoneForNow = (status: ExecutionNodeStatus): boolean =>
   isSettled(status) || status === "deferred";

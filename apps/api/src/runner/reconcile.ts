@@ -19,10 +19,11 @@ import { DispatchStatusSchema } from "@nightshift/contracts";
 import { hasPendingIntent, lineQueueOwed } from "@nightshift/core";
 import type { ApiDeps } from "../http.js";
 import { cleanupStopped, enforceStop } from "./cleanup.js";
-import { followLineRun, followUnstartedRun } from "./line-lifecycle.js";
+import { followLineRun } from "./line-lifecycle.js";
 import { startLineRun } from "./line-run.js";
 import { type ProvisionDeps, provisionDispatch } from "./provision.js";
 import { recoverLostLease } from "./recover.js";
+import { followCancelledRun, followUnstartedRun } from "./run-lifecycle.js";
 
 /** A `requested` dispatch older than this was not picked up by the API's invocation. */
 export const REQUESTED_GRACE_MS = 2 * 60_000;
@@ -81,6 +82,7 @@ export const reconcileRuns = async (deps: ReconcileDeps, count: Counter): Promis
         // A line run has no engine to end it: the plane ends it with its dispatch.
         await followLineRun(stores, clock, dispatch);
         if (await followUnstartedRun(stores, clock, dispatch)) count("run:never-started");
+        if (await followCancelledRun(stores, clock, dispatch)) count("run:cancelled");
       }
       // A push that failed for a passing reason is retried, the last landing of
       // a run is never left waiting for a next one that will not come, and a

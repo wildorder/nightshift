@@ -5,7 +5,7 @@
  * bundles the engine stored after every landing. When the publisher was
  * refused (the App lacked a permission, a rule refused, someone moved the
  * branch), the landings wait on the plane, held in order. Once the human has
- * fixed the cause, `nightshift resume` asks the plane to retry: every
+ * fixed the cause, `nightshift land` asks the plane to retry: every
  * unpublished landing goes back to the publisher, which pushes them from their
  * bundles. No machine is needed, and nothing is forced.
  */

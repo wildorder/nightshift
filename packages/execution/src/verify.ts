@@ -100,7 +100,7 @@ export interface VerifyInput {
    * step runs and passes, the node is deferred rather than verified.
    */
   readonly onProvisionalLine?: boolean;
-  /** `nightshift resume`: the node is `deferred`, not `implemented`, and every step now runs. */
+  /** `nightshift land`: the node is `deferred`, not `implemented`, and every step now runs. */
   readonly resuming?: boolean;
 }
 
@@ -254,7 +254,7 @@ export interface RunVerificationInput {
   readonly phase?: "run";
   /** How progress lines name this verification. */
   readonly label: string;
-  /** `nightshift resume`: the preflight has passed, and every step now runs. */
+  /** `nightshift land`: the preflight has passed, and every step now runs. */
   readonly resuming?: boolean;
 }
 

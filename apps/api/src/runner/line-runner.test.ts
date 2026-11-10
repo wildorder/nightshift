@@ -424,8 +424,8 @@ describe("reconcile: sweeping machines no live dispatch owns (2026-11-05)", () =
   });
 });
 
-describe("reconcile: a run whose machine ended before it started (2026-11-06)", () => {
-  it("interrupts a pending program run with the machine's reason, so resume can start it", async () => {
+describe("reconcile: a program run that follows its dispatch", () => {
+  it("interrupts a pending program run whose machine ended before it started, with the machine's reason (2026-11-06)", async () => {
     const w = await world();
     const f = createFixtures();
     await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
@@ -448,8 +448,35 @@ describe("reconcile: a run whose machine ended before it started (2026-11-06)", 
     expect(run?.outcomeReason).toContain(
       "The run never started: the workspace could not be prepared",
     );
-    expect(run?.outcomeReason).toContain("nightshift resume");
+    expect(run?.outcomeReason).toContain("nightshift run");
     const again = await w.reconcile();
     expect(again["run:never-started"]).toBeUndefined();
+  });
+
+  it("ends a cancelled run once its machine has stopped, and keeps a paused one", async () => {
+    const w = await world();
+    const f = createFixtures();
+    await w.stores.projects.put(makeProject(f, { orgId: w.orgId }));
+    await w.stores.programContracts.put(makeProgramContract(f));
+    await w.stores.runs.put(makeRun(f, { status: "pending", location: "remote" }));
+    const stopped = (code: "cancelled" | "paused", message: string) =>
+      makeDispatch(f, {
+        status: "stopped",
+        cleanup: { volumeDeleted: true, failures: [] },
+        failure: { code, message },
+      });
+
+    await w.stores.dispatches.put(stopped("paused", "paused by the operator"));
+    await w.stores.runs.put(makeRun(f, { status: "running", location: "remote" }));
+    expect((await w.reconcile())["run:cancelled"]).toBeUndefined();
+    expect((await w.stores.runs.get(f.scope, f.scope.runId))?.status).toBe("running");
+
+    await w.stores.dispatches.put(stopped("cancelled", "Cancelled by the operator."));
+    expect((await w.reconcile())["run:cancelled"]).toBe(1);
+    expect(await w.stores.runs.get(f.scope, f.scope.runId)).toMatchObject({
+      status: "cancelled",
+      outcomeReason: "Cancelled by the operator.",
+    });
+    expect((await w.reconcile())["run:cancelled"]).toBeUndefined();
   });
 });

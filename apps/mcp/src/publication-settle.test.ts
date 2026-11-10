@@ -81,7 +81,7 @@ describe("settling publication before a remote run ends (2026-10-14)", () => {
     const reason = unpublishedReason(state);
     expect(reason).toContain("2 landings could not be published");
     expect(reason).toContain("GitHub refused program/x: no workflows");
-    expect(reason).toContain("nightshift resume");
+    expect(reason).toContain("nightshift land");
   });
 
   it("gives up waiting at the deadline and says the work is not yet at GitHub", async () => {

@@ -2,7 +2,7 @@
  * The run's provisional line and its records, kept in agreement (P7, D-P7-10).
  *
  * A job whose checks wait on a human prerequisite is `deferred`, and its commit
- * goes on the run's provisional line, where `nightshift resume` finds it and
+ * goes on the run's provisional line, where `nightshift land` finds it and
  * later work builds on it. Those are two writes to two stores, git and the
  * control plane, and no write spans both. Until 2026-10-07 the record came
  * first: an engine that stopped between the two left a node `deferred` whose

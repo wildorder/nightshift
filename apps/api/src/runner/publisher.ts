@@ -18,7 +18,7 @@
  * `forbidden`, anything else is an error that is retried on the next
  * invocation, three times, then blocks. Whatever blocks holds every intent
  * after it, until a human fixes the cause and asks for a retry
- * (`POST …/publication/retry`, `nightshift resume`). Two invocations for one run never push at once: the first takes a
+ * (`POST …/publication/retry`, `nightshift land`). Two invocations for one run never push at once: the first takes a
  * lock row for the run, resolves every pending intent, releases, and looks
  * once more, so an intent recorded while it held the lock is not left behind.
  */
@@ -189,7 +189,7 @@ export const forbiddenDetail = (branch: string, reason: string): string =>
       'Give the App "Workflows: Read and write" and have the installation accept it'
     : `GitHub refused ${branch}: the Nightshift GitHub App lacks a permission this push needs. ` +
       "Grant it and have the installation accept it") +
-  `, then run \`nightshift resume\` for the program to publish from the run's stored bundles. GitHub said: ${reason}`;
+  `, then run \`nightshift land\` for the program to publish from the run's stored bundles. GitHub said: ${reason}`;
 
 /** The GitHub clone URL a contract's `repository.url` means. */
 export const cloneUrlOf = (repositoryUrl: string): string =>

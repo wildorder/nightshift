@@ -82,7 +82,7 @@ export const lineEndingOverrides = (): readonly string[] => [
   // Not in the operator's checkout. Their `git` wrote its working tree under
   // their settings; read under these, every file it converted to `\r\n` looks
   // modified, and Nightshift refuses to land onto, or follow origin over,
-  // changes nobody made. Found by CI (2026-11-09): `nightshift resume` refused
+  // changes nobody made. Found by CI (2026-11-09): `nightshift land` refused
   // over an untouched `contract.json` on the Windows runner.
   "-c",
   "core.autocrlf=false",

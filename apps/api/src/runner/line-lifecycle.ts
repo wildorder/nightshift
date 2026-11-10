@@ -17,39 +17,6 @@ import {
   transitionRun,
 } from "@nightshift/core";
 
-/**
- * A run whose machine ended before its engine started it (2026-11-06: setup
- * failed on a warm volume, and the run stayed `pending`, holding its program's
- * one live run so neither cancel nor resume could clear it). When a program
- * run is still `pending` and its dispatch has ended, the run is interrupted
- * with the machine's own reason, so `nightshift resume` can start it again.
- */
-export const followUnstartedRun = async (
-  stores: Pick<ProjectStores, "programContracts" | "runs">,
-  clock: Clock,
-  dispatch: Dispatch,
-): Promise<boolean> => {
-  if (!isDispatchTerminal(dispatch.status)) return false;
-  const scope = { projectId: dispatch.projectId, programId: dispatch.programId };
-  const program = await stores.programContracts.get(scope.projectId, scope.programId);
-  if (program === undefined || isLineProgram(program)) return false;
-  const run = await stores.runs.get(scope, dispatch.runId);
-  if (run === undefined || run.status !== "pending") return false;
-  const why = dispatch.failure?.message ?? "its machine stopped";
-  try {
-    await stores.runs.put(
-      transitionRun(run, "interrupt", {
-        endedAt: nowIso(clock),
-        outcomeReason: `The run never started: ${why}. Resume it with \`nightshift resume\` once the cause is fixed.`,
-      }),
-    );
-    return true;
-  } catch (error) {
-    if (!(error instanceof IllegalTransitionError)) throw error;
-    return false;
-  }
-};
-
 export const followLineRun = async (
   stores: Pick<ProjectStores, "programContracts" | "runs">,
   clock: Clock,

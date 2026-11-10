@@ -1,5 +1,5 @@
 /**
- * `nightshift resume {id}` (P7, T4; D-P7-10, SC-P7-08a).
+ * `nightshift land {id}` (P7, T4; D-P7-10, SC-P7-08a).
  *
  * For when the human is back. A run that met a hurdle kept going on a
  * provisional line and ended `interrupted`, its deferred checks waiting. This:
@@ -58,7 +58,7 @@ import { openSession, type Session } from "../session.js";
 import { republishRun, unpublishedOf } from "./republish.js";
 import { writeReportUnlessTracked } from "./run-program.js";
 
-export interface ResumeOptions {
+export interface LandOptions {
   readonly id: string;
   readonly repo?: string;
   /** The run to resume. Defaults to the program's latest run that has deferred work. */
@@ -163,10 +163,7 @@ const landDeferred = async (
   return JSON.parse(last) as ResumeResult;
 };
 
-export const resume = async (
-  environment: CliEnvironment,
-  options: ResumeOptions,
-): Promise<number> => {
+export const land = async (environment: CliEnvironment, options: LandOptions): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const session = await openSession(environment);
   const files = await findProgram(environment, session, {

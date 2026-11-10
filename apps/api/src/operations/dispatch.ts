@@ -18,6 +18,7 @@ import {
   type Dispatch,
   type DispatchBody,
   DispatchBodySchema,
+  DispatchCancelBodySchema,
   type DispatchStatus,
   DispatchStatusSchema,
   emptyComputeUsage,
@@ -54,6 +55,7 @@ import {
   isDispatchTerminal,
   isLineProgram,
   isPlanned,
+  isRunTerminal,
   LINE_COMPOSITION_SECONDS,
   leaseExpiryFrom,
   lineAdmission,
@@ -76,6 +78,11 @@ import { runScopeFrom } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
 import { followLineRun } from "../runner/line-lifecycle.js";
 import { lineCapUsd, recordLineWaiting } from "../runner/line-support.js";
+import {
+  CANCELLED_BY_OPERATOR,
+  followCancelledRun,
+  PAUSED_BY_OPERATOR,
+} from "../runner/run-lifecycle.js";
 import { EngineTokenExpiredError, mintEngineToken } from "../tokens/mint.js";
 import { requireProgram, requireProject, requireRun } from "./common.js";
 import { openProjectSecrets } from "./secrets.js";
@@ -431,24 +438,69 @@ export const getDispatch: Handler = async ({ deps, params }) => ({
 });
 
 /**
- * `POST …/dispatch/cancel` — stop the machine. A dispatch with no machine yet
- * is stopped outright; one with a machine is `stopping` until the runner, or
- * the reconciler, reports it gone.
+ * `POST …/dispatch/pause` — stop the machine and keep the run (D-P10-18): it
+ * stays live, holding its program's one live run, until `remote resume` takes
+ * it up from its snapshot or `remote cancel` ends it. A dispatch with no
+ * machine yet is stopped outright; one with a machine is `stopping` until the
+ * runner, or the reconciler, reports it gone.
  */
-export const cancelDispatch: Handler = async ({ deps, params }) => {
+export const pauseDispatch: Handler = async ({ deps, params }) => {
   const scope = runScopeFrom(params);
   const dispatch = await requireDispatch(deps, scope);
+  if (isDispatchTerminal(dispatch.status) || dispatch.status === "stopping") {
+    return { status: 200, body: dispatch };
+  }
+  const next = stopDispatch(dispatch, PAUSED_BY_OPERATOR, "paused by the operator", deps);
+  await deps.stores.dispatches.put(next);
+  return { status: 200, body: next };
+};
+
+/**
+ * `POST …/dispatch/cancel` — end the run. Its machine is stopped as by a pause,
+ * and the run ends `cancelled` once the machine has: at once when there is no
+ * machine, or when it had already stopped (a paused run); otherwise when the
+ * runner, or the reconciler, reports it gone (`followCancelledRun`). A pause
+ * still stopping becomes a cancel. What the run left unlanded is at GitHub, and
+ * the program's next run continues it (A-60).
+ */
+export const cancelDispatch: Handler = async ({ deps, request, params }) => {
+  const scope = runScopeFrom(params);
+  const body = parseBody(DispatchCancelBodySchema, request.body ?? {});
+  const dispatch = await requireDispatch(deps, scope);
+  const reason = body.reason ?? "Cancelled by the operator.";
+  const next: Dispatch = isDispatchTerminal(dispatch.status)
+    ? dispatch
+    : dispatch.status === "stopping"
+      ? {
+          ...dispatch,
+          failure: { code: CANCELLED_BY_OPERATOR, message: reason },
+          updatedAt: nowIso(deps.clock),
+        }
+      : stopDispatch(dispatch, CANCELLED_BY_OPERATOR, reason, deps);
+  if (next !== dispatch) await deps.stores.dispatches.put(next);
+  if (isDispatchTerminal(next.status)) {
+    await followCancelledRun(deps.stores, deps.clock, {
+      ...next,
+      failure: { code: CANCELLED_BY_OPERATOR, message: reason },
+    });
+  }
+  return { status: 200, body: next };
+};
+
+/** `stopping`, or `stopped` outright when no machine was ever asked for. */
+const stopDispatch = (
+  dispatch: Dispatch,
+  code: typeof PAUSED_BY_OPERATOR | typeof CANCELLED_BY_OPERATOR,
+  message: string,
+  deps: ApiDeps,
+): Dispatch => {
   const at = nowIso(deps.clock);
-  if (isDispatchTerminal(dispatch.status)) return { status: 200, body: dispatch };
-  if (dispatch.status === "stopping") return { status: 200, body: dispatch };
-  let next = transitionDispatch<Dispatch>(
-    { ...dispatch, failure: { code: "cancelled", message: "cancelled by the operator" } },
+  const next = transitionDispatch<Dispatch>(
+    { ...dispatch, failure: { code, message } },
     "stop",
     at,
   );
-  if (dispatch.status === "requested") next = transitionDispatch(next, "stopped", at);
-  await deps.stores.dispatches.put(next);
-  return { status: 200, body: next };
+  return dispatch.status === "requested" ? transitionDispatch(next, "stopped", at) : next;
 };
 
 /**
@@ -461,6 +513,16 @@ export const resumeDispatch: Handler = async ({ deps, params }) => {
   const at = nowIso(deps.clock);
   const allowed = mayResume(dispatch, deps.clock.now());
   if (!allowed.ok) throw new HttpError(409, "cannot_resume", allowed.reason);
+  // A run that has ended has nothing to resume: a cancelled run's work goes on
+  // in the program's next run.
+  const run = await deps.stores.runs.get(scope, scope.runId);
+  if (run !== undefined && isRunTerminal(run.status)) {
+    throw new HttpError(
+      409,
+      "cannot_resume",
+      `run ${run.runId} ended ${run.status}; start the program again with \`nightshift run\`, which continues its unlanded strands`,
+    );
+  }
   const project = await requireProject(deps.stores, scope.projectId);
   const ceilings =
     (await deps.stores.orgConfigs.get(project.orgId))?.compute ?? DEFAULT_COMPUTE_CEILINGS;

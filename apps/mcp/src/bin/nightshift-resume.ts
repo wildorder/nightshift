@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `nightshift resume`'s landing, as a process (P8, D-P8-14).
+ * `nightshift land`'s landing, as a process (P8, D-P8-14).
  *
  *   nightshift-resume --project <id> --program <id> --run <id> --repo <path>
  *

@@ -570,7 +570,7 @@ describe("the report's publication (2026-10-14)", () => {
     expect(publication).toBeLessThan(text.indexOf("## Arbiter rulings"));
     expect(text).toContain("2 landings of this run are not on GitHub's `program/edge`.");
     expect(text).toContain("GitHub refused program/edge: no workflows");
-    expect(text).toContain("`nightshift resume <program>` publishes them");
+    expect(text).toContain("`nightshift land <program>` publishes them");
     expect(text).toContain("| `222222222222` | forbidden |");
     expect(text).toContain("| `333333333333` | held | behind the block above |");
   });

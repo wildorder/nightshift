@@ -1,6 +1,6 @@
 /**
  * `nightshift run <program> --remote [--compute <tier>]` and `nightshift remote
- * status|cancel|resume <program>` (P10, D-P10-02, D-P10-09, D-P10-14, D-P10-18).
+ * status|pause|resume|cancel <program>` (P10, D-P10-02, D-P10-09, D-P10-14, D-P10-18).
  *
  * Remote dispatch is refused before anything is written unless the checkout is
  * clean, the program branch's head is the one at `origin`, and the plan is
@@ -30,6 +30,7 @@ import {
   environmentFaultOf,
   estimateUsd,
   isPlanned,
+  isRunTerminal,
   mayDispatch,
   type PinnedRuntime,
   parseRuntimeVersion,
@@ -418,7 +419,7 @@ export const describeDispatch = (
     const count = publication.unpublished.length;
     lines.push(
       `  publication blocked: ${publication.blocked}`,
-      `  NOT ON GITHUB: ${count} landing${count === 1 ? "" : "s"} of this run; once the cause is fixed, \`nightshift resume <program>\` publishes them`,
+      `  NOT ON GITHUB: ${count} landing${count === 1 ? "" : "s"} of this run; once the cause is fixed, \`nightshift land <program>\` publishes them`,
     );
   } else if (publication.kind === "pending") {
     const count = publication.unpublished.length;
@@ -529,7 +530,7 @@ export const environmentFaultOfRun = async (
 const post = async (
   environment: CliEnvironment,
   options: RemoteOptions,
-  verb: "cancel" | "resume",
+  verb: "pause" | "cancel" | "resume",
 ): Promise<number> => {
   const { files, session } = await openFor(environment, options);
   const { scope, dispatch } = await dispatchOf(environment, session, files, options.run);
@@ -538,11 +539,30 @@ const post = async (
     const next = DispatchSchema.parse(
       await send(session.transport, {
         method: "POST",
-        path: verb === "cancel" ? routes.dispatchCancel(scope) : routes.dispatchResume(scope),
+        path:
+          verb === "pause"
+            ? routes.dispatchPause(scope)
+            : verb === "cancel"
+              ? routes.dispatchCancel(scope)
+              : routes.dispatchResume(scope),
       }),
     );
     for (const line of describeDispatch(next, undefined, await ceilingOf(session, files, next)))
       environment.out(line);
+    if (verb === "pause") {
+      environment.out(
+        `paused: run ${next.runId} is kept. \`nightshift remote resume ${options.id}\` takes it up again; ` +
+          `\`nightshift remote cancel ${options.id}\` ends it.`,
+      );
+    } else if (verb === "cancel") {
+      const run = await session.stores.runs.get(scope, scope.runId);
+      environment.out(
+        run !== undefined && isRunTerminal(run.status)
+          ? `run ${next.runId} ended ${run.status}. \`nightshift run ${options.id}\` starts the program again ` +
+              "and continues what this run left unlanded."
+          : `run ${next.runId} ends cancelled once its machine has stopped.`,
+      );
+    }
     return 0;
   } catch (error) {
     if (error instanceof ControlPlaneError) {
@@ -553,6 +573,10 @@ const post = async (
   }
 };
 
+/** Stops the machine and keeps the run, for `remote resume`. */
+export const remotePause = (environment: CliEnvironment, options: RemoteOptions) =>
+  post(environment, options, "pause");
+/** Ends the run: its machine stops, and the run ends `cancelled` once it has. */
 export const remoteCancel = (environment: CliEnvironment, options: RemoteOptions) =>
   post(environment, options, "cancel");
 export const remoteResume = (environment: CliEnvironment, options: RemoteOptions) =>

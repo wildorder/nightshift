@@ -9,7 +9,7 @@
  *   verification, unless a landed repair changed them, in which case the latest
  *   `gate.repaired` event that says so carries the new ones. Derived from the
  *   run's records, as strand gating is, so an engine that
- *   re-attaches and `nightshift resume` read the same definitions; kept in
+ *   re-attaches and `nightshift land` read the same definitions; kept in
  *   memory, and refreshed when this process writes a `gate.repaired`. The
  *   stored Program Contract and its plan hash are never touched: the change is
  *   a run decision, reviewed afterwards, not a re-ratification.
@@ -89,7 +89,7 @@ export const withGateDefinitions = (
 /**
  * Per store and run. Keyed by the stores object, so two environments over the
  * same stores agree, and a process that reads the records afresh (another
- * engine, `nightshift resume`) derives them rather than trusting this one.
+ * engine, `nightshift land`) derives them rather than trusting this one.
  */
 const cached = new WeakMap<object, Map<string, Promise<GateDefinitions>>>();
 
@@ -613,7 +613,7 @@ export interface ReconcileGateRepairsInput {
  * Brings the run's records up to date with its landed repairs: `gate.repaired`
  * (and the decision, when the definitions changed) for each that has none, and
  * the optional gate-health record. Called on every landing,
- * by the merge queue, a readmitted dispute and `nightshift resume` alike
+ * by the merge queue, a readmitted dispute and `nightshift land` alike
  * (`integrateNode`), and when an engine attaches. Never throws: what failed is
  * reported, and the next reconciliation makes it.
  */

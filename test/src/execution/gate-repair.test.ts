@@ -516,7 +516,7 @@ describe("a repair that changes a gate definition (P15, D-P15-04, SC-P15-07)", (
   );
 });
 
-describe("a repair that lands through `nightshift resume` (P15, D-P15-11)", () => {
+describe("a repair that lands through `nightshift land` (P15, D-P15-11)", () => {
   it("records the change without installing into the program checkout", async () => {
     let met = false;
     const hp01 = (): Prerequisite => ({
@@ -546,7 +546,7 @@ describe("a repair that lands through `nightshift resume` (P15, D-P15-11)", () =
 
     met = true;
     world.settle();
-    // As `nightshift resume` holds the run: no orchestrator of its own.
+    // As `nightshift land` holds the run: no orchestrator of its own.
     const result = await resumeDeferred(
       { ...world.environment, stores: { ...world.stores } },
       { scope: world.scope, program: world.session.program, repoPath: world.repo },

@@ -37,9 +37,11 @@ import {
 import {
   gatherReport,
   irreversibleConfirmationContext,
+  isDispatchTerminal,
   nowIso,
   ProgramRunLiveError,
   type RunReport,
+  type RunScope,
   renderReport,
   strandsOf,
   unconfirmedCorrections,
@@ -58,7 +60,12 @@ import {
   startRun,
   tryRevParse,
 } from "@nightshift/execution";
-import { createHttpArtifactBodyStore, createHttpPlanning } from "@nightshift/persistence/http";
+import {
+  createHttpArtifactBodyStore,
+  createHttpPlanning,
+  routes,
+  send,
+} from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { checkOutProgramBranch, ensureProgramBranch } from "../program-branch.js";
@@ -523,6 +530,78 @@ const assertSecretsHeld = async (
   }
 };
 
+/**
+ * What the program's live run is doing, in words that name the verb for it,
+ * and whether a newer plan simply supersedes it: a paused run (its machine has
+ * stopped) whose plan is not the one being run now.
+ */
+const liveRunOf = async (
+  session: Session,
+  ratified: ProgramContract,
+  runId: string,
+  program: string,
+): Promise<
+  | {
+      readonly kind: "superseded";
+      readonly says: string;
+      readonly reason: string;
+      readonly scope: RunScope;
+    }
+  | { readonly kind: "blocking"; readonly says: string }
+> => {
+  const scope = {
+    projectId: ratified.projectId,
+    programId: ratified.programId,
+    runId: runId as RunScope["runId"],
+  };
+  const run = await session.stores.runs.get(scope, scope.runId);
+  if (run === undefined || run.location !== "remote") {
+    return {
+      kind: "blocking",
+      says: `program ${program} already has a live run: ${runId}, a local run still in progress. Wait for it to end.`,
+    };
+  }
+  const dispatch = await session.stores.dispatches.get(scope);
+  const verbs =
+    `\`nightshift remote pause ${program}\` stops it and keeps it, ` +
+    `\`nightshift remote cancel ${program}\` ends it`;
+  if (dispatch === undefined || !isDispatchTerminal(dispatch.status)) {
+    const state =
+      dispatch === undefined
+        ? "is starting"
+        : dispatch.status === "stopping"
+          ? "is stopping its machine"
+          : `is ${dispatch.status} on its machine`;
+    return {
+      kind: "blocking",
+      says: `program ${program} already has a live run: ${runId} ${state}. Let it finish, or ${verbs}.`,
+    };
+  }
+  const root =
+    run.rootNodeId === undefined
+      ? undefined
+      : await session.stores.executionNodes.get(scope, run.rootNodeId);
+  const ranHash = root?.plan?.planHash;
+  if (ranHash !== undefined && ratified.planHash !== undefined && ranHash !== ratified.planHash) {
+    return {
+      kind: "superseded",
+      scope,
+      reason: "Superseded: the program was run again under a newer ratified plan.",
+      says:
+        `run ${runId} was paused under an earlier plan; it is cancelled, and this run ` +
+        "continues what it left unlanded.",
+    };
+  }
+  const why = dispatch.failure === undefined ? "" : ` (${dispatch.failure.message})`;
+  return {
+    kind: "blocking",
+    says:
+      `program ${program} already has a live run: ${runId} is paused, its machine stopped${why}. ` +
+      `\`nightshift remote resume ${program}\` takes it up again; \`nightshift remote cancel ${program}\` ends it, ` +
+      "and the next run continues what it left unlanded.",
+  };
+};
+
 export const runProgram = async (
   environment: CliEnvironment,
   session: Session,
@@ -563,17 +642,35 @@ export const runProgram = async (
   const remote = before.remote;
   if (remote !== undefined) await assertDispatchable(session, ratified, remote.readiness);
 
-  let started: StartedRun;
-  try {
-    started = await startAfter(deps, files, options, before);
-  } catch (error) {
-    if (!(error instanceof ProgramRunLiveError)) throw error;
-    environment.err(
-      `program ${error.programId} already has a live run ${error.liveRunId}; ` +
-        "wait for it to end or cancel it before starting another",
-    );
+  const start = async (): Promise<StartedRun | ProgramRunLiveError> => {
+    try {
+      return await startAfter(deps, files, options, before);
+    } catch (error) {
+      if (!(error instanceof ProgramRunLiveError)) throw error;
+      return error;
+    }
+  };
+  let attempt = await start();
+  if (attempt instanceof ProgramRunLiveError) {
+    const live = await liveRunOf(session, ratified, attempt.liveRunId, files.id);
+    if (live.kind === "superseded") {
+      // A paused run of an earlier plan cannot be resumed into this one: it
+      // ends, and this run continues what it left unlanded (A-60).
+      environment.out(live.says);
+      await send(session.transport, {
+        method: "POST",
+        path: routes.dispatchCancel(live.scope),
+        body: { reason: live.reason },
+      });
+      attempt = await start();
+    }
+  }
+  if (attempt instanceof ProgramRunLiveError) {
+    const live = await liveRunOf(session, ratified, attempt.liveRunId, files.id);
+    environment.err(live.says);
     return { started: undefined, exitCode: 1 };
   }
+  const started = attempt;
   await keepAuditOutput(environment, session, started, before.audit);
   await recordConfirmations(environment, session, started, confirming);
   const sayCarried = (): void => {
@@ -647,7 +744,7 @@ export const runProgram = async (
       `deferred: ${deferred.map((strand) => strand.id).join(", ")} ${deferred.length === 1 ? "is" : "are"} done on the ` +
         `provisional line, waiting on ${waitingOn.length === 0 ? "a human prerequisite" : waitingOn.join(", ")}. ` +
         `Nothing of ${deferred.length === 1 ? "it" : "them"} is on the program branch. When it is done: ` +
-        `\`nightshift preflight ${files.id}\`, then \`nightshift resume ${files.id}\`.`,
+        `\`nightshift preflight ${files.id}\`, then \`nightshift land ${files.id}\`.`,
     );
   }
   return { started, exitCode: exitCodeFor(report) };

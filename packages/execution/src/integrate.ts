@@ -282,7 +282,7 @@ export const integrateNode = async (
 
   // --- What a repair did to the gates (P15, D-P15-04, D-P15-07, D-P15-11) ----------
   // Every landing passes here, whoever lands it (the merge queue, a readmitted
-  // dispute, `nightshift resume`), and before the next landing can start: the
+  // dispute, `nightshift land`), and before the next landing can start: the
   // definitions the next verification reads, the gate-health record and the
   // setup reference are brought up to date with every repair that has landed.
   // It never fails the landing; the work is integrated whatever it finds.

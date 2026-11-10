@@ -143,6 +143,7 @@ export type Operation =
   // P10: the remote runner. A run's dispatch and its machine (D-P10-18).
   | "dispatch.create"
   | "dispatch.get"
+  | "dispatch.pause"
   | "dispatch.cancel"
   | "dispatch.resume"
   | "dispatch.heartbeat"
@@ -350,6 +351,7 @@ export const EXECUTION_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // environment.
   "dispatch.create": "forbidden",
   "dispatch.get": "forbidden",
+  "dispatch.pause": "forbidden",
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
@@ -503,6 +505,7 @@ export const ORCHESTRATOR_ACCESS: Readonly<Record<Operation, ExecutionAccess>> =
   // P10: as for a worker.
   "dispatch.create": "forbidden",
   "dispatch.get": "forbidden",
+  "dispatch.pause": "forbidden",
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
@@ -687,6 +690,7 @@ export const ENGINE_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   // installation, which reach the engine only inside a heartbeat response.
   "dispatch.create": "forbidden",
   "dispatch.get": "own_program",
+  "dispatch.pause": "forbidden",
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "own_run",

@@ -719,7 +719,7 @@ const endGatesEnding = async (
     return {
       kind: "ended",
       outcome: "deferred",
-      why: `the end gates wait on ${result.waitingOn.join(", ")} (verification ${result.verification.verificationId}); nightshift resume runs them once it is met.`,
+      why: `the end gates wait on ${result.waitingOn.join(", ")} (verification ${result.verification.verificationId}); nightshift land runs them once it is met.`,
     };
   }
   return { kind: "ended", outcome, why: reason };
@@ -1046,7 +1046,7 @@ export const registerOrchestratorTools = (server: McpServer, deps: OrchestratorD
         "skipped. The answer leads with every skipped step and every raised timeout " +
         "(`notVerified`). `deferred` is for a " +
         "planned run whose remaining work waits on a human prerequisite: the run is recorded as " +
-        "interrupted, its provisional work is kept, and `nightshift resume` takes it from there. " +
+        "interrupted, its provisional work is kept, and `nightshift land` takes it from there. " +
         "On a machine, the run first waits for GitHub to have every landing; a run whose work " +
         "GitHub lacks is never `succeeded`: it ends deferred, and says why.",
       inputSchema: {

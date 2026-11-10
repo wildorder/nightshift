@@ -40,6 +40,7 @@ import {
   createDispatch,
   getDispatch,
   heartbeat,
+  pauseDispatch,
   resumeDispatch,
 } from "./operations/dispatch.js";
 import { createArtifactDownloadUrl } from "./operations/downloads.js";
@@ -387,6 +388,12 @@ export const ROUTES: readonly Route[] = [
     handler: createDispatch,
   },
   { method: "GET", path: `${RUN}/dispatch`, operation: "dispatch.get", handler: getDispatch },
+  {
+    method: "POST",
+    path: `${RUN}/dispatch/pause`,
+    operation: "dispatch.pause",
+    handler: pauseDispatch,
+  },
   {
     method: "POST",
     path: `${RUN}/dispatch/cancel`,

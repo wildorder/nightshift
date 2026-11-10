@@ -186,6 +186,7 @@ const EXPECTED_ACCESS: Readonly<Record<Operation, ExecutionAccess>> = {
   "orgConfig.put": "forbidden",
   "dispatch.create": "forbidden",
   "dispatch.get": "forbidden",
+  "dispatch.pause": "forbidden",
   "dispatch.cancel": "forbidden",
   "dispatch.resume": "forbidden",
   "dispatch.heartbeat": "forbidden",
