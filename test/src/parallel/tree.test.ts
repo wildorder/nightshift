@@ -25,7 +25,12 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Event, ExecutionNode } from "@nightshift/contracts";
 import { isSequenced, isSettled, type RunScope } from "@nightshift/core";
-import { git, nodeGitRunner } from "@nightshift/execution";
+import {
+  git,
+  MAX_PLAN_REVIEWS,
+  nodeGitRunner,
+  STRAND_PLAN_REVIEW_CONTEXT,
+} from "@nightshift/execution";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createLocalContext,
@@ -180,6 +185,15 @@ describe("the Stage 5 tree", () => {
         kids.some((kid) => kid.executionNodeId === event.executionNodeId),
     );
     expect(delegations.map((event) => event.agentId)).toEqual([cAgent?.agentId, cAgent?.agentId]);
+    // P18: C's job plan was reviewed, and the reviewer's verdict reached it.
+    const reviews = (await run.ctx.stores.decisions.listByRun(run.scope)).items.filter(
+      (decision) =>
+        decision.executionNodeId === cNode.executionNodeId &&
+        decision.context.startsWith(STRAND_PLAN_REVIEW_CONTEXT),
+    );
+    expect(reviews.map((decision) => decision.context)).toEqual([
+      `${STRAND_PLAN_REVIEW_CONTEXT} round 1 of ${MAX_PLAN_REVIEWS} — sound`,
+    ]);
 
     // SC-P6-01, SC-P6-03: overlap, read from the event sequence.
     expect(overlapped(events, String(a.nodeId), String(b.nodeId))).toBe(true);

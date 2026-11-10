@@ -75,6 +75,15 @@ export const scriptFor = (
   input: HarnessStartInput,
   fallback: ScriptName,
 ): { readonly script: ScriptName; readonly args: readonly string[] } => {
+  // A helper's task, before the node it sits on: a plan reviewer runs on the
+  // sub-program's node, and given the node's script it ran the orchestrator's,
+  // with tools its role does not have.
+  if (input.task?.kind === "review_plan") return { script: "review-plan", args: [] };
+  if (input.agent.role === "examiner" || input.agent.role === "arbiter") {
+    throw new Error(
+      `the scripted harness plays no ${input.agent.role} for a ${input.task?.kind ?? "task-less"} agent; give the test a harness that does`,
+    );
+  }
   if (input.node.kind === "program") {
     // The root of a planned run (P7): told which run, and which strands the plan has.
     return {
