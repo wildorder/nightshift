@@ -25,6 +25,7 @@ import {
   parkBatch,
   previousMonthOf,
   recordAttempt,
+  releaseRefusedPush,
   requestPush,
   resolvePush,
   settleBatch,
@@ -323,6 +324,74 @@ describe("requestPush and resolvePush", () => {
     const pushed = requestPush(empty(), request, 1, AT);
     if (!pushed.ok) throw new Error("expected ok");
     expect(resolvePush(pushed.record, B, "published", undefined, AT)).toMatchObject({ ok: false });
+  });
+});
+
+describe("a refused push holds the line", () => {
+  const request = { head: C, expectedPredecessor: A, bundleKey: "k" };
+  const held = (status: "protected" | "forbidden" = "protected"): LineRecord => {
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const composed = composeBatch(batched, compositionBody("b") as never, "comp-1", AT);
+    if (!composed.ok) throw new Error("expected ok");
+    const pushed = requestPush({ ...composed.record, head: A }, request, 1, AT);
+    if (!pushed.ok) throw new Error("expected ok");
+    const resolved = resolvePush(pushed.record, C, status, "GitHub said no", LATER);
+    if (!resolved.ok) throw new Error("expected ok");
+    return resolved.record;
+  };
+
+  it.each(["protected", "forbidden"] as const)("%s leaves the queue and records why", (status) => {
+    const record = held(status);
+    expect(record.queue).toEqual([]);
+    expect(record.waiting).toMatchObject({ reason: "line_refused", since: LATER });
+    expect(record.waiting?.detail).toContain(record.branch);
+    expect(record.waiting?.detail).toContain("bypass");
+    expect(record.waiting?.detail).toContain("GitHub said no");
+    expect(lineHasWork(record)).toBe(false);
+  });
+
+  it("is not work even with queued and held entries", () => {
+    const record = held();
+    const more = appendQueueEntry(
+      { ...record, push: record.push, waiting: record.waiting },
+      { program: P2, upTo: B },
+      LATER,
+    );
+    expect(lineHasWork(more)).toBe(true); // a new landing releases the hold
+    const withQueue = { ...record, queue: queued().queue, held: queued().queue };
+    expect(lineHasWork(withQueue)).toBe(false);
+  });
+
+  it("is tried once more by a new queue entry, and a second refusal holds again", () => {
+    const retried = appendQueueEntry(held(), { program: P2, upTo: B }, LATER);
+    expect(retried.push?.status).toBe("pending");
+    expect(retried.queue).toHaveLength(1);
+    const again = resolvePush(retried, C, "protected", "still no", LATER);
+    if (!again.ok) throw new Error("expected ok");
+    expect(again.record.push?.status).toBe("protected");
+    expect(again.record.queue).toEqual(retried.queue);
+    expect(lineHasWork(again.record)).toBe(false);
+    expect(again.record.waiting?.since).toBe(LATER);
+  });
+
+  it("is tried once by the retry path, and an entry already composed is not queued again", () => {
+    const record = held();
+    const entry = record.compositions[0]?.ranges[0];
+    if (entry === undefined) throw new Error("expected a range");
+    expect(appendQueueEntry(record, { program: entry.program, upTo: entry.upTo }, LATER)).toBe(
+      record,
+    );
+    const released = releaseRefusedPush(record, LATER);
+    expect(released.push?.status).toBe("pending");
+    expect(releaseRefusedPush(released, LATER)).toBe(released);
+  });
+
+  it("clears the waiting reason when the retried push publishes", () => {
+    const released = releaseRefusedPush(held(), LATER);
+    const done = resolvePush(released, C, "published", undefined, LATER);
+    if (!done.ok) throw new Error("expected ok");
+    expect(done.record.waiting).toBeUndefined();
+    expect(done.record.head).toBe(C);
   });
 });
 
