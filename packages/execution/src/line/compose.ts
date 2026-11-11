@@ -5,6 +5,7 @@ import {
   type LineRange,
   type LineRepairRef,
   type LineVerification,
+  MAX_LINE_COVERS,
   MAX_LINE_REPAIRS,
   type ProgramId,
 } from "@nightshift/contracts";
@@ -30,6 +31,13 @@ const withRepairs = (range: LineRange, repairs: number): LineRange => {
   const { repairs: _spent, ...rest } = range;
   return repairs > 0 ? { ...rest, repairs } : rest;
 };
+
+/** Every head an entry stands for: its own and any it already covers. */
+const subsumed = (entry: LineQueueEntry): CommitSha[] => [entry.upTo, ...(entry.covers ?? [])];
+
+/** The heads `upTo` subsumes: deduplicated, without `upTo`, the newest `MAX_LINE_COVERS`. */
+const coversOf = (upTo: CommitSha, heads: CommitSha[]): CommitSha[] =>
+  [...new Set(heads)].filter((head) => head !== upTo).slice(-MAX_LINE_COVERS);
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -146,6 +154,12 @@ const groupRanges = async (
     // A parked (spent) range is not on the line, so the next one does not follow it.
     if (unit.released?.owner.state !== "spent") chain.set(unit.program, upTo);
     if (await ports.checkout.isAncestor(upTo, lineHead)) continue;
+    const covers = coversOf(
+      upTo,
+      unit.released
+        ? [...(unit.released.range.covers ?? []), ...unit.released.entries.flatMap(subsumed)]
+        : unit.entries.flatMap(subsumed),
+    );
     const repaired =
       unit.released?.range.repaired ??
       unit.entries.find((entry) => entry.repairs === unit.repairs && entry.repaired)?.repaired;
@@ -157,6 +171,7 @@ const groupRanges = async (
           program: unit.program,
           ...(from === undefined ? {} : { from }),
           upTo,
+          ...(covers.length === 0 ? {} : { covers }),
           ...(repaired === undefined ? {} : { repaired }),
         },
         unit.repairs,

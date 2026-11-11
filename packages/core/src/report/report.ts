@@ -1586,8 +1586,18 @@ const gatherLineReach = async (
     heads.length === 0
       ? undefined
       : await stores.lines.get(scope.projectId, branch).catch(() => undefined);
-  const mine = (range: { readonly program: string; readonly upTo: string }, head: string) =>
-    range.program === scope.programId && range.upTo === head;
+  // A range is this run's for a head when it is this program's and ends at the
+  // head or recorded the head as subsumed; nothing weaker (no time ordering).
+  const mine = (
+    range: {
+      readonly program: string;
+      readonly upTo: string;
+      readonly covers?: readonly string[] | undefined;
+    },
+    head: string,
+  ) =>
+    range.program === scope.programId &&
+    (range.upTo === head || range.covers?.includes(head) === true);
   return {
     branch,
     recordFound: record !== undefined,
@@ -1657,7 +1667,7 @@ const renderLineReach = (reach: PlanLineReach | undefined): string[] => {
         );
       } else {
         lines.push(
-          `- ${short(entry.head)}: not shown; the line's retained history (compositions and parked entries keep only the newest) no longer shows it, or it has not been queued yet.`,
+          `- ${short(entry.head)}: not shown; the line's record does not show this head (not yet queued, already on the line before it was queued, or no longer retained).`,
         );
       }
     }

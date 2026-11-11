@@ -192,6 +192,24 @@ describe("the line composer", () => {
     assertSchemas(h);
   });
 
+  it("records the subsumed head of a coalesced range in covers", async () => {
+    const h = await setup();
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    const b = await h.lr.commit("p1", { "b.txt": "b\n" });
+    h.queue.push(entry(P1, a, 1), entry(P1, b, 2));
+    const out = await h.composer.drain();
+    expect(out[0]?.composed).toEqual([{ program: P1, upTo: b, covers: [a] }]);
+    assertSchemas(h);
+  });
+
+  it("keeps the composer's single-entry range free of covers", async () => {
+    const h = await setup();
+    const a = await h.lr.commit("p1", { "a.txt": "a\n" });
+    h.queue.push(entry(P1, a, 1));
+    const out = await h.composer.drain();
+    expect(out[0]?.composed).toEqual([{ program: P1, upTo: a }]);
+  });
+
   it("keeps composing other files while a conflicting range is repaired, then composes the repair first", async () => {
     const h = await setup();
     const { lr } = h;

@@ -182,7 +182,53 @@ describe("a plan run's report of the project's line", () => {
       recordWith(() => ({})),
     );
     expect(text).toContain("not shown");
-    expect(text).toContain("no longer shows it, or it has not been queued yet");
+    expect(text).toContain("the line's record does not show this head");
+  });
+
+  const covering = (f: Fixtures, program: string, upTo: string, covers?: string[]) => ({
+    ...composition(f, "c1", upTo, true),
+    ranges: [
+      { program, upTo: sha(upTo), ...(covers ? { covers: covers.map((c) => sha(c)) } : {}) },
+    ],
+  });
+
+  it("attributes a head a coalesced range covers, pushed, to the run that published it", async () => {
+    const { report } = await render(
+      ["a"],
+      recordWith((f) => ({ compositions: [covering(f, f.scope.programId, "b", ["a"])] })),
+    );
+    expect(report.lineReach?.heads[0]?.states.map((s) => s.kind)).toEqual(["composed"]);
+    expect(report.lineReach?.heads[0]?.states[0]).toMatchObject({ pushed: true });
+  });
+
+  it("reports both heads of one run composed by one range", async () => {
+    const { report } = await render(
+      ["a", "b"],
+      recordWith((f) => ({ compositions: [covering(f, f.scope.programId, "b", ["a"])] })),
+    );
+    expect(report.lineReach?.heads.map((h) => h.states.map((s) => s.kind))).toEqual([
+      ["composed"],
+      ["composed"],
+    ]);
+  });
+
+  it("does not attribute another program's range covering the same commit", async () => {
+    const { report, text } = await render(
+      ["a"],
+      recordWith((f) => ({
+        compositions: [covering(f, "prog_01ARZ3NDEKTSV4RRFFQ69G5FAV", "b", ["a"])],
+      })),
+    );
+    expect(report.lineReach?.heads[0]?.states).toEqual([]);
+    expect(text).toContain("not shown");
+  });
+
+  it("still matches an old range without covers by upTo", async () => {
+    const { report } = await render(
+      ["b"],
+      recordWith((f) => ({ compositions: [covering(f, f.scope.programId, "b")] })),
+    );
+    expect(report.lineReach?.heads[0]?.states.map((s) => s.kind)).toEqual(["composed"]);
   });
 
   it("says so when the run published nothing", async () => {
