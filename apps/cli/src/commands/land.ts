@@ -52,9 +52,10 @@ import {
 import type { CliEnvironment } from "../environment.js";
 import { UsageError } from "../failures.js";
 import { followOrigin, publishProgramBranch } from "../program-branch.js";
-import { resolveFrom } from "../program-files.js";
+import { readConfig, resolveFrom } from "../program-files.js";
 import { findProgram } from "../program-source.js";
 import { openSession, type Session } from "../session.js";
+import { landLine, lineProgramNamed } from "./land-line.js";
 import { republishRun, unpublishedOf } from "./republish.js";
 import { writeReportUnlessTracked } from "./run-program.js";
 
@@ -166,6 +167,15 @@ const landDeferred = async (
 export const land = async (environment: CliEnvironment, options: LandOptions): Promise<number> => {
   const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
   const session = await openSession(environment);
+  // The project's line program has no plan to resolve: it is found by the
+  // line branch the config names, and its refused push is retried through the
+  // plane with no dispatch intents, parked entries or new landing.
+  const config = await readConfig(repoPath);
+  if (config?.line !== undefined) {
+    const view = await lineProgramNamed(session, config, options.id);
+    if (view !== undefined)
+      return landLine(environment, session, { ...config, line: config.line }, view);
+  }
   const files = await findProgram(environment, session, {
     repoPath,
     name: options.id,

@@ -349,3 +349,104 @@ describe("nightshift line requeue", () => {
     expect(plane.calls).toEqual([]);
   });
 });
+
+describe("nightshift land for the line program", () => {
+  const LINE_RUN = RUN_A;
+  const held = (status: string, detail?: string) =>
+    view(
+      {
+        branch: "main",
+        head: sha("a"),
+        push: {
+          head: sha("f"),
+          expectedPredecessor: sha("a"),
+          bundleKey: "bundles/line",
+          generation: 1,
+          status,
+          requestedAt: AT,
+          ...(detail === undefined ? {} : { detail }),
+        },
+        waiting: { reason: "line_refused", detail: "protected branch", since: AT },
+      },
+      { programId: ALPHA, runId: LINE_RUN },
+    );
+
+  /** A plane whose line record is `states[0]` until the retry, then walks `after`. */
+  const prepare = async (after: readonly LineView[], clock?: { now: () => number }) => {
+    const plane = createFakeControlPlane({
+      apiEndpoint: TEST_API,
+      authDomain: TEST_AUTH_DOMAIN,
+      claims: { sub: TEST_SUBJECT, email: TEST_EMAIL },
+    });
+    let retried = false;
+    let reads = 0;
+    const retries: string[] = [];
+    const fetch: typeof plane.fetch = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (init.method === "POST" && path.endsWith("/publication/retry")) {
+        retried = true;
+        retries.push(path);
+        return {
+          status: 200,
+          text: async () => JSON.stringify({ rearmed: 0, lineReleased: true }),
+        };
+      }
+      if (init.method === "GET" && path === `/projects/${PROJECT}/line`) {
+        const current = retried ? after[Math.min(reads++, after.length - 1)] : held("protected");
+        return { status: 200, text: async () => JSON.stringify(current) };
+      }
+      return plane.fetch(url, init);
+    };
+    const created = await createTestEnvironment({
+      fetch,
+      ...(clock === undefined ? {} : { clock: clock as never }),
+      sleep: async () => undefined,
+    });
+    live.push(created);
+    await signIn(created.environment);
+    await writeFile(
+      join(created.environment.cwd, NIGHTSHIFT_CONFIG_FILE),
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId: PROJECT,
+        contextDocs: [],
+        verification: [{ id: "test", command: "npm test" }],
+        modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
+        delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
+        costPolicy: {},
+        line: { branch: "main" },
+      }),
+    );
+    return { created, plane, retries };
+  };
+
+  it("retries a refused line push once, with no plan, intents, parked entries or landing", async () => {
+    const { created, retries } = await prepare([held("pending"), held("published")]);
+    expect(await runCli(created.environment, ["land", "main"]), created.err.join("\n")).toBe(0);
+    expect(retries).toEqual([
+      `/projects/${PROJECT}/programs/${ALPHA}/runs/${LINE_RUN}/publication/retry`,
+    ]);
+    expect(created.out.join("\n")).toContain("GitHub has the line");
+  });
+
+  it("finds the line program by its program id too", async () => {
+    const { created, retries } = await prepare([held("published")]);
+    expect(await runCli(created.environment, ["land", ALPHA])).toBe(0);
+    expect(retries).toHaveLength(1);
+  });
+
+  it("fails with the reason when the line is refused again", async () => {
+    const { created, retries } = await prepare([held("protected", "GH006: protected branch")]);
+    expect(await runCli(created.environment, ["land", "main"])).toBe(1);
+    expect(retries).toHaveLength(1);
+    expect(created.err.join("\n")).toContain("GH006: protected branch");
+  });
+
+  it("stops waiting at the deadline when the push stays pending", async () => {
+    let now = 0;
+    const { created, retries } = await prepare([held("pending")], { now: () => (now += 60_000) });
+    expect(await runCli(created.environment, ["land", "main"])).toBe(1);
+    expect(retries).toHaveLength(1);
+    expect(created.err.join("\n")).toContain("has not finished");
+  });
+});
