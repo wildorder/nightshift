@@ -86,7 +86,9 @@ export type LineRefusal =
   /** The range an attempt names is not held back by the line. */
   | { readonly reason: "not_held"; readonly detail: string }
   /** The write is from an owner generation the line has moved past. */
-  | { readonly reason: "stale_generation"; readonly detail: string };
+  | { readonly reason: "stale_generation"; readonly detail: string }
+  /** P25, D-P25-05: there is no parked entry to send back. */
+  | { readonly reason: "nothing_parked"; readonly detail: string };
 
 export type LineChange =
   | { readonly ok: true; readonly record: LineRecord }
@@ -161,6 +163,59 @@ export const appendQueueEntry = (
     },
     at,
   );
+};
+
+/** Whether a parked entry has been sent back to the queue. */
+export const isRequeued = (record: LineRecord, parkedId: string): boolean =>
+  (record.requeued ?? []).some((entry) => entry.parkedId === parkedId);
+
+/**
+ * Sends parked ranges back to the queue (P25, D-P25-05): every parked entry not
+ * sent back before, or only those naming `program`. Each range is queued afresh,
+ * with no repairs spent and no repair commit, unless it is already queued, held,
+ * batched or composed. The parked entries are kept as recorded; `requeued` says
+ * which were sent back, when, and by whom. Refused when there is nothing to send.
+ */
+export const requeueParked = (
+  record: LineRecord,
+  pick: { readonly program?: ProgramId | undefined },
+  by: string,
+  at: string,
+): LineChange => {
+  const open = record.parked.filter(
+    (entry) =>
+      !isRequeued(record, entry.compositionId) &&
+      (pick.program === undefined || entry.ranges.some((range) => range.program === pick.program)),
+  );
+  if (open.length === 0) {
+    return refuse({
+      reason: "nothing_parked",
+      detail:
+        pick.program === undefined
+          ? "the line has no parked range to send back"
+          : `the line has no parked range of ${pick.program} to send back`,
+    });
+  }
+  const queue = [...record.queue];
+  for (const entry of [...open].sort((a, b) => a.parkedAt.localeCompare(b.parkedAt))) {
+    for (const range of entry.ranges) {
+      const waiting = [...queue, ...record.held].some((queued) => sameRange(queued, range));
+      if (waiting || alreadyTaken(record, range.program, range.upTo)) continue;
+      queue.push({ program: range.program, upTo: range.upTo, enqueuedAt: at });
+    }
+  }
+  return {
+    ok: true,
+    record: {
+      ...record,
+      queue,
+      requeued: [
+        ...(record.requeued ?? []),
+        ...open.map((entry) => ({ parkedId: entry.compositionId, at, by })),
+      ].slice(-MAX_LINE_PARKED),
+      updatedAt: at,
+    },
+  };
 };
 
 /** Moves the held entries `pick` chooses to the front of the queue, repairs and enqueuedAt kept. */

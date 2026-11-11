@@ -14,6 +14,7 @@ import {
   DEFAULT_LINE_MONTHLY_USD,
   dispatchChargeDue,
   dispatchChargeKey,
+  isRequeued,
   LINE_COMPOSITION_SECONDS,
   LINE_IDLE_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
@@ -27,6 +28,7 @@ import {
   recordAttempt,
   releaseRefusedPush,
   requestPush,
+  requeueParked,
   resolvePush,
   settleBatch,
   takeBatch,
@@ -958,6 +960,65 @@ describe("recordAttempt", () => {
     expect(recordAttempt(held(), { program: P2, upTo: B, repairs: 2 }, 1, LATER)).toMatchObject({
       ok: false,
       reason: "not_held",
+    });
+  });
+});
+
+describe("requeueParked (P25, D-P25-05)", () => {
+  const parked = (): LineRecord =>
+    makeLineRecord(f, {
+      parked: [
+        {
+          compositionId: "b1-p0",
+          ranges: [{ program: P1, upTo: A, repairs: 3 }],
+          reason: "main does not compose onto the line",
+          parkedAt: AT,
+        },
+        {
+          compositionId: "b1-p1",
+          ranges: [{ program: P2, upTo: B }],
+          reason: "main does not compose onto the line",
+          parkedAt: AT,
+        },
+      ],
+    });
+
+  it("queues every parked range afresh, with no repairs, and records who sent it back", () => {
+    const change = requeueParked(parked(), {}, "user-1", LATER);
+    if (!change.ok) throw new Error(change.detail);
+    expect(change.record.queue).toEqual([
+      { program: P1, upTo: A, enqueuedAt: LATER },
+      { program: P2, upTo: B, enqueuedAt: LATER },
+    ]);
+    expect(change.record.requeued).toEqual([
+      { parkedId: "b1-p0", at: LATER, by: "user-1" },
+      { parkedId: "b1-p1", at: LATER, by: "user-1" },
+    ]);
+    // The parked entries stay as they were recorded.
+    expect(change.record.parked).toEqual(parked().parked);
+    expect(isRequeued(change.record, "b1-p0")).toBe(true);
+    expect(lineHasWork(change.record)).toBe(true);
+  });
+
+  it("sends back only one program's ranges when asked", () => {
+    const change = requeueParked(parked(), { program: P2 }, "user-1", LATER);
+    if (!change.ok) throw new Error(change.detail);
+    expect(change.record.queue.map((entry) => entry.program)).toEqual([P2]);
+    expect(isRequeued(change.record, "b1-p0")).toBe(false);
+  });
+
+  it("does not queue a range twice, and refuses when nothing is left to send back", () => {
+    const already = { ...parked(), queue: [{ program: P1, upTo: A, enqueuedAt: AT }] };
+    const change = requeueParked(already, {}, "user-1", LATER);
+    if (!change.ok) throw new Error(change.detail);
+    expect(change.record.queue.map((entry) => entry.program)).toEqual([P1, P2]);
+    expect(requeueParked(change.record, {}, "user-1", LATER)).toMatchObject({
+      ok: false,
+      reason: "nothing_parked",
+    });
+    expect(requeueParked(empty(), { program: P1 }, "user-1", LATER)).toMatchObject({
+      ok: false,
+      reason: "nothing_parked",
     });
   });
 });

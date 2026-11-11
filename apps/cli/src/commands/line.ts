@@ -10,8 +10,11 @@ import {
   type LineParked,
   type LineRange,
   type LineRepairRef,
+  LineRequeueResponseSchema,
   type LineView,
   LineViewSchema,
+  type ProgramContract,
+  type ProgramId,
   type Run,
 } from "@nightshift/contracts";
 import { routes, send } from "@nightshift/persistence/http";
@@ -21,6 +24,11 @@ import { openSession } from "../session.js";
 
 export interface LineOptions {
   readonly repo?: string;
+}
+
+export interface LineRequeueOptions extends LineOptions {
+  /** A program id, or a program's branch (`program/<name>` or `<name>`); absent: every parked range. */
+  readonly program?: string;
 }
 
 /** What `line status` says, and exits 1 on, for a project whose config has no `line`. */
@@ -76,8 +84,15 @@ const describeComposition = (
   return lines;
 };
 
-const describeParked = (parked: LineParked, names: ReadonlyMap<string, string>): string[] => {
-  const lines = [`  ${describeRanges(parked.ranges, names)}`, `    reason: ${parked.reason}`];
+const describeParked = (
+  parked: LineParked,
+  names: ReadonlyMap<string, string>,
+  requeued?: { at: string; by: string },
+): string[] => {
+  const lines = [
+    `  ${describeRanges(parked.ranges, names)}${requeued === undefined ? "" : `  (requeued ${requeued.at} by ${requeued.by})`}`,
+    `    reason: ${parked.reason}`,
+  ];
   if (parked.resolver !== undefined) {
     lines.push(
       `    resolver ${parked.resolver.decision}, ${parked.resolver.attempts} attempt${parked.resolver.attempts === 1 ? "" : "s"}`,
@@ -95,6 +110,8 @@ export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = [])
 
   lines.push(
     `line ${record.branch}  head ${record.head === undefined ? "unknown" : short(record.head)}`,
+    `line program: ${view.programId}`,
+    `line branch: ${record.branch}, the branch work ships from`,
   );
   if (record.push === undefined) {
     lines.push("last push: none");
@@ -144,8 +161,14 @@ export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = [])
   }
 
   if (record.parked.length > 0) {
-    lines.push(`parked: ${record.parked.length}`);
-    for (const parked of record.parked) lines.push(...describeParked(parked, names));
+    const requeued = new Map((record.requeued ?? []).map((entry) => [entry.parkedId, entry]));
+    const waiting = record.parked.filter((parked) => !requeued.has(parked.compositionId)).length;
+    lines.push(
+      `parked: ${record.parked.length}${waiting === 0 ? "" : ` (${waiting} waiting for \`nightshift line requeue\`)`}`,
+    );
+    for (const parked of record.parked) {
+      lines.push(...describeParked(parked, names, requeued.get(parked.compositionId)));
+    }
   }
 
   return lines;
@@ -195,5 +218,77 @@ export const lineStatus = async (
     });
   }
   for (const text of describeLine(view, entries)) environment.out(text);
+  return 0;
+};
+
+/** The program `named` means: its id, or the program of the project whose branch is `named` or `program/<named>`. */
+const resolveProgram = async (
+  session: Awaited<ReturnType<typeof openSession>>,
+  projectId: ProgramContract["projectId"],
+  named: string,
+): Promise<ProgramId | undefined> => {
+  if (named.startsWith("prog_")) return named as ProgramId;
+  const wanted = new Set([named, `program/${named}`]);
+  let cursor: string | undefined;
+  do {
+    const page = await session.stores.programContracts.listByProject(
+      projectId,
+      cursor === undefined ? {} : { cursor },
+    );
+    const found = page.items.find((program) => wanted.has(program.repository.programBranch));
+    if (found !== undefined) return found.programId;
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return undefined;
+};
+
+/**
+ * `nightshift line requeue <program> | --all [--repo <path>]` (P25,
+ * D-P25-05): sends parked ranges back to the line's queue, every one or one
+ * program's, and starts the line's run to compose them.
+ */
+export const lineRequeue = async (
+  environment: CliEnvironment,
+  options: LineRequeueOptions,
+): Promise<number> => {
+  const repoPath = resolveFrom(environment.cwd, options.repo ?? environment.cwd);
+  const config = await readConfig(repoPath);
+  if (config === undefined) {
+    environment.err(`no nightshift.config.json in ${repoPath}`);
+    return 1;
+  }
+  if (config.line === undefined) {
+    environment.out(NO_LINE_CONFIGURED);
+    return 1;
+  }
+  const session = await openSession(environment);
+  let program: ProgramId | undefined;
+  if (options.program !== undefined) {
+    program = await resolveProgram(session, config.projectId, options.program);
+    if (program === undefined) {
+      environment.err(`no program of project ${config.projectId} is named ${options.program}`);
+      return 1;
+    }
+  }
+  const answer = LineRequeueResponseSchema.parse(
+    await send(session.transport, {
+      method: "POST",
+      path: routes.lineRequeue(config.projectId, config.line.branch),
+      body: program === undefined ? {} : { program },
+    }),
+  );
+  if (answer.requeued.length === 0) {
+    environment.out(
+      "nothing new was queued: every parked range is already queued, held or on the line",
+    );
+  } else {
+    environment.out(
+      `queued ${answer.requeued.length} range${answer.requeued.length === 1 ? "" : "s"} again:`,
+    );
+    for (const range of answer.requeued) {
+      environment.out(`  ${range.program} up to ${short(range.upTo)}`);
+    }
+  }
+  environment.out(`the line's run: ${answer.run}`);
   return 0;
 };

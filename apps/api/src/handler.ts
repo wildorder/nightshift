@@ -54,6 +54,7 @@ import {
   getLine,
   postLineAttempt,
   postLinePush,
+  postLineRequeue,
   postLineSettle,
   takeLineBatch,
 } from "./operations/line.js";
@@ -172,6 +173,13 @@ export const ROUTES: readonly Route[] = [
     operation: "line.createBundleUploadUrl",
     query: LINE_QUERY,
     handler: createLineBundleUploadUrl,
+  },
+  {
+    method: "POST",
+    path: `${LINE}/requeue`,
+    operation: "line.requeue",
+    query: LINE_QUERY,
+    handler: postLineRequeue,
   },
 
   // An organisation's routing and examination policy (P8, D-P8-02).
