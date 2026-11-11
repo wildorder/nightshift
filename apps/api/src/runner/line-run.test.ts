@@ -19,6 +19,7 @@ import {
   type Fixtures,
   type GitHubAppClient,
   lineProgramId,
+  lineWaitingReasonOfRefusal,
   makeDispatch,
   makeLineRecord,
   makeMembership,
@@ -248,6 +249,64 @@ describe("startLineRun", () => {
     await w.stores.runs.put(makeRun(w.f, { runId: other, status: "pending", location: "remote" }));
     await w.stores.dispatches.put(makeDispatch(w.f, { runId: other, status: "running" }));
     await refused(w, "org_concurrency");
+  });
+
+  const withCeilings = async (w: World, compute: Partial<typeof DEFAULT_COMPUTE_CEILINGS>) => {
+    const config = (await w.stores.orgConfigs.get(w.orgId)) ?? defaultOrgConfig(w.orgId, NOW);
+    await w.stores.orgConfigs.put({
+      ...config,
+      version: config.version + 1,
+      compute: { ...DEFAULT_COMPUTE_CEILINGS, ...compute },
+    });
+  };
+
+  it("is refused when the month's spend plus the run's estimate crosses the ceiling", async () => {
+    const w = await setup();
+    // Spend alone is below the ceiling (the line's own check passes); the estimate tips it over.
+    await w.stores.computeLedger.put({
+      ...emptyComputeUsage(w.orgId, MONTH, NOW),
+      meteredUsd: DEFAULT_COMPUTE_CEILINGS.maxUsdPerMonth - 0.01,
+    });
+    await refused(w, "org_month_ceiling");
+    const detail = (await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.waiting?.detail;
+    expect(detail).toContain("monthly cap");
+  });
+
+  it("is refused when the run's estimate is over the org's per-run cap", async () => {
+    const w = await setup();
+    await withCeilings(w, { maxUsdPerRun: 0.01 });
+    await refused(w, "org_run_ceiling");
+  });
+
+  it("is refused when the line's tier is above the org's ceiling", async () => {
+    const w = await setup();
+    await withCeilings(w, { maxTier: "good" });
+    const tiered = { ...w, naming: { ...w.naming, compute: { tier: "better" as const } } };
+    await refused(tiered, "org_run_ceiling");
+  });
+});
+
+describe("lineWaitingReasonOfRefusal", () => {
+  it("gives every mayDispatch refusal a waiting reason", () => {
+    // hours_over_ceiling cannot come through a start (the run's hours are capped by the org's), so it is checked here.
+    expect(
+      (
+        [
+          "tier_over_ceiling",
+          "concurrency_over_ceiling",
+          "hours_over_ceiling",
+          "run_over_cap",
+          "month_over_cap",
+        ] as const
+      ).map(lineWaitingReasonOfRefusal),
+    ).toEqual([
+      "org_run_ceiling",
+      "org_concurrency",
+      "org_run_ceiling",
+      "org_run_ceiling",
+      "org_month_ceiling",
+    ]);
+    expect(lineWaitingReasonOfRefusal("conflict")).toBeUndefined();
   });
 });
 

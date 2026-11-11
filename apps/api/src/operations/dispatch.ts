@@ -59,6 +59,7 @@ import {
   LINE_COMPOSITION_SECONDS,
   leaseExpiryFrom,
   lineAdmission,
+  lineWaitingReasonOfRefusal,
   mayDispatch,
   mayResume,
   meterUsd,
@@ -247,12 +248,13 @@ export const checkDispatchAdmission = async (
     concurrentRuns: await concurrentOf(deps, project.orgId),
   });
   if (refusal !== undefined) {
-    if (line && refusal.reason === "concurrency_over_ceiling") {
+    const waiting = lineWaitingReasonOfRefusal(refusal.reason);
+    if (line && waiting !== undefined) {
       await recordLineWaiting(
         deps.stores,
         deps.clock,
         { projectId: program.projectId, branch: body.input.branch },
-        { reason: "org_concurrency", detail: refusal.detail },
+        { reason: waiting, detail: refusal.detail },
       );
     }
     throw new HttpError(409, refusal.reason, refusal.detail);

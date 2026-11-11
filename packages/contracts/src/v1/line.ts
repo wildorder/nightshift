@@ -243,6 +243,8 @@ export const LineWaitingReasonSchema = z.enum([
   "monthly_cap",
   "org_month_ceiling",
   "org_concurrency",
+  /** A single run would break the org's per-run ceiling: its tier, its wall clock or its cost. */
+  "org_run_ceiling",
   "not_configured",
   /** The remote refused the line's push (protected or forbidden); held until a landing or a start retries it once. */
   "line_refused",

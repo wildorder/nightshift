@@ -17,6 +17,7 @@ import {
 import {
   createUlidIdGenerator,
   ensureLineProgram,
+  lineWaitingReasonOfRefusal,
   nowIso,
   ProgramRunLiveError,
   releaseRefusedPush,
@@ -84,7 +85,7 @@ export const startLineRun = async (
   } catch (error) {
     if (error instanceof HttpError) {
       const reason = LineWaitingReasonSchema.safeParse(
-        error.code === "concurrency_over_ceiling" ? "org_concurrency" : error.code,
+        lineWaitingReasonOfRefusal(error.code) ?? error.code,
       );
       if (reason.success) return { kind: "waiting", reason: reason.data, detail: error.message };
     }
@@ -134,7 +135,7 @@ export const startLineRun = async (
   } catch (error) {
     if (error instanceof HttpError) {
       const reason = LineWaitingReasonSchema.safeParse(
-        error.code === "concurrency_over_ceiling" ? "org_concurrency" : error.code,
+        lineWaitingReasonOfRefusal(error.code) ?? error.code,
       );
       if (reason.success) return { kind: "waiting", reason: reason.data, detail: error.message };
     }
