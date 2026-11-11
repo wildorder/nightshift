@@ -109,8 +109,14 @@ Check, and say what you find, without fixing anything the human did not ask for:
 You do not write code during the run, and you do not touch the checkout: every
 landing fast-forwards the branch it is on.
 
-When the run is remote and the project has a line, the run's published program
-branch is queued onto the project line; the run never waits on it. The line is
+A project's line is the branch its work ships from (`main`, or a staging or
+other branch the project names), and its programs start from it. When the run is
+remote and the project has a line, work reaches the line whole or in part as it
+lands: the run's published program branch is queued onto the line, and the run
+never waits on it. For a line that ships, user-facing work of an unfinished
+program stays unreachable (unrouted or behind a flag) until its program
+completes. Promotion beyond the line is the project's own CI/CD, not
+Nightshift's. The line is
 itself a run: of a per-line program of kind `line` that the plane makes per
 (project, line branch). The composer sits in the root orchestrator's seat and
 composes each queued branch range onto the line candidate. A repair is an
@@ -119,6 +125,7 @@ The line never stops for a repair: it reserves only the failing range's paths,
 so ranges touching other paths keep composing, and a repair that exhausts its
 budget parks its range. Every machine keeps its runner log as an artifact.
 A verification made on the line is never landing evidence for a program run.
+A protected line holds with its reason instead of looping.
 
 `nightshift line status` prints the line record, then the line program's runs
 with their machines and spend. The Studio lists the line apart from plan
@@ -204,6 +211,8 @@ it, in this order:
    lacks, such as Workflows for a change under `.github/workflows/`), and that
    `nightshift land {id}` publishes every held landing from the run's stored
    bundles once the human has fixed it. No machine is needed and nothing is lost.
+   Where the project has a line, relay where the run's work reached it (whole or
+   in part, and what is queued or parked); do not open a pull request.
 2. Every **arbiter ruling**, before anything else: an agent decided a disputed
    finding, the work moved on because of it, and the human has the last word.
    Name the finding, the ruling and why, and say how to reverse it:

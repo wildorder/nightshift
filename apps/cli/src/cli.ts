@@ -25,7 +25,7 @@ import { gates } from "./commands/gates.js";
 import { mintId } from "./commands/id.js";
 import { init } from "./commands/init.js";
 import { land } from "./commands/land.js";
-import { lineStatus } from "./commands/line.js";
+import { lineRequeue, lineStatus } from "./commands/line.js";
 import { runLocal, useStage } from "./commands/local.js";
 import { login } from "./commands/login.js";
 import { logout } from "./commands/logout.js";
@@ -73,6 +73,7 @@ Usage:
   nightshift remote status <program> [--watch] [--run <id>] [--repo <path>]
   nightshift remote pause|resume|cancel <program> [--run <id>] [--repo <path>]
   nightshift line status [--repo <path>]
+  nightshift line requeue <program> | --all [--repo <path>]
   nightshift land <program> [--run <id>] [--repo <path>]
   nightshift ruling reverse <program> <decisionId> --reason <why> [--run <id>] [--repo <path>]
   nightshift decision reverse <program> <decisionId> --choice <new> --reason <why> [--run <id>] [--repo <path>]
@@ -912,23 +913,34 @@ const doRemote = async (environment: CliEnvironment, args: readonly string[]): P
   return remoteResume(environment, options);
 };
 
-/** `nightshift line status`: the project line's state, from the plane. */
+/** `nightshift line status | requeue`: the project line's state, and sending parked ranges back. */
 const doLine = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {
-  const usage = "nightshift line status [--repo <path>]";
+  const usage =
+    "nightshift line status [--repo <path>] | nightshift line requeue <program> | --all [--repo <path>]";
   const { values, positionals } = parse(
     {
       args: [...args],
-      options: { repo: { type: "string" } },
+      options: { repo: { type: "string" }, all: { type: "boolean" } },
       allowPositionals: true,
       strict: true,
     },
     usage,
   );
-  if (positionals.length !== 1 || positionals[0] !== "status") {
-    throw new UsageError("`nightshift line` takes `status`", usage);
-  }
+  const [verb, program, ...extra] = positionals;
   const repo = optional(values, "repo");
-  return lineStatus(environment, repo === undefined ? {} : { repo });
+  const where = repo === undefined ? {} : { repo };
+  if (verb === "status" && program === undefined) {
+    if (values.all === true) throw new UsageError("`--all` is for `requeue`", usage);
+    return lineStatus(environment, where);
+  }
+  if (verb !== "requeue") {
+    throw new UsageError("`nightshift line` takes `status` or `requeue`", usage);
+  }
+  const all = values.all === true;
+  if (extra.length > 0 || all === (program !== undefined)) {
+    throw new UsageError("`nightshift line requeue` takes a program or `--all`", usage);
+  }
+  return lineRequeue(environment, { ...where, ...(program === undefined ? {} : { program }) });
 };
 
 const doRoutes = async (environment: CliEnvironment, args: readonly string[]): Promise<number> => {

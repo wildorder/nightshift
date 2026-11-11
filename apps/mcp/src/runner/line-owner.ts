@@ -28,9 +28,10 @@
  * nothing for a repair either.
  */
 import { writeFile } from "node:fs/promises";
-import type { Provider } from "@nightshift/contracts";
+import type { Event, Provider } from "@nightshift/contracts";
 import {
   type CommitSha,
+  type LineParked,
   type LineRecord,
   type LineView,
   MAX_LINE_WORDS_CHARS,
@@ -38,7 +39,13 @@ import {
   type NightshiftConfig,
   NightshiftConfigSchema,
 } from "@nightshift/contracts";
-import { type Clock, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
+import {
+  type Clock,
+  type IdGenerator,
+  LINE_IDLE_SECONDS,
+  lineHeldByRefusal,
+  settledParkedOf,
+} from "@nightshift/core";
 import {
   createLineCheckout,
   createLineComposer,
@@ -122,6 +129,20 @@ const cloneUrlOf = (repositoryUrl: string): string =>
     : repositoryUrl;
 
 const headRef = (branch: string): string => `refs/heads/${branch}`;
+
+/** Why a line run that parked work failed: each range (program, upTo) and its cause. */
+export const parkedReason = (parked: readonly LineParked[]): string => {
+  const ranges = parked.flatMap((entry) =>
+    entry.ranges.map(
+      (range) => `${range.program} up to ${range.upTo.slice(0, 12)}: ${entry.reason}`,
+    ),
+  );
+  return `the line parked ${ranges.length} range${ranges.length === 1 ? "" : "s"}, which wait for \`nightshift line requeue\`: ${ranges.join("; ")}`;
+};
+
+/** The push-refusal hold: the remote refused the line's push, and nothing more is composed. */
+const refused = (record: LineRecord): boolean => lineHeldByRefusal(record);
+
 const remoteRef = (branch: string): string => `refs/remotes/origin/${branch}`;
 
 export const runLineOwner = async (
@@ -201,18 +222,14 @@ const ownLine = async (
     return named.exitCode === 0 && named.stdout.trim() !== "" ? named.stdout.trim() : "main";
   })();
 
-  /** Fetches the line, main and every program branch the line view names; answers the line's and main's heads. */
-  const fetchHeads = async (view: LineView): Promise<{ lineHead: string; mainHead: string }> => {
-    const required = [branch, mainBranch];
+  /**
+   * Fetches the line and every program branch the line view names; answers the line's head.
+   * The default branch is fetched only when the line is absent at the remote: its head is then
+   * the line's, the one time anything but a range enters.
+   */
+  const fetchHeads = async (view: LineView): Promise<{ lineHead: string }> => {
+    const required = [branch];
     const refspec = (name: string) => `+${headRef(name)}:${headRef(name)}`;
-    const mainFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
-      "fetch",
-      "origin",
-      refspec(mainBranch),
-    ]);
-    if (mainFetched.exitCode !== 0)
-      throw new Error(`fetch ${mainBranch}: ${mainFetched.stderr.trim()}`);
-    // A line that has never been pushed has no ref at GitHub yet: it starts at main's head.
     const lineFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
       "fetch",
       "origin",
@@ -224,6 +241,14 @@ const ownLine = async (
         throw new Error(`fetch ${branch}: ${lineFetched.stderr.trim()}`);
       lineAbsent = true;
       log(`line ${branch} does not exist at the remote yet; composing onto ${mainBranch}`);
+      const mainFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
+        "fetch",
+        "origin",
+        refspec(mainBranch),
+      ]);
+      if (mainFetched.exitCode !== 0)
+        throw new Error(`fetch ${mainBranch}: ${mainFetched.stderr.trim()}`);
+      required.push(mainBranch);
     }
     for (const program of view.programs) {
       if (required.includes(program.branch)) continue;
@@ -268,8 +293,7 @@ const ownLine = async (
           cwd: layout.checkout,
         })
       ).trim();
-    const mainHead = await head(mainBranch);
-    return { lineHead: lineAbsent ? mainHead : await head(branch), mainHead };
+    return { lineHead: await head(lineAbsent ? mainBranch : branch) };
   };
 
   say("fetching the line and its programs");
@@ -354,7 +378,7 @@ const ownLine = async (
 
   // --- S-03's ports -------------------------------------------------------------------
 
-  const heads = async (): Promise<{ lineHead: string; mainHead: string }> => {
+  const heads = async (): Promise<{ lineHead: string }> => {
     ensureRunning();
     const fetched = await fetchHeads(await plane.line());
     await refreshGates(fetched.lineHead);
@@ -493,14 +517,33 @@ const ownLine = async (
   let strandedDrains = 0;
   const stranded = (record: LineRecord): boolean =>
     record.held.length > 0 && composer.idle() && strandedDrains < MAX_STRANDED_DRAINS;
+  // Under the refusal hold the queue, a batch, held ranges and repairs are left for the
+  // retry the plane offers (a new push or a start); only a push in flight or an
+  // engine job still running keeps the owner.
   const hasWork = (record: LineRecord): boolean =>
-    record.queue.length > 0 ||
-    record.batch !== undefined ||
-    composer.needsRecovery() ||
-    stranded(record) ||
-    !composer.idle() ||
+    pendingPush(record) !== undefined ||
     !line.engine.idle() ||
-    pendingPush(record) !== undefined;
+    (!refused(record) &&
+      (record.queue.length > 0 ||
+        record.batch !== undefined ||
+        composer.needsRecovery() ||
+        stranded(record) ||
+        !composer.idle()));
+
+  /** Every `line.parked` this run settled, by whichever owner: the record's list is capped and requeue empties it. */
+  const parkedInRun = async (record: LineRecord): Promise<LineParked[]> => {
+    const events: Event[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await line.runtime.stores.events.listByRun(
+        line.session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      events.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return settledParkedOf(events, record);
+  };
 
   let idleSince: number | undefined;
   for (;;) {
@@ -519,11 +562,12 @@ const ownLine = async (
 
     if (!composer.idle() || record.held.length === 0) strandedDrains = 0;
     if (
-      record.queue.length > 0 ||
-      record.batch !== undefined ||
-      !composer.idle() ||
-      composer.needsRecovery() ||
-      stranded(record)
+      !refused(record) &&
+      (record.queue.length > 0 ||
+        record.batch !== undefined ||
+        !composer.idle() ||
+        composer.needsRecovery() ||
+        stranded(record))
     ) {
       idleSince = undefined;
       if (composer.idle() && record.queue.length === 0 && record.batch === undefined) {
@@ -550,7 +594,11 @@ const ownLine = async (
     idleSince ??= machine.now();
     if (machine.now() - idleSince >= idleMs) {
       log(`the line has been idle for ${Math.round(idleMs / 1000)}s; the owner ends`);
-      await line.complete();
+      // A run that parked anything did not do what it was started for.
+      const parked = await parkedInRun(record);
+      await line.complete(
+        parked.length === 0 ? undefined : { status: "failed", reason: parkedReason(parked) },
+      );
       return undefined;
     }
     say("waiting for work");

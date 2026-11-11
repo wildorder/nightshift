@@ -11,7 +11,17 @@ import {
   type Run,
 } from "@nightshift/contracts";
 import { afterEach, describe, expect, it } from "vitest";
-import { createTestEnvironment, type TestEnvironment } from "../testing/harness.js";
+import { runCli } from "../cli.js";
+import {
+  createFakeControlPlane,
+  createTestEnvironment,
+  signIn,
+  TEST_API,
+  TEST_AUTH_DOMAIN,
+  TEST_EMAIL,
+  TEST_SUBJECT,
+  type TestEnvironment,
+} from "../testing/harness.js";
 import { describeLine, lineStatus, NO_LINE_CONFIGURED } from "./line.js";
 
 const live: TestEnvironment[] = [];
@@ -185,6 +195,26 @@ describe("describeLine", () => {
     expect(out).toContain("nightshift/beta 1111111..eeeeeee");
     expect(out).toContain("reason: verification failed after the resolver gave up");
     expect(out).toContain("resolver gave_up, 3 attempts");
+    expect(out).toContain("(1 waiting for `nightshift line requeue`)");
+  });
+
+  it("marks a parked entry that was sent back, and counts only the rest as waiting (P25)", () => {
+    const parked = (compositionId: string) => ({
+      compositionId,
+      ranges: [range(BETA, sha("e"), sha("1"))],
+      reason: "main does not compose onto the line",
+      parkedAt: AT,
+    });
+    const out = text(
+      describeLine(
+        view({
+          parked: [parked("comp-2"), parked("comp-3")],
+          requeued: [{ parkedId: "comp-2", at: AT, by: "user-1" }],
+        }),
+      ),
+    );
+    expect(out).toContain("parked: 2 (1 waiting for `nightshift line requeue`)");
+    expect(out).toContain(`(requeued ${AT} by user-1)`);
   });
 
   it("shows the cap reached and why the line is waiting", () => {
@@ -248,5 +278,191 @@ describe("nightshift line status", () => {
     expect(await lineStatus(created.environment, {})).toBe(1);
     expect(created.out.join("\n")).toBe(NO_LINE_CONFIGURED);
     expect(NO_LINE_CONFIGURED).toContain("`line`");
+  });
+});
+
+describe("nightshift line status names the line", () => {
+  it("names the line program and the branch work ships from", () => {
+    const out = text(describeLine(view({ branch: "main" }, { programId: ALPHA })));
+    expect(out).toContain(`line program: ${ALPHA}`);
+    expect(out).toContain("line branch: main, the branch work ships from");
+  });
+});
+
+describe("nightshift line requeue", () => {
+  const prepare = async (requeueResponse: object = { requeued: [], run: "none" }) => {
+    const plane = createFakeControlPlane({
+      apiEndpoint: TEST_API,
+      authDomain: TEST_AUTH_DOMAIN,
+      claims: { sub: TEST_SUBJECT, email: TEST_EMAIL },
+      overrides: [
+        {
+          path: `/projects/${PROJECT}/line/requeue`,
+          response: { status: 200, body: JSON.stringify(requeueResponse) },
+        },
+      ],
+    });
+    const created = await createTestEnvironment({ fetch: plane.fetch });
+    live.push(created);
+    await signIn(created.environment);
+    await writeFile(
+      join(created.environment.cwd, NIGHTSHIFT_CONFIG_FILE),
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId: PROJECT,
+        contextDocs: [],
+        verification: [{ id: "test", command: "npm test" }],
+        modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
+        delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
+        costPolicy: {},
+        line: { branch: "main" },
+      }),
+    );
+    return { created, plane };
+  };
+
+  it("requeues one program's parked ranges", async () => {
+    const { created, plane } = await prepare({
+      requeued: [{ program: ALPHA, upTo: sha("a") }],
+      run: "started",
+    });
+    expect(await runCli(created.environment, ["line", "requeue", ALPHA])).toBe(0);
+    expect(plane.calls.at(-1)).toMatchObject({
+      method: "POST",
+      path: `/projects/${PROJECT}/line/requeue`,
+      body: { program: ALPHA },
+    });
+    expect(created.out.join("\n")).toContain("queued 1 range again");
+  });
+
+  it("requeues every parked range with --all", async () => {
+    const { created, plane } = await prepare();
+    expect(await runCli(created.environment, ["line", "requeue", "--all"])).toBe(0);
+    expect(plane.calls.at(-1)?.body).toEqual({});
+    expect(created.out.join("\n")).toContain("nothing new was queued");
+  });
+
+  it("is a usage error with neither a program nor --all, or with both", async () => {
+    const { created, plane } = await prepare();
+    expect(await runCli(created.environment, ["line", "requeue"])).toBe(2);
+    expect(await runCli(created.environment, ["line", "requeue", ALPHA, "--all"])).toBe(2);
+    expect(plane.calls).toEqual([]);
+  });
+});
+
+describe("nightshift land for the line program", () => {
+  const LINE_RUN = RUN_A;
+  const held = (status: string, detail?: string) =>
+    view(
+      {
+        branch: "main",
+        head: sha("a"),
+        push: {
+          head: sha("f"),
+          expectedPredecessor: sha("a"),
+          bundleKey: "bundles/line",
+          generation: 1,
+          status,
+          requestedAt: AT,
+          ...(detail === undefined ? {} : { detail }),
+        },
+        waiting: { reason: "line_refused", detail: "protected branch", since: AT },
+      },
+      { programId: ALPHA, runId: LINE_RUN },
+    );
+
+  /** A plane whose line record is `states[0]` until the retry, then walks `after`. */
+  const prepare = async (after: readonly LineView[], clock?: { now: () => number }) => {
+    const plane = createFakeControlPlane({
+      apiEndpoint: TEST_API,
+      authDomain: TEST_AUTH_DOMAIN,
+      claims: { sub: TEST_SUBJECT, email: TEST_EMAIL },
+    });
+    let retried = false;
+    let reads = 0;
+    const retries: string[] = [];
+    const fetch: typeof plane.fetch = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (init.method === "POST" && path.endsWith("/publication/retry")) {
+        retried = true;
+        retries.push(path);
+        return {
+          status: 200,
+          text: async () => JSON.stringify({ rearmed: 0, lineReleased: true }),
+        };
+      }
+      if (init.method === "GET" && path === `/projects/${PROJECT}/line`) {
+        const current = retried ? after[Math.min(reads++, after.length - 1)] : held("protected");
+        return { status: 200, text: async () => JSON.stringify(current) };
+      }
+      return plane.fetch(url, init);
+    };
+    const created = await createTestEnvironment({
+      fetch,
+      ...(clock === undefined ? {} : { clock: clock as never }),
+      sleep: async () => undefined,
+    });
+    live.push(created);
+    await signIn(created.environment);
+    await writeFile(
+      join(created.environment.cwd, NIGHTSHIFT_CONFIG_FILE),
+      JSON.stringify({
+        schemaVersion: 1,
+        projectId: PROJECT,
+        contextDocs: [],
+        verification: [{ id: "test", command: "npm test" }],
+        modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
+        delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
+        costPolicy: {},
+        line: { branch: "main" },
+      }),
+    );
+    return { created, plane, retries };
+  };
+
+  it("retries a refused line push once, with no plan, intents, parked entries or landing", async () => {
+    const { created, retries } = await prepare([held("pending"), held("published")]);
+    expect(await runCli(created.environment, ["land", "main"]), created.err.join("\n")).toBe(0);
+    expect(retries).toEqual([
+      `/projects/${PROJECT}/programs/${ALPHA}/runs/${LINE_RUN}/publication/retry`,
+    ]);
+    expect(created.out.join("\n")).toContain("GitHub has the line");
+  });
+
+  it("finds the line program by its program id too", async () => {
+    const { created, retries } = await prepare([held("published")]);
+    expect(await runCli(created.environment, ["land", ALPHA])).toBe(0);
+    expect(retries).toHaveLength(1);
+  });
+
+  it("fails with the reason when the line is refused again", async () => {
+    const { created, retries } = await prepare([held("protected", "GH006: protected branch")]);
+    expect(await runCli(created.environment, ["land", "main"])).toBe(1);
+    expect(retries).toHaveLength(1);
+    expect(created.err.join("\n")).toContain("GH006: protected branch");
+  });
+
+  it("stops waiting at the deadline when the push stays pending", async () => {
+    let now = 0;
+    const { created, retries } = await prepare([held("pending")], { now: () => (now += 60_000) });
+    expect(await runCli(created.environment, ["land", "main"])).toBe(1);
+    expect(retries).toHaveLength(1);
+    expect(created.err.join("\n")).toContain("has not finished");
+  });
+
+  it("retries once when --run is the line's current run", async () => {
+    const { created, retries } = await prepare([held("published")]);
+    expect(
+      await runCli(created.environment, ["land", "main", "--run", LINE_RUN]),
+      created.err.join("\n"),
+    ).toBe(0);
+    expect(retries).toHaveLength(1);
+  });
+
+  it("refuses a different --run without sending publication.retry", async () => {
+    const { created, retries } = await prepare([held("published")]);
+    expect(await runCli(created.environment, ["land", "main", "--run", RUN_B])).toBe(2);
+    expect(retries).toEqual([]);
+    expect(created.err.join("\n")).toContain(LINE_RUN);
   });
 });

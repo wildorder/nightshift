@@ -32,12 +32,16 @@ export {
   gatherMemberFigures,
   gatherReport,
   type JobReport,
+  type LineReachHead,
+  type LineReachState,
   type LineRunReport,
+  type PlanLineReach,
   type RepairReport,
   type RulingReport,
   type RunReport,
   renderReport,
   type StrandReport,
+  settledParkedOf,
   type UsageRow,
 } from "./report.js";
 export {

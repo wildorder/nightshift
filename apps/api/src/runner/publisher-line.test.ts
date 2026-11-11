@@ -168,6 +168,7 @@ const world = async (options: { line?: boolean; remote?: GitRemote } = {}): Prom
     github: {
       branchHead: async (_id: number, _repository: string, branch: string) =>
         branch === "main" || branch === PROGRAM_REF.slice("refs/heads/".length) ? base : undefined,
+      defaultBranch: async () => "main",
     } as never,
     dispatcher: {
       provision: async (scope: { projectId: string; programId: string; runId: string }) => {

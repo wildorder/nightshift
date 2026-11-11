@@ -24,6 +24,7 @@ import type {
   LineRecord,
   LineResolver,
   LineSettleBody,
+  LineWaitingReason,
   ProgramId,
   ProjectId,
   ProjectSelfStartedUsage,
@@ -85,7 +86,9 @@ export type LineRefusal =
   /** The range an attempt names is not held back by the line. */
   | { readonly reason: "not_held"; readonly detail: string }
   /** The write is from an owner generation the line has moved past. */
-  | { readonly reason: "stale_generation"; readonly detail: string };
+  | { readonly reason: "stale_generation"; readonly detail: string }
+  /** P25, D-P25-05: there is no parked entry to send back. */
+  | { readonly reason: "nothing_parked"; readonly detail: string };
 
 export type LineChange =
   | { readonly ok: true; readonly record: LineRecord }
@@ -101,13 +104,42 @@ const sameRange = (
   b: Pick<LineRange, "program" | "upTo">,
 ) => a.program === b.program && a.upTo === b.upTo;
 
+/** The reason a line records while a protected or forbidden push holds it. */
+const REFUSED: LineWaitingReason = "line_refused";
+
+/**
+ * Whether the line is held by a refused push: the publisher's last word on the
+ * push was `protected` or `forbidden`, and the record says so in `waiting`.
+ * The held composition's ranges stay out of the queue until the hold is released.
+ */
+export const lineHeldByRefusal = (record: LineRecord): boolean =>
+  record.waiting?.reason === REFUSED &&
+  (record.push?.status === "protected" || record.push?.status === "forbidden");
+
+/**
+ * Releases a refusal hold once: the held push goes back to pending so the
+ * publisher tries it again. `waiting` stays until the push publishes, and a
+ * second refusal holds again. A line not held is returned as it is.
+ */
+export const releaseRefusedPush = (record: LineRecord, at: string): LineRecord => {
+  const push = record.push;
+  if (push === undefined || !lineHeldByRefusal(record)) return record;
+  const { detail: _detail, resolvedAt: _resolvedAt, ...rest } = push;
+  return {
+    ...record,
+    push: { ...rest, status: "pending", requestedAt: at },
+    updatedAt: at,
+  };
+};
+
 /** Whether a range up to `upTo` of `program` is already in the batch or in a composition. */
 const alreadyTaken = (record: LineRecord, program: ProgramId, upTo: CommitSha): boolean =>
   (record.batch?.entries ?? []).some((entry) => sameRange(entry, { program, upTo })) ||
   record.compositions.some(
     (composition) =>
       (composition.pushed !== undefined ||
-        (record.push?.status === "pending" && record.push.head === composition.commit)) &&
+        ((record.push?.status === "pending" || lineHeldByRefusal(record)) &&
+          record.push?.head === composition.commit)) &&
       composition.ranges.some((range) => sameRange(range, { program, upTo })),
   );
 
@@ -122,10 +154,67 @@ export const appendQueueEntry = (
 ): LineRecord => {
   if (record.queue.some((queued) => sameRange(queued, entry))) return record;
   if (alreadyTaken(record, entry.program, entry.upTo)) return record;
+  // A new landing is the one retry of a push the remote refused.
+  return releaseRefusedPush(
+    {
+      ...record,
+      queue: [...record.queue, { program: entry.program, upTo: entry.upTo, enqueuedAt: at }],
+      updatedAt: at,
+    },
+    at,
+  );
+};
+
+/** Whether a parked entry has been sent back to the queue. */
+export const isRequeued = (record: LineRecord, parkedId: string): boolean =>
+  (record.requeued ?? []).some((entry) => entry.parkedId === parkedId);
+
+/**
+ * Sends parked ranges back to the queue (P25, D-P25-05): every parked entry not
+ * sent back before, or only those naming `program`. Each range is queued afresh,
+ * with no repairs spent and no repair commit, unless it is already queued, held,
+ * batched or composed. The parked entries are kept as recorded; `requeued` says
+ * which were sent back, when, and by whom. Refused when there is nothing to send.
+ */
+export const requeueParked = (
+  record: LineRecord,
+  pick: { readonly program?: ProgramId | undefined },
+  by: string,
+  at: string,
+): LineChange => {
+  const open = record.parked.filter(
+    (entry) =>
+      !isRequeued(record, entry.compositionId) &&
+      (pick.program === undefined || entry.ranges.some((range) => range.program === pick.program)),
+  );
+  if (open.length === 0) {
+    return refuse({
+      reason: "nothing_parked",
+      detail:
+        pick.program === undefined
+          ? "the line has no parked range to send back"
+          : `the line has no parked range of ${pick.program} to send back`,
+    });
+  }
+  const queue = [...record.queue];
+  for (const entry of [...open].sort((a, b) => a.parkedAt.localeCompare(b.parkedAt))) {
+    for (const range of entry.ranges) {
+      const waiting = [...queue, ...record.held].some((queued) => sameRange(queued, range));
+      if (waiting || alreadyTaken(record, range.program, range.upTo)) continue;
+      queue.push({ program: range.program, upTo: range.upTo, enqueuedAt: at });
+    }
+  }
   return {
-    ...record,
-    queue: [...record.queue, { program: entry.program, upTo: entry.upTo, enqueuedAt: at }],
-    updatedAt: at,
+    ok: true,
+    record: {
+      ...record,
+      queue,
+      requeued: [
+        ...(record.requeued ?? []),
+        ...open.map((entry) => ({ parkedId: entry.compositionId, at, by })),
+      ].slice(-MAX_LINE_PARKED),
+      updatedAt: at,
+    },
   };
 };
 
@@ -490,6 +579,13 @@ export const requestPush = (
   };
 };
 
+/** What the human reads when the remote refuses the line: the branch and how to let the App push. */
+const refusalDetail = (branch: string, status: LinePushStatus, detail: string | undefined) =>
+  `the push to ${branch} was refused (${status}); Nightshift holds the line and does not force it. ` +
+  `Allow the Nightshift GitHub App to bypass the branch protection of ${branch}` +
+  (detail === undefined ? "" : `. ${detail}`) +
+  `; then run \`nightshift line requeue --all\` or \`nightshift land\` for the line program to try the push once more`;
+
 /**
  * The publisher's word on the push for `head`. `published` moves the line's
  * known head and marks the composition at that commit pushed; any other status
@@ -510,8 +606,10 @@ export const resolvePush = (
     });
   }
   const { detail: _previous, ...settled } = push;
+  const refused = status === "protected" || status === "forbidden";
+  // A refused push holds the line: its ranges stay with the composition, not the queue.
   const unpushed =
-    status === "published"
+    status === "published" || refused
       ? undefined
       : record.compositions.find(
           (composition) => composition.commit === head && composition.pushed === undefined,
@@ -527,14 +625,27 @@ export const resolvePush = (
               upTo: range.upTo,
               enqueuedAt: unpushed.composedAt,
               ...(range.repairs === undefined ? {} : { repairs: range.repairs }),
+              ...(range.covers === undefined ? {} : { covers: range.covers }),
               ...(range.repaired === undefined ? {} : { repaired: range.repaired }),
             })),
           ...record.queue,
         ];
+  const { waiting: previous, ...unwaiting } = record;
+  // A refusal holds the line; any other outcome clears the refusal it was held by, so a requeue is never held.
+  const waiting = refused
+    ? {
+        reason: REFUSED,
+        detail: refusalDetail(record.branch, status, detail),
+        since: previous?.reason === REFUSED ? previous.since : at,
+      }
+    : previous?.reason === REFUSED
+      ? undefined
+      : previous;
   return {
     ok: true,
     record: {
-      ...record,
+      ...unwaiting,
+      ...(waiting === undefined ? {} : { waiting }),
       ...(status === "published" ? { head } : {}),
       queue: requeued,
       push: {
@@ -558,10 +669,11 @@ export const resolvePush = (
 
 /** Whether the line has anything left for an owner to do: a queue, a batch, or a push to resolve. */
 export const lineHasWork = (record: LineRecord): boolean =>
-  record.queue.length > 0 ||
-  record.held.length > 0 ||
-  record.batch !== undefined ||
-  record.push?.status === "pending";
+  !lineHeldByRefusal(record) &&
+  (record.queue.length > 0 ||
+    record.held.length > 0 ||
+    record.batch !== undefined ||
+    record.push?.status === "pending");
 
 /**
  * Whether a run's publication owes the line a range it has not queued: the run

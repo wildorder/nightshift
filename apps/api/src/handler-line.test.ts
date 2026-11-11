@@ -9,6 +9,7 @@ import { generateKeyPairSync, sign as signWith } from "node:crypto";
 import {
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
+  defaultOrgConfig,
   type LineRecord,
   MAX_INLINE_PAYLOAD_BYTES,
   type OrgId,
@@ -21,6 +22,7 @@ import {
   createFixedClock,
   createFixtures,
   type Fixtures,
+  type GitHubAppClient,
   gatherReport,
   lineBundleObjectKey,
   lineProgramId,
@@ -128,6 +130,7 @@ interface Seed {
   readonly queue?: LineRecord["queue"];
   readonly batch?: LineRecord["batch"];
   readonly held?: LineRecord["held"];
+  readonly parked?: LineRecord["parked"];
 }
 
 /** The engine of a run, as the dispatch Lambda mints it. */
@@ -194,6 +197,7 @@ const seedLineRecords = async (w: World, seed: Seed = {}) => {
       queue: seed.queue ?? [],
       ...(seed.held === undefined ? {} : { held: seed.held }),
       ...(seed.batch === undefined ? {} : { batch: seed.batch }),
+      ...(seed.parked === undefined ? {} : { parked: seed.parked }),
     }),
   );
 };
@@ -212,7 +216,7 @@ const entry = (w: World, upTo = SHA) => ({
 });
 
 describe("the line routes", () => {
-  it("are exactly the six that survive", () => {
+  it("are the six the owner uses, and the person's requeue", () => {
     expect(
       ROUTES.filter((route) => route.operation.startsWith("line.")).map((route) => route.operation),
     ).toEqual([
@@ -222,6 +226,7 @@ describe("the line routes", () => {
       "line.attempt",
       "line.push",
       "line.createBundleUploadUrl",
+      "line.requeue",
     ]);
   });
 });
@@ -1202,4 +1207,259 @@ describe("users and the line", () => {
       (await call(w, "POST", lineUrl(w, BRANCH, "/batch"), { generation: 1 }, me)).status,
     ).toBe(403);
   });
+});
+
+describe("sending parked ranges back to the queue (P25, D-P25-05)", () => {
+  const parkedEntry = (compositionId: string, program: ProgramId, upTo: string) => ({
+    compositionId,
+    ranges: [{ program, upTo, repairs: 3 }],
+    reason: "main does not compose onto the line",
+    parkedAt: NOW,
+  });
+
+  it("lets a person of the owning org queue every parked range again and start the line's run", async () => {
+    const w = await setup();
+    await seedLineRecords(w, { parked: [parkedEntry("b1-p0", w.f.scope.programId, SHA)] });
+    const repository = "wildorder/repo";
+    await w.stores.programContracts.put(
+      makeProgramContract(w.f, {
+        programId: lineProgramId(w.f.scope.projectId, BRANCH),
+        kind: "line",
+        repository: {
+          url: `https://github.com/${repository}`,
+          baseBranch: "main",
+          programBranch: BRANCH,
+        },
+      }),
+    );
+    await w.stores.orgConfigs.put({
+      ...defaultOrgConfig(w.orgId, NOW),
+      version: 1,
+      installations: [
+        { installationId: 1, account: "x", repositories: [repository], recordedAt: NOW },
+      ],
+    });
+    (w.deps as { github?: unknown }).github = {
+      branchHead: async () => SHA,
+      defaultBranch: async () => "main",
+      readToken: async () => ({ token: "t", expiresAt: NOW }),
+    } satisfies Partial<GitHubAppClient>;
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const body = response.body as { requeued: unknown[]; run: string };
+    expect(body.requeued).toEqual([{ program: w.f.scope.programId, upTo: SHA }]);
+    expect(body.run).toBe("started");
+    const lineRuns = await w.stores.runs.listByProgram(
+      {
+        projectId: w.f.scope.projectId,
+        programId: lineProgramId(w.f.scope.projectId, BRANCH),
+      },
+      {},
+    );
+    expect(lineRuns.items).toHaveLength(1);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.queue.map((entry) => [entry.program, entry.upTo, entry.repairs])).toEqual([
+      [w.f.scope.programId, SHA, undefined],
+    ]);
+    expect(record?.requeued?.[0]).toMatchObject({ parkedId: "b1-p0", by: expect.any(String) });
+
+    const again = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(again.status).toBe(409);
+    expect(code(again)).toBe("nothing_parked");
+  });
+
+  it("queues only the named program's ranges", async () => {
+    const w = await setup();
+    const other = w.f.ids.next("prog") as ProgramId;
+    await seedLineRecords(w, {
+      parked: [parkedEntry("b1-p0", w.f.scope.programId, SHA), parkedEntry("b1-p1", other, SHA_B)],
+    });
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), { program: other });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.queue.map((entry) => entry.program)).toEqual([other]);
+  });
+
+  it("refuses the line run's own engine: it never undoes what it parked", async () => {
+    const w = await setup();
+    const { me } = await seedLine(w, {
+      parked: [parkedEntry("b1-p0", w.f.scope.programId, SHA)],
+    });
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {}, me);
+    expect(response.status).toBe(403);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.queue).toEqual([]);
+  });
+});
+
+describe("retrying a line held by a refused push", () => {
+  const HELD_SINCE = "2026-10-01T11:00:00.000Z";
+
+  /** A line with one composition whose push the remote refused, so the line is held. */
+  const seedHeld = async (w: World, status: "protected" | "forbidden" = "protected") => {
+    await seedLineRecords(w);
+    await w.stores.lines.update(w.f.scope.projectId, BRANCH, () =>
+      makeLineRecord(w.f, {
+        compositions: [
+          {
+            compositionId: "b1-c0",
+            commit: SHA_B,
+            parent: SHA,
+            ranges: [{ program: w.f.scope.programId, upTo: SHA }],
+            verification: makeLineVerification(w.f),
+            composedAt: NOW,
+          },
+        ],
+        push: {
+          head: SHA_B,
+          expectedPredecessor: SHA,
+          bundleKey: "bundles/b1",
+          generation: 1,
+          status,
+          requestedAt: NOW,
+          resolvedAt: NOW,
+          detail: "protected branch hook declined",
+        },
+        waiting: { reason: "line_refused", detail: "the push was refused", since: HELD_SINCE },
+      }),
+    );
+  };
+
+  const runPath = (w: World, runId: string) =>
+    `/projects/${w.f.scope.projectId}/programs/${lineProgramId(w.f.scope.projectId, BRANCH)}/runs/${runId}`;
+
+  it("publication.retry on the line program's run puts the refused push back to pending once and publishes it", async () => {
+    const w = await setup();
+    await seedHeld(w, "forbidden");
+    const runId = await startRun(w);
+
+    const retried = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect((retried.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.push).toMatchObject({ head: SHA_B, status: "pending" });
+    expect(record?.push?.detail).toBeUndefined();
+    expect(record?.compositions).toHaveLength(1);
+    expect(published).toEqual([BRANCH]);
+
+    // Pending is not held: a second retry releases nothing and asks nothing.
+    const again = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect((again.body as { lineReleased: boolean }).lineReleased).toBe(false);
+    expect(published).toEqual([BRANCH]);
+
+    // A second refusal holds the line again.
+    await w.stores.lines.update(w.f.scope.projectId, BRANCH, (current) =>
+      current === undefined
+        ? undefined
+        : {
+            ...current,
+            push: current.push && { ...current.push, status: "protected", resolvedAt: NOW },
+          },
+    );
+    const third = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect((third.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    expect(published).toEqual([BRANCH, BRANCH]);
+  });
+
+  it("publication.retry leaves a line that is not held alone", async () => {
+    const w = await setup();
+    await seedLineRecords(w);
+    const runId = await startRun(w);
+    const retried = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect(retried.status).toBe(200);
+    expect((retried.body as { lineReleased: boolean }).lineReleased).toBe(false);
+    expect(published).toEqual([]);
+  });
+
+  it("line.requeue on a held line with nothing parked releases the push and starts the line's run", async () => {
+    const w = await setup();
+    await seedHeld(w);
+    const repository = "wildorder/repo";
+    await w.stores.programContracts.put(
+      makeProgramContract(w.f, {
+        programId: lineProgramId(w.f.scope.projectId, BRANCH),
+        kind: "line",
+        repository: {
+          url: `https://github.com/${repository}`,
+          baseBranch: "main",
+          programBranch: BRANCH,
+        },
+      }),
+    );
+    await w.stores.orgConfigs.put({
+      ...defaultOrgConfig(w.orgId, NOW),
+      version: 1,
+      installations: [
+        { installationId: 1, account: "x", repositories: [repository], recordedAt: NOW },
+      ],
+    });
+    (w.deps as { github?: unknown }).github = {
+      branchHead: async () => SHA,
+      defaultBranch: async () => "main",
+      readToken: async () => ({ token: "t", expiresAt: NOW }),
+    } satisfies Partial<GitHubAppClient>;
+
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ requeued: [], released: true, run: "started" });
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.push).toMatchObject({ head: SHA_B, status: "pending" });
+    expect(published).toEqual([BRANCH]);
+
+    // Released, the line is no longer held: with nothing parked the person is told so.
+    const again = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(again.status).toBe(409);
+    expect(code(again)).toBe("nothing_parked");
+  });
+
+  it.each(["protected", "forbidden"] as const)(
+    "line.requeue whose retried push is refused %s at once leaves it refused after one attempt",
+    async (refusal) => {
+      const w = await setup();
+      await seedHeld(w);
+      const repository = "wildorder/repo";
+      await w.stores.programContracts.put(
+        makeProgramContract(w.f, {
+          programId: lineProgramId(w.f.scope.projectId, BRANCH),
+          kind: "line",
+          repository: {
+            url: `https://github.com/${repository}`,
+            baseBranch: "main",
+            programBranch: BRANCH,
+          },
+        }),
+      );
+      await w.stores.orgConfigs.put({
+        ...defaultOrgConfig(w.orgId, NOW),
+        version: 1,
+        installations: [
+          { installationId: 1, account: "x", repositories: [repository], recordedAt: NOW },
+        ],
+      });
+      (w.deps as { github?: unknown }).github = {
+        branchHead: async () => SHA,
+        defaultBranch: async () => "main",
+        readToken: async () => ({ token: "t", expiresAt: NOW }),
+      } satisfies Partial<GitHubAppClient>;
+      // The publisher settles the retried push as refused before requeue goes on.
+      (w.deps as { dispatcher: unknown }).dispatcher = {
+        provision: async () => undefined,
+        publishLine: async ({ branch }: { branch: string }) => {
+          published.push(branch);
+          await w.stores.lines.update(w.f.scope.projectId, branch, (current) =>
+            current?.push === undefined
+              ? undefined
+              : { ...current, push: { ...current.push, status: refusal, resolvedAt: NOW } },
+          );
+        },
+      };
+
+      const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ released: true, run: "started" });
+      const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      expect(record?.push).toMatchObject({ head: SHA_B, status: refusal });
+      expect(published).toEqual([BRANCH]);
+    },
+  );
 });

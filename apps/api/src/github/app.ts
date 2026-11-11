@@ -182,6 +182,19 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
       }
       return body.commit.sha;
     },
+    defaultBranch: async (installationId, repository) => {
+      const { token } = await readToken(installationId, [repository]);
+      const { status, body } = await call<{ default_branch?: string }>(
+        `token ${token}`,
+        "GET",
+        `/repos/${repository}`,
+      );
+      if (status === 404) return undefined;
+      if (status !== 200 || body.default_branch === undefined) {
+        throw new GitHubError(status, "repository", "no default branch");
+      }
+      return body.default_branch;
+    },
     readToken,
     writeToken,
   };
