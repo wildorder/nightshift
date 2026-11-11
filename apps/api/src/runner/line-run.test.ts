@@ -71,7 +71,7 @@ const setup = async (lineHead?: string, monthlyUsd?: number): Promise<World> => 
   const naming = makeProgramContract(f, {
     repository: {
       url: `https://github.com/${REPOSITORY}`,
-      baseBranch: "main",
+      baseBranch: BRANCH,
       programBranch: "program/fixture",
     },
     line: { branch: BRANCH, ...(monthlyUsd === undefined ? {} : { monthlyUsd }) },
@@ -82,6 +82,7 @@ const setup = async (lineHead?: string, monthlyUsd?: number): Promise<World> => 
   const github = {
     branchHead: async (_id: number, _repository: string, branch: string) =>
       branch === BRANCH ? lineHead : branch === "main" ? SHA : undefined,
+    defaultBranch: async () => "main",
     readToken: async () => ({ token: "t", expiresAt: NOW }),
   } as unknown as GitHubAppClient;
   const provisions: string[] = [];
@@ -131,12 +132,44 @@ describe("startLineRun", () => {
     const run = await w.stores.runs.get(scope, result.runId);
     expect(run).toMatchObject({ status: "pending", location: "remote" });
     const dispatch = await w.stores.dispatches.get(scope);
-    // The line ref does not exist yet: the base branch's head is where it starts.
+    // The line ref does not exist yet: the default branch's head is where it starts.
     expect(dispatch).toMatchObject({
       status: "requested",
       input: { branch: BRANCH, baseSha: SHA },
     });
     expect(w.provisions).toEqual([result.runId]);
+  });
+
+  it("starts an absent line from the default branch's head, not the naming contract's base (D-02)", async () => {
+    const trunk = "d".repeat(40);
+    const w = await setup();
+    expect(w.naming.repository.baseBranch).toBe(BRANCH);
+    (w.deps as { github?: unknown }).github = {
+      branchHead: async (_id: number, _repository: string, branch: string) =>
+        branch === "trunk" ? trunk : undefined,
+      defaultBranch: async () => "trunk",
+      readToken: async () => ({ token: "t", expiresAt: NOW }),
+    } satisfies Partial<GitHubAppClient>;
+    const result = await start(w);
+    expect(result.kind).toBe("started");
+    const [run] = await runsOfLine(w);
+    const dispatch = await w.stores.dispatches.get({
+      projectId: w.f.scope.projectId,
+      programId: lineProgramId(w.f.scope.projectId, BRANCH),
+      runId: run?.runId as never,
+    });
+    expect(dispatch?.input.baseSha).toBe(trunk);
+  });
+
+  it("refuses an absent line when the repository has no default branch to cut it from", async () => {
+    const w = await setup();
+    (w.deps as { github?: unknown }).github = {
+      branchHead: async () => undefined,
+      defaultBranch: async () => undefined,
+      readToken: async () => ({ token: "t", expiresAt: NOW }),
+    } satisfies Partial<GitHubAppClient>;
+    await expect(start(w)).rejects.toMatchObject({ code: "branch_missing" });
+    expect(await runsOfLine(w)).toHaveLength(0);
   });
 
   it("starts from the line ref's head when the ref exists", async () => {

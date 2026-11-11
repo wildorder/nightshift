@@ -20,6 +20,7 @@ const github: GitHubAppClient = {
         ? { account: "keki", repositories: ["keki/backend"] }
         : undefined,
   branchHead: async () => undefined,
+  defaultBranch: async () => undefined,
   readToken: async () => ({ token: "ghs_read_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
   writeToken: async () => ({ token: "ghs_write_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
 };

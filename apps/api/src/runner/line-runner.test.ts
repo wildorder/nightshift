@@ -193,6 +193,7 @@ const world = async (ceiling?: number): Promise<World> => {
           ids,
           github: {
             branchHead: async () => FIXTURE_COMMIT,
+            defaultBranch: async () => "main",
           } as never,
           dispatcher: {
             provision: async (scope: { runId: string }) => void provisioned.push(scope.runId),

@@ -1241,6 +1241,7 @@ describe("sending parked ranges back to the queue (P25, D-P25-05)", () => {
     });
     (w.deps as { github?: unknown }).github = {
       branchHead: async () => SHA,
+      defaultBranch: async () => "main",
       readToken: async () => ({ token: "t", expiresAt: NOW }),
     } satisfies Partial<GitHubAppClient>;
     const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});

@@ -397,11 +397,7 @@ const assertGithubInput = async (
   // A line's ref may not exist yet: the first owner starts from the base
   // branch's head, which is where the line ref will be cut.
   if (head === undefined && line !== undefined) {
-    head = await deps.github.branchHead(
-      installation.installationId,
-      repository,
-      line.repository.baseBranch,
-    );
+    head = await defaultBranchHead(deps.github, installation.installationId, repository);
   }
   if (head === undefined) {
     throw new HttpError(
@@ -420,8 +416,22 @@ const assertGithubInput = async (
 };
 
 /**
+ * The head of the repository's default branch: where a line ref that does not
+ * exist yet is cut. The contract's base branch is the line itself (D-02), so it
+ * cannot answer.
+ */
+const defaultBranchHead = async (
+  github: NonNullable<ApiDeps["github"]>,
+  installationId: number,
+  repository: string,
+): Promise<string | undefined> => {
+  const name = await github.defaultBranch(installationId, repository);
+  return name === undefined ? undefined : github.branchHead(installationId, repository, name);
+};
+
+/**
  * The commit a line run starts from, as `assertGithubInput` will judge it: the
- * line ref's head at GitHub, or the base branch's when the ref does not exist
+ * line ref's head at GitHub, or the default branch's when the ref does not exist
  * yet. `undefined` when GitHub cannot say; the admission then refuses with the
  * reason.
  */
@@ -443,7 +453,7 @@ export const lineBaseSha = async (
   const { installationId } = installation;
   return (
     (await deps.github.branchHead(installationId, repository, program.repository.programBranch)) ??
-    (await deps.github.branchHead(installationId, repository, program.repository.baseBranch))
+    (await defaultBranchHead(deps.github, installationId, repository))
   );
 };
 

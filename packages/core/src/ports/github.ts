@@ -30,6 +30,8 @@ export interface GitHubAppClient {
     repository: string,
     branch: string,
   ): Promise<string | undefined>;
+  /** The repository's default branch name at GitHub; `undefined` for no such repository. */
+  defaultBranch(installationId: number, repository: string): Promise<string | undefined>;
   /**
    * A short-lived installation token for reading `repositories` (a machine's
    * clone, D-P10-02). Contents read and nothing else; the publisher mints its

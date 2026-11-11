@@ -109,6 +109,8 @@ import { createFakeHarness, type ScriptContext } from "../execution/fake-harness
 import { localPathsIn } from "../execution/world.js";
 
 const START = Date.parse("2026-10-27T12:00:00.000Z");
+/** The repository's default branch at the stand-in GitHub. */
+const DEFAULT_BRANCH = "main";
 const OWN_LINE = "nightshift/develop";
 /** The line branch under test: a branch of its own, or (for a nested suite) the default branch. */
 let LINE = OWN_LINE;
@@ -312,7 +314,7 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     const f = programs[name];
     await stores.programContracts.put(
       makeProgramContract(f, {
-        repository: { url: REPOSITORY, baseBranch: "main", programBranch: branches[name] },
+        repository: { url: REPOSITORY, baseBranch: LINE, programBranch: branches[name] },
         line: { branch: LINE },
         // The line program inherits these: a repair runs the gate below and is examined.
         scope: { includes: ["**"], excludes: [], forbiddenActions: [] },
@@ -375,6 +377,7 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
       // The refs of the git server standing in for GitHub.
       branchHead: async (_installationId: number, _repository: string, branch: string) =>
         origin.refOf(`refs/heads/${branch}`),
+      defaultBranch: async () => DEFAULT_BRANCH,
     } as unknown as GitHubAppClient,
     dispatcher: {
       provision: provisionRun,
