@@ -226,6 +226,8 @@ export const LineWaitingReasonSchema = z.enum([
   "org_month_ceiling",
   "org_concurrency",
   "not_configured",
+  /** The remote refused the line's push (protected or forbidden); held until a landing or a start retries it once. */
+  "line_refused",
 ]);
 export type LineWaitingReason = z.infer<typeof LineWaitingReasonSchema>;
 
