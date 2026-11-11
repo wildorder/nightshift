@@ -153,7 +153,6 @@ const setup = async (
   };
   h.composer = createLineComposer(ports, async () => ({
     lineHead: await lr.tip("line"),
-    mainHead: await lr.tip("main"),
   }));
   return h;
 };
@@ -189,6 +188,24 @@ describe("the line composer", () => {
       { program: P2, upTo: b },
     ]);
     expect(h.composer.idle()).toBe(true);
+    assertSchemas(h);
+  });
+
+  it("takes a commit pushed straight to the line between batches into the next base", async () => {
+    const h = await setup();
+    const { lr } = h;
+    const a = await lr.commit("p1", { "a.txt": "a\n" });
+    h.queue.push(entry(P1, a, 1));
+    await h.composer.drain();
+    const direct = await lr.commit("line", { "direct.txt": "d\n" });
+    const b = await lr.commit("p2", { "b.txt": "b\n" });
+    h.queue.push(entry(P2, b, 2));
+    const out = await h.composer.drain();
+    expect(out[0]?.composed).toEqual([{ program: P2, upTo: b }]);
+    const head = h.settled.at(-1)?.composition?.commit as string;
+    expect(await parentsOf(lr, head)).toEqual([direct, b]);
+    expect(await lr.readFileAtCommit(head, "direct.txt")).toBe("d\n");
+    expect(await lr.readFileAtCommit(head, "b.txt")).toBe("b\n");
     assertSchemas(h);
   });
 

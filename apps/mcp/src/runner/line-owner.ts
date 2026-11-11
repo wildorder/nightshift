@@ -201,18 +201,14 @@ const ownLine = async (
     return named.exitCode === 0 && named.stdout.trim() !== "" ? named.stdout.trim() : "main";
   })();
 
-  /** Fetches the line, main and every program branch the line view names; answers the line's and main's heads. */
-  const fetchHeads = async (view: LineView): Promise<{ lineHead: string; mainHead: string }> => {
-    const required = [branch, mainBranch];
+  /**
+   * Fetches the line and every program branch the line view names; answers the line's head.
+   * The default branch is fetched only when the line is absent at the remote: its head is then
+   * the line's, the one time anything but a range enters.
+   */
+  const fetchHeads = async (view: LineView): Promise<{ lineHead: string }> => {
+    const required = [branch];
     const refspec = (name: string) => `+${headRef(name)}:${headRef(name)}`;
-    const mainFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
-      "fetch",
-      "origin",
-      refspec(mainBranch),
-    ]);
-    if (mainFetched.exitCode !== 0)
-      throw new Error(`fetch ${mainBranch}: ${mainFetched.stderr.trim()}`);
-    // A line that has never been pushed has no ref at GitHub yet: it starts at main's head.
     const lineFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
       "fetch",
       "origin",
@@ -224,6 +220,14 @@ const ownLine = async (
         throw new Error(`fetch ${branch}: ${lineFetched.stderr.trim()}`);
       lineAbsent = true;
       log(`line ${branch} does not exist at the remote yet; composing onto ${mainBranch}`);
+      const mainFetched = await gitWithToken(machine, layout.mirror, githubToken(), [
+        "fetch",
+        "origin",
+        refspec(mainBranch),
+      ]);
+      if (mainFetched.exitCode !== 0)
+        throw new Error(`fetch ${mainBranch}: ${mainFetched.stderr.trim()}`);
+      required.push(mainBranch);
     }
     for (const program of view.programs) {
       if (required.includes(program.branch)) continue;
@@ -268,8 +272,7 @@ const ownLine = async (
           cwd: layout.checkout,
         })
       ).trim();
-    const mainHead = await head(mainBranch);
-    return { lineHead: lineAbsent ? mainHead : await head(branch), mainHead };
+    return { lineHead: await head(lineAbsent ? mainBranch : branch) };
   };
 
   say("fetching the line and its programs");
@@ -354,7 +357,7 @@ const ownLine = async (
 
   // --- S-03's ports -------------------------------------------------------------------
 
-  const heads = async (): Promise<{ lineHead: string; mainHead: string }> => {
+  const heads = async (): Promise<{ lineHead: string }> => {
     ensureRunning();
     const fetched = await fetchHeads(await plane.line());
     await refreshGates(fetched.lineHead);
