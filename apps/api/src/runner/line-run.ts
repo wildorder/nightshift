@@ -22,7 +22,7 @@ import {
   requireEffectivePolicy,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError } from "../http.js";
-import { admitDispatch, lineBaseSha } from "../operations/dispatch.js";
+import { admitDispatch, checkDispatchAdmission, lineBaseSha } from "../operations/dispatch.js";
 
 export type StartLineRunResult =
   | { readonly kind: "started"; readonly runId: RunId }
@@ -52,12 +52,41 @@ export const startLineRun = async (
     naming: input.naming,
     createdAt: at,
   });
+  const orgConfig =
+    (await stores.orgConfigs.get(project.orgId)) ?? defaultOrgConfig(project.orgId, at);
+  const baseSha = (await lineBaseSha(deps, project, program)) ?? UNKNOWN_BASE;
+  const dispatchBody = {
+    tier: program.compute?.tier ?? "good",
+    input: {
+      repositoryUrl: program.repository.url,
+      branch: program.repository.programBranch,
+      baseSha,
+      planHash: LINE_PLAN_HASH,
+    },
+  } as const;
+  try {
+    // Admitted before anything is written: a refusal leaves no run, and for the
+    // line's own ceilings and the org's concurrency has recorded what it waits for.
+    await checkDispatchAdmission(
+      deps,
+      project,
+      program,
+      { ...dispatchBody, idempotencyKey: "" },
+      at,
+    );
+  } catch (error) {
+    if (error instanceof HttpError) {
+      const reason = LineWaitingReasonSchema.safeParse(
+        error.code === "concurrency_over_ceiling" ? "org_concurrency" : error.code,
+      );
+      if (reason.success) return { kind: "waiting", reason: reason.data, detail: error.message };
+    }
+    throw error;
+  }
   const ids = deps.ids ?? createUlidIdGenerator(clock);
   const runId = ids.next("run");
   const rootNodeId = ids.next("node");
   const scope = { projectId: program.projectId, programId: program.programId, runId };
-  const orgConfig =
-    (await stores.orgConfigs.get(project.orgId)) ?? defaultOrgConfig(project.orgId, at);
   const run: Run = {
     schemaVersion: 1,
     ...scope,
@@ -91,20 +120,10 @@ export const startLineRun = async (
   };
   await stores.executionNodes.put(rootNode);
 
-  const baseSha = (await lineBaseSha(deps, project, program)) ?? UNKNOWN_BASE;
   try {
-    // A refusal has already ended the pending run and, for the line's own
-    // ceilings and the org's concurrency, recorded what the line waits for.
-    await admitDispatch(deps, scope, {
-      tier: program.compute?.tier ?? "good",
-      idempotencyKey: runId,
-      input: {
-        repositoryUrl: program.repository.url,
-        branch: program.repository.programBranch,
-        baseSha,
-        planHash: LINE_PLAN_HASH,
-      },
-    });
+    // The checks have passed; admitting stores the dispatch. A refusal now is a
+    // race lost (the ceilings moved) and has already ended the pending run.
+    await admitDispatch(deps, scope, { ...dispatchBody, idempotencyKey: runId });
   } catch (error) {
     if (error instanceof HttpError) {
       const reason = LineWaitingReasonSchema.safeParse(

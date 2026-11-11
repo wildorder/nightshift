@@ -161,6 +161,105 @@ const endRefusedStart = async (
   }
 };
 
+/**
+ * Every check that decides whether a dispatch may be made, none of which needs
+ * a run: the plan, the dispatcher, a line's own cap, GitHub, and the org's
+ * ceilings. A line's refusal against its cap or the org's month or concurrency
+ * is recorded on the line as what it waits for. `startLineRun` calls it before
+ * it writes the run; `admitDispatch` calls it for every dispatch.
+ */
+export const checkDispatchAdmission = async (
+  deps: ApiDeps,
+  project: Project,
+  program: ProgramContract,
+  body: DispatchBody,
+  at: IsoTimestamp,
+) => {
+  const line = isLineProgram(program);
+  // A line program is the plane's own: no ratification, no plan hash.
+  if (!line) {
+    if (!isPlanned(program) || program.status !== "ratified") {
+      throw new HttpError(
+        409,
+        "plan_not_ratified",
+        `program ${program.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
+      );
+    }
+    if (program.planHash !== body.input.planHash) {
+      throw new HttpError(
+        409,
+        "plan_changed",
+        "the plan hash dispatched is not the one ratified; the plan changed since",
+      );
+    }
+  }
+
+  const dispatcher = deps.dispatcher;
+  if (dispatcher === undefined) {
+    throw new HttpError(
+      501,
+      "dispatch_unavailable",
+      "this control plane was wired without a dispatcher; no machine would be provisioned",
+    );
+  }
+
+  const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
+  if (line) {
+    // The project's self-started cap and the org's month ceiling; a refusal
+    // is recorded on the line as what it is waiting for.
+    const branch = body.input.branch;
+    const admission = await lineAdmission(deps, {
+      projectId: program.projectId,
+      branch,
+      capUsd: await lineCapUsd(deps.stores, program.projectId, branch),
+      orgId: project.orgId,
+    });
+    if (!admission.ok) {
+      await recordLineWaiting(
+        deps.stores,
+        deps.clock,
+        { projectId: program.projectId, branch },
+        { reason: admission.reason, detail: admission.detail },
+      );
+      throw new HttpError(409, admission.reason, admission.detail);
+    }
+  }
+  // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
+  // org's recorded installations must grant the repository, and the branch's
+  // head at GitHub must be the SHA dispatched.
+  await assertGithubInput(
+    deps,
+    orgConfig?.installations ?? [],
+    body.input,
+    line ? program : undefined,
+  );
+
+  const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
+  const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
+  const estimatedUsd = estimateUsd(body.tier, runHours);
+  const usage = await usageOf(deps, project.orgId, at);
+  const refusal = mayDispatch({
+    ceilings,
+    tier: body.tier,
+    runHours,
+    estimatedUsd,
+    monthSpentUsd: usage.meteredUsd,
+    concurrentRuns: await concurrentOf(deps, project.orgId),
+  });
+  if (refusal !== undefined) {
+    if (line && refusal.reason === "concurrency_over_ceiling") {
+      await recordLineWaiting(
+        deps.stores,
+        deps.clock,
+        { projectId: program.projectId, branch: body.input.branch },
+        { reason: "org_concurrency", detail: refusal.detail },
+      );
+    }
+    throw new HttpError(409, refusal.reason, refusal.detail);
+  }
+  return { dispatcher, runHours, estimatedUsd };
+};
+
 export const createDispatch: Handler = async ({ deps, request, params }) =>
   admitDispatch(deps, runScopeFrom(params), parseBody(DispatchBodySchema, request.body));
 
@@ -202,91 +301,7 @@ export const admitDispatch = async (
   // Every refusal from here on ends the run it was asked for: a pending run
   // with no machine holds its program's one live slot (A-66), and a start the
   // plane refused must not keep the program from the next one (2026-10-28).
-  const line = isLineProgram(program);
-  const admit = async () => {
-    // A line program is the plane's own: no ratification, no plan hash.
-    if (!line) {
-      if (!isPlanned(program) || program.status !== "ratified") {
-        throw new HttpError(
-          409,
-          "plan_not_ratified",
-          `program ${scope.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
-        );
-      }
-      if (program.planHash !== body.input.planHash) {
-        throw new HttpError(
-          409,
-          "plan_changed",
-          "the plan hash dispatched is not the one ratified; the plan changed since",
-        );
-      }
-    }
-
-    const dispatcher = deps.dispatcher;
-    if (dispatcher === undefined) {
-      throw new HttpError(
-        501,
-        "dispatch_unavailable",
-        "this control plane was wired without a dispatcher; no machine would be provisioned",
-      );
-    }
-
-    const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
-    if (line) {
-      // The project's self-started cap and the org's month ceiling; a refusal
-      // is recorded on the line as what it is waiting for.
-      const branch = body.input.branch;
-      const admission = await lineAdmission(deps, {
-        projectId: scope.projectId,
-        branch,
-        capUsd: await lineCapUsd(deps.stores, scope.projectId, branch),
-        orgId: project.orgId,
-      });
-      if (!admission.ok) {
-        await recordLineWaiting(
-          deps.stores,
-          deps.clock,
-          { projectId: scope.projectId, branch },
-          { reason: admission.reason, detail: admission.detail },
-        );
-        throw new HttpError(409, admission.reason, admission.detail);
-      }
-    }
-    // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
-    // org's recorded installations must grant the repository, and the branch's
-    // head at GitHub must be the SHA dispatched.
-    await assertGithubInput(
-      deps,
-      orgConfig?.installations ?? [],
-      body.input,
-      line ? program : undefined,
-    );
-
-    const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-    const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
-    const estimatedUsd = estimateUsd(body.tier, runHours);
-    const usage = await usageOf(deps, project.orgId, at);
-    const refusal = mayDispatch({
-      ceilings,
-      tier: body.tier,
-      runHours,
-      estimatedUsd,
-      monthSpentUsd: usage.meteredUsd,
-      concurrentRuns: await concurrentOf(deps, project.orgId),
-    });
-    if (refusal !== undefined) {
-      if (line && refusal.reason === "concurrency_over_ceiling") {
-        await recordLineWaiting(
-          deps.stores,
-          deps.clock,
-          { projectId: scope.projectId, branch: body.input.branch },
-          { reason: "org_concurrency", detail: refusal.detail },
-        );
-      }
-      throw new HttpError(409, refusal.reason, refusal.detail);
-    }
-    return { dispatcher, runHours, estimatedUsd };
-  };
+  const admit = () => checkDispatchAdmission(deps, project, program, body, at);
   const { dispatcher, runHours, estimatedUsd } = await admit().catch(async (error: unknown) => {
     await endRefusedStart(deps, run, error, at);
     throw error;

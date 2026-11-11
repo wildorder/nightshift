@@ -28,7 +28,7 @@ import {
   nextUserId,
 } from "@nightshift/core";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RequestPrincipal } from "../auth/principal.js";
 import { handleRequest } from "../handler.js";
 import type { ApiDeps } from "../http.js";
@@ -165,12 +165,12 @@ describe("startLineRun", () => {
   });
 
   const refused = async (w: World, reason: string) => {
+    const nodePuts = vi.spyOn(w.stores.executionNodes, "put");
     const result = await start(w);
     expect(result).toMatchObject({ kind: "waiting", reason });
-    const runs = await runsOfLine(w);
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.status).toBe("interrupted");
-    expect(runs[0]?.outcomeReason).toContain("the dispatch was refused");
+    // Refused before anything is written: no run, no execution node.
+    expect(await runsOfLine(w)).toHaveLength(0);
+    expect(nodePuts).not.toHaveBeenCalled();
     expect(await w.stores.dispatches.listByStatus(["requested"])).toHaveLength(0);
     expect((await w.stores.lines.get(w.f.scope.projectId, BRANCH))?.waiting?.reason).toBe(reason);
     // The program is free for the next start.
