@@ -53,6 +53,12 @@ expensive decisions in a plan that lives in the control plane, as `plan.md` and
     See `run-program` for the optional repair call.
   - Finish `succeeded` only if every strand succeeded; `deferred` if nothing
     failed and some work is deferred; otherwise `failed`, naming what was parked.
+- A project may name a **line**: the branch its work ships from (`main`, or a
+  staging or other branch). Programs start from it, and work reaches it whole or
+  in part as it lands. For a line that ships, user-facing work of an unfinished
+  program stays unreachable (unrouted or behind a flag) until its program
+  completes. Promotion beyond the line is the project's own CI/CD; relay where
+  the run's work reached the line, and do not open a pull request.
 - If the plan in the plane was edited after it was ratified, the run is refused until
   it is ratified again. That is the gate working. Tell the human; do not work
   around it.

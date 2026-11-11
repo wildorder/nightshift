@@ -189,6 +189,13 @@ Each strand must be:
   here". When two strands genuinely must touch the same files, either they are
   one strand, or one depends on the other.
 
+If the project names a line, it is the branch its work ships from: the program
+starts from it, and work reaches it whole or in part as it lands. For a line
+that ships, user-facing work of an unfinished program stays unreachable
+(unrouted or behind a flag) until its program completes, so plan for this: put
+the flag or the unrouted wiring in an early strand and the route or switch-on in
+the last. Promotion beyond the line is the project's own CI/CD, not the plan's.
+
 Watch for a file every program appends to (foodfly's `docs/as-built.md` is the
 example). Each program's branch changes the same lines, so that file is where
 project-line repairs will concentrate. Plan to avoid it, or partition it so each

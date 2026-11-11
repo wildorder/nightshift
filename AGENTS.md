@@ -687,6 +687,9 @@ decisions are A-42, A-43 and A-44.
   failed* discards what was built on it; a refused landing leaves the rest
   deferred. There is **no automatic fix job or cone replay** at resume: the fix is
   the next program, planned with the report in hand.
+- A project's **line** is the branch its work ships from; programs start from it
+  and their work reaches it as it lands (A-69). Promotion beyond it is the
+  project's own CI/CD.
 - `isDirty` lists untracked files individually and ignores an untracked
   `docs/programs/*/report.md`, which older runs left in the checkout (since P21
   the report is published at finish, on the program branch).
