@@ -285,8 +285,46 @@ export interface RunReport {
   readonly completions: readonly CompletionReport[];
   /** A line run's branch, head, compositions, parked entries and repairs; absent for a plan program. */
   readonly line?: LineRunReport;
+  /**
+   * Where this run's published work stands on the project's line; present only
+   * for a plan program whose project has a line.
+   */
+  readonly lineReach?: PlanLineReach;
   /** The moment the report was gathered, to which open intervals were observed. */
   readonly asOf: IsoTimestamp;
+}
+
+/** One place a published head of this run stands in the line's record. */
+export type LineReachState =
+  | { readonly kind: "queued" }
+  | { readonly kind: "batch" }
+  | { readonly kind: "held"; readonly repairs?: number }
+  | {
+      readonly kind: "composed";
+      readonly commit: string;
+      readonly pushed: boolean;
+      readonly pushedAt?: string;
+    }
+  | { readonly kind: "parked"; readonly reason: string };
+
+/** A head this run published to its program branch, and every state the line's record has it in. */
+export interface LineReachHead {
+  readonly head: string;
+  /** Empty when the retained record does not show the head. */
+  readonly states: readonly LineReachState[];
+}
+
+/**
+ * A plan run's work on its project's line. Attribution is by commit: an entry
+ * is the run's only when its program is this program and its `upTo` is one of
+ * the run's published heads.
+ */
+export interface PlanLineReach {
+  readonly branch: string;
+  /** False when the line's record could not be read or does not exist. */
+  readonly recordFound: boolean;
+  /** Empty when the run published nothing. */
+  readonly heads: readonly LineReachHead[];
 }
 
 /** What a line run did to its line: the entries inside the run's window, and its repair jobs. */
@@ -1034,6 +1072,11 @@ export const gatherReport = async (stores: ProjectStores, scope: RunScope): Prom
     ),
     ...publicationOf(records.dispatch, program.repository.programBranch),
     ...(line === undefined ? {} : { line }),
+    ...(program.kind !== "line" && program.line !== undefined
+      ? {
+          lineReach: await gatherLineReach(stores, scope, program.line.branch, records.dispatch),
+        }
+      : {}),
     ...p20,
     ...feedbackSections,
   };
@@ -1532,6 +1575,123 @@ const gatherLine = async (
     ),
     repairs,
   };
+};
+
+/** The program-branch heads this run published: the branch's head and every published intent. */
+const publishedHeadsOf = (dispatch: Dispatch | undefined): string[] => {
+  if (dispatch === undefined) return [];
+  const heads = [
+    ...dispatch.publication.intents
+      .filter((intent) => intent.status === "published")
+      .map((intent) => intent.head as string),
+    ...(dispatch.publication.head === undefined ? [] : [dispatch.publication.head as string]),
+  ];
+  return [...new Set(heads)];
+};
+
+const gatherLineReach = async (
+  stores: ProjectStores,
+  scope: RunScope,
+  branch: string,
+  dispatch: Dispatch | undefined,
+): Promise<PlanLineReach> => {
+  const heads = publishedHeadsOf(dispatch);
+  const record =
+    heads.length === 0
+      ? undefined
+      : await stores.lines.get(scope.projectId, branch).catch(() => undefined);
+  // A range is this run's for a head when it is this program's and ends at the
+  // head or recorded the head as subsumed; nothing weaker (no time ordering).
+  const mine = (
+    range: {
+      readonly program: string;
+      readonly upTo: string;
+      readonly covers?: readonly string[] | undefined;
+    },
+    head: string,
+  ) =>
+    range.program === scope.programId &&
+    (range.upTo === head || range.covers?.includes(head) === true);
+  return {
+    branch,
+    recordFound: record !== undefined,
+    heads: heads.map((head) => {
+      const states: LineReachState[] = [];
+      if (record !== undefined) {
+        if (record.queue.some((e) => mine(e, head))) states.push({ kind: "queued" });
+        if (record.batch?.entries.some((e) => mine(e, head)) === true)
+          states.push({ kind: "batch" });
+        for (const e of record.held.filter((e) => mine(e, head))) {
+          states.push({ kind: "held", ...(e.repairs === undefined ? {} : { repairs: e.repairs }) });
+        }
+        for (const c of record.compositions.filter((c) => c.ranges.some((r) => mine(r, head)))) {
+          states.push({
+            kind: "composed",
+            commit: c.commit,
+            pushed: c.pushed !== undefined,
+            ...(c.pushed === undefined ? {} : { pushedAt: c.pushed.at }),
+          });
+        }
+        for (const p of record.parked.filter((p) => p.ranges.some((r) => mine(r, head)))) {
+          states.push({ kind: "parked", reason: p.reason });
+        }
+      }
+      return { head, states };
+    }),
+  };
+};
+
+const renderLineReach = (reach: PlanLineReach | undefined): string[] => {
+  if (reach === undefined) return [];
+  const short = (sha: string) => `\`${sha.slice(0, 12)}\``;
+  const stateText = (state: LineReachState): string => {
+    switch (state.kind) {
+      case "queued":
+        return "queued, waiting for the line's owner";
+      case "batch":
+        return "taken by the line's owner and being composed";
+      case "held":
+        return `held for repair${state.repairs === undefined ? "" : ` (${state.repairs} repair(s) spent)`}`;
+      case "composed":
+        return `composed onto the line at ${short(state.commit)}, ${
+          state.pushed
+            ? `pushed${state.pushedAt === undefined ? "" : ` at ${state.pushedAt}`}`
+            : "not yet pushed"
+        }`;
+      case "parked":
+        return `parked: ${state.reason.replace(/\n/g, " ")}`;
+    }
+  };
+  const lines: string[] = [`## Line \`${reach.branch}\``, ""];
+  if (reach.heads.length === 0) {
+    lines.push(
+      `This run published no work, so its work has not reached the line \`${reach.branch}\`.`,
+    );
+  } else {
+    lines.push(
+      `Where this run's published work stands on the line \`${reach.branch}\`, by the program-branch head it published:`,
+      "",
+    );
+    for (const entry of reach.heads) {
+      if (entry.states.length > 0) {
+        lines.push(`- ${short(entry.head)}:`, ...entry.states.map((s) => `  - ${stateText(s)}`));
+      } else if (!reach.recordFound) {
+        lines.push(
+          `- ${short(entry.head)}: not shown; the line's record could not be read or does not exist, so it may not have been queued yet.`,
+        );
+      } else {
+        lines.push(
+          `- ${short(entry.head)}: not shown; the line's record does not show this head (not yet queued, already on the line before it was queued, or no longer retained).`,
+        );
+      }
+    }
+  }
+  lines.push(
+    "",
+    "Promotion beyond the line is the project's own; Nightshift's responsibility ends at the line.",
+    "",
+  );
+  return lines;
 };
 
 /** The line activity of the included entries, folded into the report's `asOf`. */
@@ -2830,6 +2990,7 @@ export const renderReport = (report: RunReport): string => {
     ...renderNotVerified(report.stepAdjustments),
     ...renderCompletionHistories(report),
     ...renderPublication(report.publication),
+    ...renderLineReach(report.lineReach),
     ...renderCorrections(report.corrections),
     ...renderRulings(report.rulings),
     ...renderUnreviewed(report.unreviewed),

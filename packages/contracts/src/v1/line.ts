@@ -41,12 +41,28 @@ export const MAX_LINE_WORDS_CHARS = 2000;
 /** The repairs a lineage has spent; absent means none. */
 export const LineRepairsSchema = z.int().min(0).max(MAX_LINE_REPAIRS);
 
+/** The most earlier heads a range or entry records as subsumed. */
+export const MAX_LINE_COVERS = 50;
+/**
+ * The heads a range subsumes besides its `upTo`: published heads of the same
+ * program that were queued together and are on the line once the range is.
+ * Excludes `upTo`, has no duplicates, and keeps the newest `MAX_LINE_COVERS`.
+ * Absent for a single-entry range and for records written before it existed.
+ */
+export const LineCoversSchema = z
+  .array(CommitShaSchema)
+  .max(MAX_LINE_COVERS)
+  .refine((covers) => new Set(covers).size === covers.length, {
+    message: "covers must not repeat a commit",
+  });
+
 /** One range of a program's landed work: `from` (exclusive, absent for its start) up to `upTo`. */
 export const LineRangeSchema = z.strictObject({
   program: ProgramIdSchema,
   from: CommitShaSchema.optional(),
   upTo: CommitShaSchema,
   repairs: LineRepairsSchema.optional(),
+  covers: LineCoversSchema.optional(),
   /** The commit of the repair that succeeded for this range, kept until its composition is published. */
   repaired: CommitShaSchema.optional(),
 });
@@ -58,6 +74,8 @@ export const LineQueueEntrySchema = z.strictObject({
   upTo: CommitShaSchema,
   enqueuedAt: IsoTimestampSchema,
   repairs: LineRepairsSchema.optional(),
+  /** The earlier heads the range this entry was rebuilt from subsumed; see `LineRangeSchema`. */
+  covers: LineCoversSchema.optional(),
   /** The successful repair commit for this range, composed first when the range returns. */
   repaired: CommitShaSchema.optional(),
   /** The words of the last repair of this range that failed, kept so a replacement owner can say them when the budget is spent. */
