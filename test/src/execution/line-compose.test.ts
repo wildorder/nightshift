@@ -191,24 +191,6 @@ describe("the line composer", () => {
     assertSchemas(h);
   });
 
-  it("takes a commit pushed straight to the line between batches into the next base", async () => {
-    const h = await setup();
-    const { lr } = h;
-    const a = await lr.commit("p1", { "a.txt": "a\n" });
-    h.queue.push(entry(P1, a, 1));
-    await h.composer.drain();
-    const direct = await lr.commit("line", { "direct.txt": "d\n" });
-    const b = await lr.commit("p2", { "b.txt": "b\n" });
-    h.queue.push(entry(P2, b, 2));
-    const out = await h.composer.drain();
-    expect(out[0]?.composed).toEqual([{ program: P2, upTo: b }]);
-    const head = h.settled.at(-1)?.composition?.commit as string;
-    expect(await parentsOf(lr, head)).toEqual([direct, b]);
-    expect(await lr.readFileAtCommit(head, "direct.txt")).toBe("d\n");
-    expect(await lr.readFileAtCommit(head, "b.txt")).toBe("b\n");
-    assertSchemas(h);
-  });
-
   it("keeps composing other files while a conflicting range is repaired, then composes the repair first", async () => {
     const h = await setup();
     const { lr } = h;
@@ -488,6 +470,24 @@ describe("the line composer", () => {
     expect(h.repairs).toHaveLength(1);
     expect(h.repairs[0]?.request.attempt).toBe(2);
     expect(h.composer.idle()).toBe(false);
+    assertSchemas(h);
+  });
+
+  it("takes a commit pushed straight to the line between batches into the next base", async () => {
+    const h = await setup();
+    const { lr } = h;
+    const a = await lr.commit("p1", { "a.txt": "a\n" });
+    h.queue.push(entry(P1, a, 1));
+    await h.composer.drain();
+    const direct = await lr.commit("line", { "direct.txt": "d\n" });
+    const b = await lr.commit("p2", { "b.txt": "b\n" });
+    h.queue.push(entry(P2, b, 2));
+    const out = await h.composer.drain();
+    expect(out[0]?.composed).toEqual([{ program: P2, upTo: b }]);
+    const head = h.settled.at(-1)?.composition?.commit as string;
+    expect(await parentsOf(lr, head)).toEqual([direct, b]);
+    expect(await lr.readFileAtCommit(head, "direct.txt")).toBe("d\n");
+    expect(await lr.readFileAtCommit(head, "b.txt")).toBe("b\n");
     assertSchemas(h);
   });
 });
