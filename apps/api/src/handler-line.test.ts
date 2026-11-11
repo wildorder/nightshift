@@ -1411,4 +1411,55 @@ describe("retrying a line held by a refused push", () => {
     expect(again.status).toBe(409);
     expect(code(again)).toBe("nothing_parked");
   });
+
+  it.each(["protected", "forbidden"] as const)(
+    "line.requeue whose retried push is refused %s at once leaves it refused after one attempt",
+    async (refusal) => {
+      const w = await setup();
+      await seedHeld(w);
+      const repository = "wildorder/repo";
+      await w.stores.programContracts.put(
+        makeProgramContract(w.f, {
+          programId: lineProgramId(w.f.scope.projectId, BRANCH),
+          kind: "line",
+          repository: {
+            url: `https://github.com/${repository}`,
+            baseBranch: "main",
+            programBranch: BRANCH,
+          },
+        }),
+      );
+      await w.stores.orgConfigs.put({
+        ...defaultOrgConfig(w.orgId, NOW),
+        version: 1,
+        installations: [
+          { installationId: 1, account: "x", repositories: [repository], recordedAt: NOW },
+        ],
+      });
+      (w.deps as { github?: unknown }).github = {
+        branchHead: async () => SHA,
+        defaultBranch: async () => "main",
+        readToken: async () => ({ token: "t", expiresAt: NOW }),
+      } satisfies Partial<GitHubAppClient>;
+      // The publisher settles the retried push as refused before requeue goes on.
+      (w.deps as { dispatcher: unknown }).dispatcher = {
+        provision: async () => undefined,
+        publishLine: async ({ branch }: { branch: string }) => {
+          published.push(branch);
+          await w.stores.lines.update(w.f.scope.projectId, branch, (current) =>
+            current?.push === undefined
+              ? undefined
+              : { ...current, push: { ...current.push, status: refusal, resolvedAt: NOW } },
+          );
+        },
+      };
+
+      const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ released: true, run: "started" });
+      const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+      expect(record?.push).toMatchObject({ head: SHA_B, status: refusal });
+      expect(published).toEqual([BRANCH]);
+    },
+  );
 });

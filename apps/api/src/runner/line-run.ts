@@ -20,7 +20,6 @@ import {
   lineWaitingReasonOfRefusal,
   nowIso,
   ProgramRunLiveError,
-  releaseRefusedPush,
   requireEffectivePolicy,
 } from "@nightshift/core";
 import { type ApiDeps, HttpError } from "../http.js";
@@ -49,12 +48,8 @@ export const startLineRun = async (
   const project = await stores.projects.get(input.projectId);
   if (project === undefined) throw new Error(`project ${input.projectId} does not exist`);
   const at = nowIso(clock);
-  // Starting the line is a retry path: a push the remote refused is tried once more.
-  await stores.lines.update(input.projectId, input.branch, (current) => {
-    if (current === undefined) return undefined;
-    const released = releaseRefusedPush(current, at);
-    return released === current ? undefined : released;
-  });
+  // Releasing a refused push belongs to the explicit landing, publication.retry
+  // and requeue boundaries; starting must not re-release a fresh refusal.
   const program = await ensureLineProgram(stores, {
     projectId: input.projectId,
     naming: input.naming,
