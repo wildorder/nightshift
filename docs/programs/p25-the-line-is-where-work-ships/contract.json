@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_01M49RRHPS6B770S9G5HDCPSD2",
+  "programId": "prog_01M70PJ21G51HY8M6M625PC0X2",
+  "objective": "A project's line is the branch its work ships from (main, staging, any branch it names) and where Nightshift's responsibility ends: programs start from it, the composer starts from the line's own head and merges only queued ranges onto it, each conflict is resolved once on the branch that ships, a protected line holds with its reason instead of looping, and promotion beyond the line is the project's own CI/CD. The authority is the plan document stored with this contract.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p25-the-line-is-where-work-ships"
+  },
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "A project whose line is its default branch (main) has every program's ranges composed onto main as they land, with conflicts repaired there, and nothing else merged into the line; the foodfly stall (main does not compose onto the line) cannot occur.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "A project may name any branch as its line (main, staging, another); a program of a project with a line starts from that branch, and plan check refuses a contract whose base branch is another one, saying how to fix it.",
+      "serves": [
+        "US-01",
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "A line branch that refuses Nightshift's push holds the line with a reason and remediation the owner can read in nightshift line status, and nothing is recomposed until the refusal is cleared; a line run is only created once it is admitted, so a full org ceiling leaves no interrupted runs behind. A line run that parked work says so by ending failed, and parked work can be sent back to the queue.",
+      "serves": [
+        "US-01",
+        "US-02"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "The architecture record, the skills and a run's report describe the line as the branch work ships from: programs start from it, work reaches it whole or in part, unfinished user-facing work stays unreachable until its program completes, and promotion beyond it is the project's.",
+      "serves": [
+        "US-01",
+        "US-02"
+      ]
+    }
+  ],
+  "constraints": [
+    "A project with no line behaves exactly as it does today.",
+    "Program runs, strands and their landing are unchanged; the line's queue, path reservation, repair budget and parking (P24) are kept.",
+    "The publisher only ever moves a line branch by compare-and-swap; nothing forces a push, and nothing edits a repository's branch protection.",
+    "Nothing in this program changes a project repository, its pipeline or its configuration; that is the owner's.",
+    "Windows keeps working: nothing added assumes a POSIX shell or path."
+  ],
+  "scope": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "test/**",
+      "docs/**",
+      "skills/**",
+      "AGENTS.md"
+    ],
+    "excludes": [
+      "infra/**"
+    ],
+    "forbiddenActions": [
+      "deploy any stack",
+      "build a runner image",
+      "push to main",
+      "edit another program's documents under docs/programs/",
+      "change any repository other than this one"
+    ]
+  },
+  "setup": [
+    {
+      "id": "install",
+      "command": "npm ci --prefer-offline"
+    }
+  ],
+  "verification": [
+    {
+      "id": "build",
+      "command": "npm run build"
+    },
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck"
+    },
+    {
+      "id": "lint",
+      "command": "npm run lint"
+    },
+    {
+      "id": "test",
+      "command": "npm run test"
+    },
+    {
+      "id": "synth",
+      "command": "npm --workspace @nightshift/cdk run synth"
+    },
+    {
+      "id": "sterility",
+      "command": "npm run check:sterility"
+    }
+  ],
+  "modelPolicy": {
+    "allowedProviders": [
+      "anthropic",
+      "openai"
+    ],
+    "allowedModels": [],
+    "forbiddenModels": []
+  },
+  "examinationPolicy": {
+    "low": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "medium": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "high": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    }
+  },
+  "delegationLimits": {
+    "maxDepth": 2,
+    "maxConcurrency": 2
+  },
+  "costPolicy": {},
+  "defaultRisk": "high",
+  "createdAt": "2026-11-09T20:00:00Z",
+  "status": "ratified",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "The owner running several programs in parallel on one project",
+      "problem": "The line resolves a conflict between two programs on a preview branch, then the second program's pull request meets the same conflict at main and someone resolves it again, differently; main and the line diverge, main stops merging onto the line, and every later range parks.",
+      "outcome": "Programs compose straight onto the branch that ships, whole or in part, as they land; each conflict is resolved once, there; the line keeps moving.",
+      "words": [
+        "in one instance it required another agent to merge the program branches into main and resolve conflicts. Whereas, I thought the conflicts would be resolved by nightshift",
+        "I'd rather the line continually move forward (whole or part program) and merge into main (even if it contains a half-program)"
+      ]
+    },
+    {
+      "id": "US-02",
+      "who": "A team using Nightshift with its own way of shipping",
+      "problem": "The line can only be a preview beside main, so a team that ships from main, or promotes a staging branch to production, cannot point Nightshift at the branch its pipeline uses.",
+      "outcome": "The team names its line branch in nightshift.config.json, Nightshift composes onto that branch and stops there, and the team's own CI/CD decides what happens next.",
+      "words": [
+        "i also want to give some latitude for other devs/users to organize their CI/CD the way they want. I feel like we should just allow a config for the \"line branch\""
+      ]
+    }
+  ],
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "The line composes the branch that ships",
+      "scope": {
+        "summary": "The composer and line owner, the line rules and publisher refusal path, line-run admission, the contract's inherited base branch and plan check, line status, and their tests",
+        "includes": [
+          "packages/execution/src/line/**",
+          "packages/core/src/line/**",
+          "packages/core/src/rules/**",
+          "packages/contracts/**",
+          "apps/mcp/src/runner/**",
+          "apps/api/src/runner/**",
+          "apps/api/src/operations/**",
+          "apps/cli/src/**",
+          "test/src/line/**",
+          "test/src/execution/**",
+          "test/src/cli/**"
+        ],
+        "excludes": [
+          "packages/core/src/report/**"
+        ]
+      },
+      "acceptance": [
+        "The composer starts each batch from the line's own head and merges only queued ranges; the default-branch fetch, the main merge and the 'main does not compose onto the line' park are gone; a line branch absent at the remote is created from the default branch's head",
+        "A contract of a project with a line inherits its base branch from line.branch when it states none, and plan check refuses one that names another, with the fix in its message",
+        "A protected or forbidden line push records a waiting reason with the remediation on the line and is not recomposed until a new landing or the line's retry tries it once more",
+        "A line run is created only after admission; a refusal records the line's waiting reason and leaves no run",
+        "nightshift line status names the line program and the branch",
+        "A line run that parked anything it took ends failed, with a reason naming the parked ranges, and its report leads with them",
+        "nightshift line requeue [<program> | --all] moves parked entries back to the queue with their repair count reset, records who asked and starts a line run; engine principals are refused",
+        "The line end-to-end test proves a line on the default branch, a direct push to the line between batches, and a protected line branch",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-01",
+        "SC-02",
+        "SC-03"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "Saying it: architecture, skills, report",
+      "scope": {
+        "summary": "The architecture record, the skills and AGENTS.md where they describe the line or landing, and the report's publication and next-step wording",
+        "includes": [
+          "docs/**",
+          "skills/**",
+          "AGENTS.md",
+          "packages/core/src/report/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "docs/architecture.md records the decision as row A-69 amending A-66 and A-67 and retiring D-05's pull-request path",
+        "The run-program, plan-program and nightshift skills say a line is the branch work ships from, programs start from it, work reaches it whole or in part, unfinished user-facing work stays unreachable until its program completes, and promotion beyond the line is the project's",
+        "A run's report for a project with a line says where its work reached the line and asks no one to open a pull request",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-04"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    }
+  ],
+  "prerequisites": [],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Does Nightshift keep a preview line mode (a line nothing promotes from, with programs reaching main through their own pull requests)?",
+      "options": [
+        "Retire it: a line is always the branch work ships from (main, or a staging branch the project promotes)",
+        "Keep it as an option beside shipping lines"
+      ],
+      "leaning": "Retire it: a line is always the branch work ships from (main, or a staging branch the project promotes)",
+      "answer": "Retire it: a line is always the branch work ships from (main, or a staging branch the project promotes)",
+      "rationale": "The preview mode resolves every cross-program conflict twice and the two resolutions diverge (foodfly, 2026-10-31); a team wanting review before main uses a staging line.",
+      "touches": "all"
+    },
+    {
+      "id": "D-02",
+      "question": "When a project has a line, do its programs start from the line branch?",
+      "options": [
+        "Yes, always: the contract inherits its base branch from the line and plan check refuses another",
+        "No: the contract's base branch stays independent"
+      ],
+      "leaning": "Yes, always: the contract inherits its base branch from the line and plan check refuses another",
+      "answer": "Yes, always: the contract inherits its base branch from the line and plan check refuses another",
+      "rationale": "Each program builds on everything already on the line, so conflicts with it surface while the program is built, not at composition.",
+      "touches": [
+        "S-01",
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-03",
+      "question": "Does the composer still merge the repository's default branch into the line before composing?",
+      "options": [
+        "No: the line's inputs are its own head and the queued ranges",
+        "Yes, with a budgeted repair job when it does not merge"
+      ],
+      "leaning": "No: the line's inputs are its own head and the queued ranges",
+      "answer": "No: the line's inputs are its own head and the queued ranges",
+      "rationale": "Nightshift's responsibility ends at the line; with the line on main nothing else exists, and a staging line's hotfix flow is the project's CI's. It removes the stall class seen on foodfly.",
+      "touches": [
+        "S-01"
+      ]
+    }
+  ],
+  "outOfScope": [
+    "Promotion, release tags, deploys and a release or candidate view (a later program can build on the line's composition records)",
+    "Feature-flag tooling: unfinished work is kept unreachable by convention",
+    "Any change to a project's own repository, pipeline or configuration"
+  ],
+  "planHash": "e260b495d51ba1d485503ad394133aa2dfa30f3d0ad155c2306eba02b498300e",
+  "planDocument": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M70PJ21G51HY8M6M625PC0X2/27aa922aa6a37c700b7394d4b9275b49db60168a0e387a734ec6233b70cae687.md",
+    "sha256": "27aa922aa6a37c700b7394d4b9275b49db60168a0e387a734ec6233b70cae687",
+    "sizeBytes": 9900
+  },
+  "conversation": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M70PJ21G51HY8M6M625PC0X2/722aaced78727ed94f1deeb1512dffbba59d5e081daf61ee96237ae07483d86a.md",
+    "sha256": "722aaced78727ed94f1deeb1512dffbba59d5e081daf61ee96237ae07483d86a",
+    "sizeBytes": 17756
+  },
+  "ratifications": [
+    {
+      "planHash": "e260b495d51ba1d485503ad394133aa2dfa30f3d0ad155c2306eba02b498300e",
+      "planDocument": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M70PJ21G51HY8M6M625PC0X2/27aa922aa6a37c700b7394d4b9275b49db60168a0e387a734ec6233b70cae687.md",
+        "sha256": "27aa922aa6a37c700b7394d4b9275b49db60168a0e387a734ec6233b70cae687",
+        "sizeBytes": 9900
+      },
+      "conversation": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M70PJ21G51HY8M6M625PC0X2/722aaced78727ed94f1deeb1512dffbba59d5e081daf61ee96237ae07483d86a.md",
+        "sha256": "722aaced78727ed94f1deeb1512dffbba59d5e081daf61ee96237ae07483d86a",
+        "sizeBytes": 17756
+      },
+      "ratifiedAt": "2026-11-11T04:35:43.200Z"
+    }
+  ]
+}
