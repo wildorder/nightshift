@@ -1376,4 +1376,41 @@ describe("a line on the repository's default branch", () => {
     expect(origin.show(final, "b.txt")).toBe("b");
     expect(origin.show(final, "c.txt")).toBe("c");
   });
+
+  it("recomposes onto a moved line head when a released refused push settles conflict, clearing the hold", async () => {
+    const { commits } = origin;
+    plane.refusal.reason = "protected branch hook declined";
+    await plane.land("a", commits.a1, commits.base);
+    const started = await plane.lineRun();
+    expect((await ownerFor(started)).code).toBe(0);
+    expect((await plane.lineRecord()).waiting?.reason).toBe("line_refused");
+
+    // Protection is lifted and someone pushes straight to the line before the retry.
+    plane.refusal.reason = undefined;
+    git(origin.work, "fetch", "-q", origin.bare, "main");
+    git(origin.work, "checkout", "-q", "--detach", "FETCH_HEAD");
+    writeFileSync(join(origin.work, "direct.txt"), "direct\n");
+    git(origin.work, "add", "-A");
+    git(origin.work, "commit", "-q", "-m", "a direct push to the line");
+    const direct = git(origin.work, "rev-parse", "HEAD");
+    git(origin.work, "push", "-q", origin.bare, `${direct}:refs/heads/main`);
+
+    // A new landing releases the refused push; the publisher finds the line moved.
+    await plane.land("b", commits.b1, commits.base);
+    await publishLine(plane.publisher, { projectId: plane.projectId, branch: LINE });
+    const conflicted = await plane.lineRecord();
+    expect(conflicted.push?.status).toBe("conflict");
+    expect(conflicted.waiting?.reason).not.toBe("line_refused");
+
+    // The owner is not held: it recomposes onto the moved head and publishes.
+    expect((await ownerFor(await plane.latestLineRun())).code).toBe(0);
+    const head = origin.refOf("refs/heads/main") as string;
+    expect(origin.isAncestor(direct, head)).toBe(true);
+    expect(origin.show(head, "direct.txt")).toBe("direct");
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(origin.show(head, "b.txt")).toBe("b");
+    const record = await plane.lineRecord();
+    expect(record.push).toMatchObject({ head, status: "published" });
+    expect(record.waiting).toBeUndefined();
+  });
 });

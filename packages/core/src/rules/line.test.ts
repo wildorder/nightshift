@@ -19,6 +19,7 @@ import {
   LINE_IDLE_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
   lineHasWork,
+  lineHeldByRefusal,
   lineQueueOwed,
   MAX_LINE_BATCH_ENTRIES,
   meterProjectUsage,
@@ -395,6 +396,20 @@ describe("a refused push holds the line", () => {
     expect(done.record.waiting).toBeUndefined();
     expect(done.record.head).toBe(C);
   });
+
+  it.each(["conflict", "error"] as const)(
+    "clears the hold and requeues when the released push settles %s",
+    (status) => {
+      const released = releaseRefusedPush(held(), LATER);
+      expect(released.waiting?.reason).toBe("line_refused");
+      const done = resolvePush(released, C, status, "the line moved", LATER);
+      if (!done.ok) throw new Error("expected ok");
+      expect(done.record.waiting).toBeUndefined();
+      expect(done.record.queue).not.toEqual([]);
+      expect(lineHeldByRefusal(done.record)).toBe(false);
+      expect(lineHasWork(done.record)).toBe(true);
+    },
+  );
 });
 
 describe("the project's self-started usage", () => {

@@ -630,14 +630,14 @@ export const resolvePush = (
           ...record.queue,
         ];
   const { waiting: previous, ...unwaiting } = record;
-  // A refusal holds the line; a published push clears the refusal it was held by.
+  // A refusal holds the line; any other outcome clears the refusal it was held by, so a requeue is never held.
   const waiting = refused
     ? {
         reason: REFUSED,
         detail: refusalDetail(record.branch, status, detail),
         since: previous?.reason === REFUSED ? previous.since : at,
       }
-    : status === "published" && previous?.reason === REFUSED
+    : previous?.reason === REFUSED
       ? undefined
       : previous;
   return {

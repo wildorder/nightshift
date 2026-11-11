@@ -1000,6 +1000,14 @@ describe("the refusal hold and an honest ending", () => {
           detail: "protected; allow the Nightshift GitHub App to bypass the branch protection",
           since: "2026-10-01T11:30:00.000Z",
         },
+        push: {
+          head: aHead as CommitSha,
+          expectedPredecessor: aHead as CommitSha,
+          bundleKey: "k",
+          status: "protected",
+          generation: GENERATION,
+          requestedAt: "2026-10-01T11:40:00.000Z",
+        },
       },
     });
     expect(await own(machine, plane, { idleSeconds: 3 })).toBe(0);
@@ -1007,6 +1015,31 @@ describe("the refusal hold and an honest ending", () => {
     expect(plane.settles).toEqual([]);
     expect(plane.record.queue).toHaveLength(1);
     expect(lastBeat(plane)?.body.report).toBe("stopped");
+  });
+
+  it("is not held by a stale line_refused once the push settled conflict", async () => {
+    const machine = lineMachine();
+    const aHead = world.head(world.branches.a);
+    const plane = makePlane(world, machine, {
+      record: {
+        queue: [{ program: world.programs.a, upTo: aHead, enqueuedAt: "2026-10-01T11:00:00.000Z" }],
+        waiting: {
+          reason: "line_refused",
+          detail: "protected; allow the Nightshift GitHub App to bypass the branch protection",
+          since: "2026-10-01T11:30:00.000Z",
+        },
+        push: {
+          head: aHead as CommitSha,
+          expectedPredecessor: aHead as CommitSha,
+          bundleKey: "k",
+          status: "conflict",
+          generation: GENERATION,
+          requestedAt: "2026-10-01T11:40:00.000Z",
+        },
+      } as never,
+    });
+    await own(machine, plane, { idleSeconds: 3 });
+    expect(plane.events).toContain("takeBatch");
   });
 
   it("ends a run that parked nothing succeeded", async () => {

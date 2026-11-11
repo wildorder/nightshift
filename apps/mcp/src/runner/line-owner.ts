@@ -39,7 +39,13 @@ import {
   type NightshiftConfig,
   NightshiftConfigSchema,
 } from "@nightshift/contracts";
-import { type Clock, type IdGenerator, LINE_IDLE_SECONDS, settledParkedOf } from "@nightshift/core";
+import {
+  type Clock,
+  type IdGenerator,
+  LINE_IDLE_SECONDS,
+  lineHeldByRefusal,
+  settledParkedOf,
+} from "@nightshift/core";
 import {
   createLineCheckout,
   createLineComposer,
@@ -135,7 +141,7 @@ export const parkedReason = (parked: readonly LineParked[]): string => {
 };
 
 /** The push-refusal hold: the remote refused the line's push, and nothing more is composed. */
-const refused = (record: LineRecord): boolean => record.waiting?.reason === "line_refused";
+const refused = (record: LineRecord): boolean => lineHeldByRefusal(record);
 
 const remoteRef = (branch: string): string => `refs/remotes/origin/${branch}`;
 
