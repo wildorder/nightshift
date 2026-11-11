@@ -1291,3 +1291,124 @@ describe("sending parked ranges back to the queue (P25, D-P25-05)", () => {
     expect(record?.queue).toEqual([]);
   });
 });
+
+describe("retrying a line held by a refused push", () => {
+  const HELD_SINCE = "2026-10-01T11:00:00.000Z";
+
+  /** A line with one composition whose push the remote refused, so the line is held. */
+  const seedHeld = async (w: World, status: "protected" | "forbidden" = "protected") => {
+    await seedLineRecords(w);
+    await w.stores.lines.update(w.f.scope.projectId, BRANCH, () =>
+      makeLineRecord(w.f, {
+        compositions: [
+          {
+            compositionId: "b1-c0",
+            commit: SHA_B,
+            parent: SHA,
+            ranges: [{ program: w.f.scope.programId, upTo: SHA }],
+            verification: makeLineVerification(w.f),
+            composedAt: NOW,
+          },
+        ],
+        push: {
+          head: SHA_B,
+          expectedPredecessor: SHA,
+          bundleKey: "bundles/b1",
+          generation: 1,
+          status,
+          requestedAt: NOW,
+          resolvedAt: NOW,
+          detail: "protected branch hook declined",
+        },
+        waiting: { reason: "line_refused", detail: "the push was refused", since: HELD_SINCE },
+      }),
+    );
+  };
+
+  const runPath = (w: World, runId: string) =>
+    `/projects/${w.f.scope.projectId}/programs/${lineProgramId(w.f.scope.projectId, BRANCH)}/runs/${runId}`;
+
+  it("publication.retry on the line program's run puts the refused push back to pending once and publishes it", async () => {
+    const w = await setup();
+    await seedHeld(w, "forbidden");
+    const runId = await startRun(w);
+
+    const retried = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect((retried.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.push).toMatchObject({ head: SHA_B, status: "pending" });
+    expect(record?.push?.detail).toBeUndefined();
+    expect(record?.compositions).toHaveLength(1);
+    expect(published).toEqual([BRANCH]);
+
+    // Pending is not held: a second retry releases nothing and asks nothing.
+    const again = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect((again.body as { lineReleased: boolean }).lineReleased).toBe(false);
+    expect(published).toEqual([BRANCH]);
+
+    // A second refusal holds the line again.
+    await w.stores.lines.update(w.f.scope.projectId, BRANCH, (current) =>
+      current === undefined
+        ? undefined
+        : {
+            ...current,
+            push: current.push && { ...current.push, status: "protected", resolvedAt: NOW },
+          },
+    );
+    const third = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect((third.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    expect(published).toEqual([BRANCH, BRANCH]);
+  });
+
+  it("publication.retry leaves a line that is not held alone", async () => {
+    const w = await setup();
+    await seedLineRecords(w);
+    const runId = await startRun(w);
+    const retried = await call(w, "POST", `${runPath(w, runId)}/publication/retry`);
+    expect(retried.status).toBe(200);
+    expect((retried.body as { lineReleased: boolean }).lineReleased).toBe(false);
+    expect(published).toEqual([]);
+  });
+
+  it("line.requeue on a held line with nothing parked releases the push and starts the line's run", async () => {
+    const w = await setup();
+    await seedHeld(w);
+    const repository = "wildorder/repo";
+    await w.stores.programContracts.put(
+      makeProgramContract(w.f, {
+        programId: lineProgramId(w.f.scope.projectId, BRANCH),
+        kind: "line",
+        repository: {
+          url: `https://github.com/${repository}`,
+          baseBranch: "main",
+          programBranch: BRANCH,
+        },
+      }),
+    );
+    await w.stores.orgConfigs.put({
+      ...defaultOrgConfig(w.orgId, NOW),
+      version: 1,
+      installations: [
+        { installationId: 1, account: "x", repositories: [repository], recordedAt: NOW },
+      ],
+    });
+    (w.deps as { github?: unknown }).github = {
+      branchHead: async () => SHA,
+      defaultBranch: async () => "main",
+      readToken: async () => ({ token: "t", expiresAt: NOW }),
+    } satisfies Partial<GitHubAppClient>;
+
+    const response = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ requeued: [], released: true, run: "started" });
+    const record = await w.stores.lines.get(w.f.scope.projectId, BRANCH);
+    expect(record?.push).toMatchObject({ head: SHA_B, status: "pending" });
+    expect(published).toEqual([BRANCH]);
+
+    // Released, the line is no longer held: with nothing parked the person is told so.
+    const again = await call(w, "POST", lineUrl(w, BRANCH, "/requeue"), {});
+    expect(again.status).toBe(409);
+    expect(code(again)).toBe("nothing_parked");
+  });
+});
