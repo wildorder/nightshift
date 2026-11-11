@@ -449,4 +449,20 @@ describe("nightshift land for the line program", () => {
     expect(retries).toHaveLength(1);
     expect(created.err.join("\n")).toContain("has not finished");
   });
+
+  it("retries once when --run is the line's current run", async () => {
+    const { created, retries } = await prepare([held("published")]);
+    expect(
+      await runCli(created.environment, ["land", "main", "--run", LINE_RUN]),
+      created.err.join("\n"),
+    ).toBe(0);
+    expect(retries).toHaveLength(1);
+  });
+
+  it("refuses a different --run without sending publication.retry", async () => {
+    const { created, retries } = await prepare([held("published")]);
+    expect(await runCli(created.environment, ["land", "main", "--run", RUN_B])).toBe(2);
+    expect(retries).toEqual([]);
+    expect(created.err.join("\n")).toContain(LINE_RUN);
+  });
 });

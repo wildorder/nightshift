@@ -174,7 +174,7 @@ export const land = async (environment: CliEnvironment, options: LandOptions): P
   if (config?.line !== undefined) {
     const view = await lineProgramNamed(session, config, options.id);
     if (view !== undefined)
-      return landLine(environment, session, { ...config, line: config.line }, view);
+      return landLine(environment, session, { ...config, line: config.line }, view, options.run);
   }
   const files = await findProgram(environment, session, {
     repoPath,

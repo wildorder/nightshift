@@ -16,6 +16,7 @@ import {
 import { lineHeldByRefusal } from "@nightshift/core";
 import { routes, send } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
+import { UsageError } from "../failures.js";
 import type { Session } from "../session.js";
 import { POLL_MS, REPUBLISH_DEADLINE_MS } from "./republish.js";
 
@@ -53,7 +54,15 @@ export const landLine = async (
   session: Session,
   config: Pick<NightshiftConfig, "projectId"> & { readonly line: LineConfig },
   view: LineView,
+  run?: string,
 ): Promise<number> => {
+  if (run !== undefined && run !== view.runId) {
+    throw new UsageError(
+      view.runId === undefined
+        ? `run ${run} is not the line ${config.line.branch}'s run: the line has no run of its program`
+        : `run ${run} is not the line ${config.line.branch}'s current run (${view.runId}); nothing was retried`,
+    );
+  }
   const { projectId } = config;
   const branch = config.line.branch;
   let record: LineRecord = view.record;
