@@ -28,9 +28,10 @@
  * nothing for a repair either.
  */
 import { writeFile } from "node:fs/promises";
-import type { Provider } from "@nightshift/contracts";
+import type { Event, Provider } from "@nightshift/contracts";
 import {
   type CommitSha,
+  type LineParked,
   type LineRecord,
   type LineView,
   MAX_LINE_WORDS_CHARS,
@@ -38,7 +39,7 @@ import {
   type NightshiftConfig,
   NightshiftConfigSchema,
 } from "@nightshift/contracts";
-import { type Clock, type IdGenerator, LINE_IDLE_SECONDS } from "@nightshift/core";
+import { type Clock, type IdGenerator, LINE_IDLE_SECONDS, settledParkedOf } from "@nightshift/core";
 import {
   createLineCheckout,
   createLineComposer,
@@ -122,6 +123,20 @@ const cloneUrlOf = (repositoryUrl: string): string =>
     : repositoryUrl;
 
 const headRef = (branch: string): string => `refs/heads/${branch}`;
+
+/** Why a line run that parked work failed: each range (program, upTo) and its cause. */
+export const parkedReason = (parked: readonly LineParked[]): string => {
+  const ranges = parked.flatMap((entry) =>
+    entry.ranges.map(
+      (range) => `${range.program} up to ${range.upTo.slice(0, 12)}: ${entry.reason}`,
+    ),
+  );
+  return `the line parked ${ranges.length} range${ranges.length === 1 ? "" : "s"}, which wait for \`nightshift line requeue\`: ${ranges.join("; ")}`;
+};
+
+/** The push-refusal hold: the remote refused the line's push, and nothing more is composed. */
+const refused = (record: LineRecord): boolean => record.waiting?.reason === "line_refused";
+
 const remoteRef = (branch: string): string => `refs/remotes/origin/${branch}`;
 
 export const runLineOwner = async (
@@ -496,14 +511,33 @@ const ownLine = async (
   let strandedDrains = 0;
   const stranded = (record: LineRecord): boolean =>
     record.held.length > 0 && composer.idle() && strandedDrains < MAX_STRANDED_DRAINS;
+  // Under the refusal hold the queue, a batch, held ranges and repairs are left for the
+  // retry the plane offers (a new push or a start); only a push in flight or an
+  // engine job still running keeps the owner.
   const hasWork = (record: LineRecord): boolean =>
-    record.queue.length > 0 ||
-    record.batch !== undefined ||
-    composer.needsRecovery() ||
-    stranded(record) ||
-    !composer.idle() ||
+    pendingPush(record) !== undefined ||
     !line.engine.idle() ||
-    pendingPush(record) !== undefined;
+    (!refused(record) &&
+      (record.queue.length > 0 ||
+        record.batch !== undefined ||
+        composer.needsRecovery() ||
+        stranded(record) ||
+        !composer.idle()));
+
+  /** Every `line.parked` this run settled, by whichever owner: the record's list is capped and requeue empties it. */
+  const parkedInRun = async (record: LineRecord): Promise<LineParked[]> => {
+    const events: Event[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await line.runtime.stores.events.listByRun(
+        line.session.scope,
+        cursor === undefined ? {} : { cursor },
+      );
+      events.push(...page.items);
+      cursor = page.cursor;
+    } while (cursor !== undefined);
+    return settledParkedOf(events, record);
+  };
 
   let idleSince: number | undefined;
   for (;;) {
@@ -522,11 +556,12 @@ const ownLine = async (
 
     if (!composer.idle() || record.held.length === 0) strandedDrains = 0;
     if (
-      record.queue.length > 0 ||
-      record.batch !== undefined ||
-      !composer.idle() ||
-      composer.needsRecovery() ||
-      stranded(record)
+      !refused(record) &&
+      (record.queue.length > 0 ||
+        record.batch !== undefined ||
+        !composer.idle() ||
+        composer.needsRecovery() ||
+        stranded(record))
     ) {
       idleSince = undefined;
       if (composer.idle() && record.queue.length === 0 && record.batch === undefined) {
@@ -553,7 +588,11 @@ const ownLine = async (
     idleSince ??= machine.now();
     if (machine.now() - idleSince >= idleMs) {
       log(`the line has been idle for ${Math.round(idleMs / 1000)}s; the owner ends`);
-      await line.complete();
+      // A run that parked anything did not do what it was started for.
+      const parked = await parkedInRun(record);
+      await line.complete(
+        parked.length === 0 ? undefined : { status: "failed", reason: parkedReason(parked) },
+      );
       return undefined;
     }
     say("waiting for work");

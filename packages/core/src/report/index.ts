@@ -38,6 +38,7 @@ export {
   type RunReport,
   renderReport,
   type StrandReport,
+  settledParkedOf,
   type UsageRow,
 } from "./report.js";
 export {

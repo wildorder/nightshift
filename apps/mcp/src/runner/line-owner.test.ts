@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import {
   type CommitSha,
   defaultOrgConfig,
+  type Event,
   type HeartbeatBody,
   type HeartbeatResponse,
   type LineRecord,
@@ -16,8 +17,10 @@ import {
   appendQueueEntry,
   createCountingIdGenerator,
   createFixtures,
+  entryDigest,
   lineProgramId,
   makeDispatch,
+  makeEvent,
   makeLineRecord,
   makeProgramContract,
   makeRootNode,
@@ -26,6 +29,7 @@ import {
   requireEffectivePolicy,
   resolvePush,
   settleBatch,
+  sha256Hex,
   systemClock,
   takeBatch,
 } from "@nightshift/core";
@@ -936,5 +940,105 @@ describe("project code runs as the project user (D-P10-30)", () => {
     // sandbox has no such user, so each failed on the wrapper, and the composition parked.
     const parked = JSON.stringify(plane.settles.map((entry) => entry.body.parked));
     expect(parked).toMatch(/sudo/);
+  });
+});
+
+describe("the refusal hold and an honest ending", () => {
+  const parkedEntry = (n: number, upTo: CommitSha) => ({
+    compositionId: `comp_parked_${n}`,
+    ranges: [{ program: world.programs.a, upTo }],
+    reason: `red check ${n}`,
+    parkedAt: "2026-10-01T12:00:00.000Z",
+  });
+  /** The events a settled park leaves on the run: the entry and the marker that commits it. */
+  const parkEvents = (
+    entries: readonly ReturnType<typeof parkedEntry>[],
+    generation: number,
+  ): Event[] => [
+    ...entries.map((entry, i) =>
+      makeEvent(f, {
+        type: "line.parked",
+        idempotencyKey: `parked:${entry.compositionId}`,
+        sequence: 100 + i + generation * 1000,
+        payload: { ...entry, id: entry.compositionId, digest: entryDigest(entry) },
+      }),
+    ),
+    // A marker names at most 20 entries.
+    ...Array.from({ length: Math.ceil(entries.length / 20) }, (_, m) => {
+      const named = entries.slice(m * 20, m * 20 + 20);
+      return makeEvent(f, {
+        type: "line.settled",
+        idempotencyKey: `settled:${generation}:${m}`,
+        sequence: 500 + m + generation * 1000,
+        payload: {
+          batchId: "comp_batch",
+          generation,
+          digest: sha256Hex(`settlement ${generation} ${m}`),
+          part: 0,
+          parts: 1,
+          entries: named.map((entry) => ({
+            type: "line.parked",
+            id: entry.compositionId,
+            digest: entryDigest(entry),
+          })),
+        },
+      });
+    }),
+  ];
+  const runStatus = async (stores: InMemoryStores) => stores.runs.get(f.scope, f.scope.runId);
+
+  it("composes nothing more under a refused push, however much is queued or held, and idles out", async () => {
+    const machine = lineMachine();
+    const aHead = world.head(world.branches.a);
+    const plane = makePlane(world, machine, {
+      record: {
+        queue: [{ program: world.programs.a, upTo: aHead, enqueuedAt: "2026-10-01T11:00:00.000Z" }],
+        held: [{ program: world.programs.b, upTo: aHead, enqueuedAt: "2026-10-01T11:00:00.000Z" }],
+        heldBy: GENERATION - 1,
+        waiting: {
+          reason: "line_refused",
+          detail: "protected; allow the Nightshift GitHub App to bypass the branch protection",
+          since: "2026-10-01T11:30:00.000Z",
+        },
+      },
+    });
+    expect(await own(machine, plane, { idleSeconds: 3 })).toBe(0);
+    expect(plane.events).not.toContain("takeBatch");
+    expect(plane.settles).toEqual([]);
+    expect(plane.record.queue).toHaveLength(1);
+    expect(lastBeat(plane)?.body.report).toBe("stopped");
+  });
+
+  it("ends a run that parked nothing succeeded", async () => {
+    const machine = lineMachine();
+    const plane = makePlane(world, machine);
+    const { stores, runtime } = await lineRuntime();
+    expect(await own(machine, plane, { runtime })).toBe(0);
+    expect((await runStatus(stores))?.status).toBe("succeeded");
+  });
+
+  it("ends a run that parked failed, naming each range, a replacement owner's and requeued or evicted ones included", async () => {
+    const machine = lineMachine();
+    const plane = makePlane(world, machine); // the record's parked list is empty (requeued)
+    const { stores, runtime } = await lineRuntime();
+    const head = world.head(world.branches.a) as CommitSha;
+    // More than the record keeps, across two owner generations.
+    const entries = Array.from({ length: 55 }, (_, i) =>
+      parkedEntry(i, `${i.toString(16).padStart(2, "0")}${head.slice(2)}` as CommitSha),
+    );
+    for (const event of [
+      ...parkEvents(entries.slice(0, 30), GENERATION - 1),
+      ...parkEvents(entries.slice(30), GENERATION),
+    ])
+      await stores.events.append(event);
+    expect(await own(machine, plane, { runtime })).toBe(0);
+    const run = await runStatus(stores);
+    expect(run?.status).toBe("failed");
+    for (const entry of entries) {
+      expect(run?.outcomeReason).toContain(
+        `${world.programs.a} up to ${entry.ranges[0]?.upTo.slice(0, 12)}: ${entry.reason}`,
+      );
+    }
+    expect(run?.outcomeReason).toContain("nightshift line requeue");
   });
 });

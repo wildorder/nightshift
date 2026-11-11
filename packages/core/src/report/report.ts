@@ -1463,6 +1463,20 @@ const settledEntriesOf = (
 };
 
 /**
+ * The parked entries a run's events establish (`settledEntriesOf`), deduped by
+ * compositionId: the run-scoped, durable evidence that is neither truncated at
+ * `MAX_LINE_PARKED` nor emptied by a requeue.
+ */
+export const settledParkedOf = (
+  events: readonly Event[],
+  record: LineRecord | undefined,
+): LineParked[] => {
+  const byId = new Map<string, LineParked>();
+  for (const entry of settledEntriesOf(events, record).parked) byId.set(entry.compositionId, entry);
+  return [...byId.values()];
+};
+
+/**
  * A line run's part of the report: the entries its committed settlements
  * established (`settledEntriesOf`), uncapped, unioned with the line record's
  * entries that belong to the run (by repair ref, or by time within the run's
@@ -2737,6 +2751,19 @@ const renderTail = (report: RunReport): string[] => [
 ];
 
 const renderLineLead = (line: LineRunReport): string[] => [
+  "## Parked",
+  "",
+  ...(line.parked.length === 0
+    ? ["Nothing parked in this run.", ""]
+    : [
+        "Each parked range waits for `nightshift line requeue`.",
+        "",
+        ...line.parked.flatMap((p) => [
+          `- ${p.compositionId} at ${p.parkedAt}: ${p.ranges.map(rangeText).join(", ")}${renderRepairRef(p.repair)}`,
+          `  Reason: ${p.reason}`,
+        ]),
+        "",
+      ]),
   "## Composed",
   "",
   ...(line.compositions.length === 0
@@ -2746,17 +2773,6 @@ const renderLineLead = (line: LineRunReport): string[] => [
           (c) =>
             `- \`${c.commit.slice(0, 8)}\` at ${c.composedAt} (${c.compositionId}): ${c.ranges.map(rangeText).join(", ")}; verification ${c.verification.outcome}${renderRepairRef(c.repair)}`,
         ),
-        "",
-      ]),
-  "## Parked",
-  "",
-  ...(line.parked.length === 0
-    ? ["Nothing parked in this run.", ""]
-    : [
-        ...line.parked.flatMap((p) => [
-          `- ${p.compositionId} at ${p.parkedAt}: ${p.ranges.map(rangeText).join(", ")}${renderRepairRef(p.repair)}`,
-          `  Reason: ${p.reason}`,
-        ]),
         "",
       ]),
   "## Repairs",

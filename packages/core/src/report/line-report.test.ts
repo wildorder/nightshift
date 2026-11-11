@@ -81,7 +81,7 @@ const setup = (
 };
 
 describe("a line run's report", () => {
-  it("leads with Composed, Parked and Repairs, only in-window, and omits plan sections", async () => {
+  it("leads with Parked, Composed and Repairs, only in-window, and omits plan sections", async () => {
     const f = createFixtures();
     const ended = makeRun(f, {
       status: "succeeded",
@@ -120,8 +120,10 @@ describe("a line run's report", () => {
     expect(text).toContain("a line run of `nightshift/develop`");
     const composed = text.indexOf("## Composed");
     expect(composed).toBeGreaterThan(0);
-    expect(text.indexOf("## Parked")).toBeGreaterThan(composed);
-    expect(text.indexOf("## Repairs")).toBeGreaterThan(text.indexOf("## Parked"));
+    expect(text.indexOf("## Parked")).toBeLessThan(composed);
+    expect(text.indexOf("## Parked")).toBeGreaterThan(-1);
+    expect(text).toContain("`nightshift line requeue`");
+    expect(text.indexOf("## Repairs")).toBeGreaterThan(composed);
     expect(text).toContain("Reason: repair budget exhausted");
     expect(text).toContain(`repair \`${repairJob.jobContractId}\``);
     expect(text).toContain("Resolve the conflict.");
