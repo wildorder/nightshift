@@ -21,6 +21,8 @@ import {
   type LineParked,
   LinePushBodySchema,
   type LineRecord,
+  LineRequeueBodySchema,
+  type LineRequeueResponse,
   type LineSettleBody,
   LineSettleBodySchema,
   type LineSettledPayload,
@@ -47,6 +49,7 @@ import {
   type RunScope,
   recordAttempt,
   requestPush,
+  requeueParked,
   requireEffectivePolicy,
   settleBatch,
   settledMarkers,
@@ -57,6 +60,7 @@ import {
 import { type ApiDeps, HttpError, parseBody } from "../http.js";
 import { projectIdFrom } from "../params.js";
 import type { Handler, RouteContext } from "../router.js";
+import { startLineRun } from "../runner/line-run.js";
 import { pageAt, readAll, requireProject } from "./common.js";
 
 interface LineTarget {
@@ -137,7 +141,8 @@ const refusalStatus = (refusal: LineRefusal): HttpError =>
       refusal.reason === "resolver_attempts" ||
       refusal.reason === "held_not_in_batch" ||
       refusal.reason === "not_held" ||
-      refusal.reason === "stale_generation"
+      refusal.reason === "stale_generation" ||
+      refusal.reason === "nothing_parked"
       ? refusal.reason
       : "conflict",
     refusal.detail,
@@ -601,4 +606,56 @@ export const createLineBundleUploadUrl: Handler = async (context) => {
       expiresAt: signed.expiresAt,
     },
   };
+};
+
+/**
+ * `POST …/line/requeue?branch=` (P25, D-P25-05): a person sends parked ranges
+ * back to the queue, every one or one program's, and the line's run is started
+ * to compose them. Only a user may: the line's own engine never undoes what it
+ * parked.
+ */
+export const postLineRequeue: Handler = async (context) => {
+  const { deps, request, params, principal } = context;
+  const target = targetOf(params);
+  if (principal.kind !== "user") {
+    throw new HttpError(
+      403,
+      "execution_forbidden_operation",
+      "only a person may send parked ranges back to the line's queue",
+    );
+  }
+  const body = parseBody(LineRequeueBodySchema, request.body ?? {});
+  const before = await requireLine(deps, target);
+  const at = nowIso(deps.clock);
+  const after = await applyLineChange(deps, target, (latest) =>
+    requeueParked(latest, body, principal.userId, at),
+  );
+  const queued = new Set(before.queue.map((entry) => `${entry.program}:${entry.upTo}`));
+  const requeued = after.queue
+    .filter((entry) => !queued.has(`${entry.program}:${entry.upTo}`))
+    .map((entry) => ({ program: entry.program, upTo: entry.upTo }));
+  const naming =
+    requeued[0] === undefined
+      ? undefined
+      : await deps.stores.programContracts.get(target.projectId, requeued[0].program);
+  // The ranges are queued whatever happens here: a start that fails is the
+  // reconciler's to make on its next tick (it starts every line with work).
+  let run = "none (nothing new was queued)";
+  if (naming !== undefined) {
+    try {
+      const started = await startLineRun(deps, {
+        projectId: target.projectId,
+        branch: target.branch,
+        naming,
+      });
+      run =
+        started.kind === "waiting"
+          ? `waiting (${started.reason}: ${started.detail})`
+          : started.kind;
+    } catch (error) {
+      run = `not started now (${error instanceof Error ? error.message : String(error)}); the reconciler starts it on its next tick`;
+    }
+  }
+  const response: LineRequeueResponse = { requeued, run };
+  return { status: 200, body: response };
 };
