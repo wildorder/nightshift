@@ -6,15 +6,19 @@
  */
 import { PublicationIntentBodySchema, StrandPublicationBodySchema } from "@nightshift/contracts";
 import {
+  isLineProgram,
   isOwnStrandBranch,
+  lineHeldByRefusal,
   nowIso,
   rearmPublication,
   recordIntent,
   recordStrandPublication,
+  releaseRefusedPush,
 } from "@nightshift/core";
 import { HttpError, parseBody } from "../http.js";
 import { runScopeFrom } from "../params.js";
 import type { Handler } from "../router.js";
+import { requireProgram } from "./common.js";
 import { requireDispatch } from "./dispatch.js";
 
 export const requestPublication: Handler = async ({ deps, request, params }) => {
@@ -92,8 +96,35 @@ export const retryPublication: Handler = async ({ deps, params }) => {
       console.error(`publication ${scope.runId}: the publisher could not be invoked`, error);
     });
   }
+  // The line program's run is the line's retry path too: a push the remote
+  // refused goes back to pending once and is published from the stored
+  // composition, with no new landing. A second refusal holds the line again.
+  let lineReleased = false;
+  const program = await requireProgram(deps.stores, scope);
+  if (isLineProgram(program)) {
+    const branch = program.repository.programBranch;
+    const at = nowIso(deps.clock);
+    await deps.stores.lines.update(scope.projectId, branch, (current) => {
+      lineReleased = current !== undefined && lineHeldByRefusal(current);
+      if (current === undefined || !lineReleased) return undefined;
+      return releaseRefusedPush(current, at);
+    });
+    if (lineReleased) {
+      await deps.dispatcher
+        ?.publishLine?.({ projectId: scope.projectId, branch })
+        .catch((error: unknown) => {
+          console.error(
+            `line ${scope.projectId} ${branch}: the publisher could not be invoked`,
+            error,
+          );
+        });
+    }
+  }
   const after = (await deps.stores.dispatches.get(scope)) ?? next;
-  return { status: 200, body: { rearmed, publication: after.publication } };
+  return {
+    status: 200,
+    body: { rearmed, lineReleased, publication: after.publication },
+  };
 };
 
 export const listPublication: Handler = async ({ deps, params }) => ({

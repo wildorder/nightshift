@@ -246,7 +246,7 @@ export const LineWaitingReasonSchema = z.enum([
   /** A single run would break the org's per-run ceiling: its tier, its wall clock or its cost. */
   "org_run_ceiling",
   "not_configured",
-  /** The remote refused the line's push (protected or forbidden); held until a landing or a start retries it once. */
+  /** The remote refused the line's push (protected or forbidden); held until a landing, a start or a person's retry tries it once. */
   "line_refused",
 ]);
 export type LineWaitingReason = z.infer<typeof LineWaitingReasonSchema>;
@@ -465,6 +465,8 @@ export const LineRequeueResponseSchema = z.strictObject({
   requeued: z.array(z.strictObject({ program: ProgramIdSchema, upTo: CommitShaSchema })),
   /** What starting the line's run answered: `started`, `live` (one is running), or `waiting` with why. */
   run: z.string().min(1),
+  /** Whether a refused push the line was held by went back to pending to be tried once more. */
+  released: z.boolean().optional(),
 });
 export type LineRequeueResponse = z.infer<typeof LineRequeueResponseSchema>;
 

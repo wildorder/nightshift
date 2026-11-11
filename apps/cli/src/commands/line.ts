@@ -142,6 +142,11 @@ export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = [])
   }
   if (record.waiting !== undefined) {
     lines.push(`waiting (${record.waiting.reason}): ${record.waiting.detail}`);
+    if (record.waiting.reason === "line_refused") {
+      lines.push(
+        "  to retry: lift the protection, then run `nightshift line requeue --all` (or `nightshift land` for the line program)",
+      );
+    }
   }
 
   lines.push(record.queue.length === 0 ? "queue: empty" : `queue: ${record.queue.length}`);
@@ -214,7 +219,10 @@ export const lineStatus = async (
   for (const run of runs) {
     entries.push({
       run,
-      dispatch: await session.stores.dispatches.get({ ...program, runId: run.runId }),
+      dispatch: await session.stores.dispatches.get({
+        ...program,
+        runId: run.runId,
+      }),
     });
   }
   for (const text of describeLine(view, entries)) environment.out(text);
@@ -277,7 +285,14 @@ export const lineRequeue = async (
       body: program === undefined ? {} : { program },
     }),
   );
+  if (answer.released === true) {
+    environment.out("the refused push to the line was released and will be tried once more");
+  }
   if (answer.requeued.length === 0) {
+    if (answer.released === true) {
+      environment.out(`the line's run: ${answer.run}`);
+      return 0;
+    }
     environment.out(
       "nothing new was queued: every parked range is already queued, held or on the line",
     );

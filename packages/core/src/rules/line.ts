@@ -583,7 +583,8 @@ export const requestPush = (
 const refusalDetail = (branch: string, status: LinePushStatus, detail: string | undefined) =>
   `the push to ${branch} was refused (${status}); Nightshift holds the line and does not force it. ` +
   `Allow the Nightshift GitHub App to bypass the branch protection of ${branch}` +
-  (detail === undefined ? "" : `. ${detail}`);
+  (detail === undefined ? "" : `. ${detail}`) +
+  `; then run \`nightshift line requeue --all\` or \`nightshift land\` for the line program to try the push once more`;
 
 /**
  * The publisher's word on the push for `head`. `published` moves the line's

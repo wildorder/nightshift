@@ -1377,6 +1377,56 @@ describe("a line on the repository's default branch", () => {
     expect(origin.show(final, "c.txt")).toBe("c");
   });
 
+  it("a person's retry with no new landing publishes the held composition once protection is lifted, and holds again if refused", async () => {
+    const { commits } = origin;
+    plane.refusal.reason = "protected branch hook declined";
+    await plane.land("a", commits.a1, commits.base);
+    const started = await plane.lineRun();
+    expect((await ownerFor(started)).code).toBe(0);
+    expect((await plane.lineRecord()).waiting?.reason).toBe("line_refused");
+    expect(plane.refusal.attempts).toBe(1);
+
+    const run = await plane.latestLineRun();
+    const person = nextUserId(plane.programs.a);
+    await plane.stores.memberships.put(makeMembership(person, plane.orgId));
+    const retry = () =>
+      handleRequest(plane.deps, {
+        method: "POST",
+        path: `/projects/${plane.projectId}/programs/${lineProgramId(plane.projectId, LINE)}/runs/${run.runId}/publication/retry`,
+        query: {},
+        body: undefined,
+        principal: { kind: "user", userId: person, activeOrg: plane.orgId },
+      });
+
+    // Still protected: the retry tries the push once, is refused, and the line holds again.
+    const refused = await retry();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(200);
+    expect((refused.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    expect(plane.refusal.attempts).toBe(2);
+    expect((await plane.lineRecord()).push?.status).toBe("protected");
+    expect((await plane.lineRecord()).waiting?.reason).toBe("line_refused");
+    await publishLine(plane.publisher, { projectId: plane.projectId, branch: LINE });
+    expect(plane.refusal.attempts).toBe(2);
+
+    // Protection lifted: one retry, no new landing, publishes the stored composition.
+    plane.refusal.reason = undefined;
+    const landings = (await plane.lineRuns()).length;
+    const published = await retry();
+    expect((published.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    const record = await plane.lineRecord();
+    expect(record.push?.status).toBe("published");
+    expect(record.waiting).toBeUndefined();
+    const head = origin.refOf("refs/heads/main") as string;
+    expect(head).toBe(record.push?.head);
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(plane.refusal.attempts).toBe(2);
+    expect((await plane.lineRuns()).length).toBe(landings);
+
+    // Nothing is held now: a further retry releases nothing.
+    const idle = await retry();
+    expect((idle.body as { lineReleased: boolean }).lineReleased).toBe(false);
+  });
+
   it("recomposes onto a moved line head when a released refused push settles conflict, clearing the hold", async () => {
     const { commits } = origin;
     plane.refusal.reason = "protected branch hook declined";
