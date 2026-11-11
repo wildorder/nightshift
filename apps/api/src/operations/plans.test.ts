@@ -789,7 +789,12 @@ describe("the line program", () => {
 
   it("is made when a planned program that names a line is ratified, and not twice on a retry", async () => {
     const w = await setup();
-    const contract = planned(w, { line: LINE });
+    // A program of a line starts from it (D-02).
+    const base = planned(w);
+    const contract = planned(w, {
+      line: LINE,
+      repository: { ...base.repository, baseBranch: LINE.branch },
+    });
     await ratify(w, contract);
     expect(await lineProgramsOf(w)).toHaveLength(1);
     await ratify(w, contract);

@@ -131,6 +131,19 @@ export const inheritFromConfig = (contract: unknown, config: NightshiftConfig): 
       merged.routing = combineNarrowings(config.routing, parsed.data as RoutingNarrowing);
     }
   }
+  // D-02: a program of a project with a line is based on the line. A contract
+  // that states its own baseBranch keeps it (`plan check` refuses one that
+  // differs from the line's branch).
+  const repository = stated.repository;
+  if (
+    config.line !== undefined &&
+    repository !== null &&
+    typeof repository === "object" &&
+    !Array.isArray(repository) &&
+    (repository as Record<string, unknown>).baseBranch === undefined
+  ) {
+    merged.repository = { ...repository, baseBranch: config.line.branch };
+  }
   return merged;
 };
 

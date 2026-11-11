@@ -142,6 +142,27 @@ describe("checkPlan (SC-P7-03)", () => {
     expect(checkPlan(planned(), splitPlanSections(PLAN))).toEqual({ ready: true });
   });
 
+  describe("the line is the base branch (D-02)", () => {
+    const base = planned().repository;
+    const onLine = (branch: string, baseBranch: string) =>
+      planned({ line: { branch }, repository: { ...base, baseBranch } });
+
+    it("refuses a baseBranch that is not the line's, naming both and the fix", () => {
+      const contract = onLine("nightshift/develop", "main");
+      expect(kinds(contract)).toEqual(["base_branch_not_line"]);
+      const result = checkPlan(contract, splitPlanSections(PLAN));
+      const message = !result.ready ? (result.reasons[0]?.message ?? "") : "";
+      expect(message).toContain("`main`");
+      expect(message).toContain("`nightshift/develop`");
+      expect(message).toContain("set repository.baseBranch to `nightshift/develop` or remove it");
+    });
+
+    it("passes a baseBranch equal to the line, and a project with no line", () => {
+      expect(kinds(onLine("nightshift/develop", "nightshift/develop"))).toEqual([]);
+      expect(kinds(planned())).toEqual([]);
+    });
+  });
+
   describe("a step's time against the wall clock (P19)", () => {
     const withTime = (wallClock: number | undefined, where: "verification" | "setup") => {
       const base = planned();

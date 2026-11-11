@@ -60,6 +60,7 @@ const github: GitHubAppClient = {
   // The fixture's program branch stands at SHA; any other branch is missing.
   branchHead: async (_id, repository, branch) =>
     repository === "wildorder/fixture" && branch === "program/fixture" ? SHA : undefined,
+  defaultBranch: async () => "main",
   readToken: async () => ({ token: "ghs_read_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
   writeToken: async () => ({ token: "ghs_write_token", expiresAt: "2026-10-01T13:00:00.000Z" }),
 };

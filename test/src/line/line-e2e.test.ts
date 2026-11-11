@@ -104,13 +104,21 @@ import {
   staticTokenProvider,
 } from "@nightshift/persistence/http";
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createFakeHarness, type ScriptContext } from "../execution/fake-harness.js";
 import { localPathsIn } from "../execution/world.js";
 
 const START = Date.parse("2026-10-27T12:00:00.000Z");
-const LINE = "nightshift/develop";
-const LINE_REF = `refs/heads/${LINE}`;
+/** The repository's default branch at the stand-in GitHub. */
+const DEFAULT_BRANCH = "main";
+const OWN_LINE = "nightshift/develop";
+/** The line branch under test: a branch of its own, or (for a nested suite) the default branch. */
+let LINE = OWN_LINE;
+let LINE_REF = `refs/heads/${LINE}`;
+const useLine = (branch: string): void => {
+  LINE = branch;
+  LINE_REF = `refs/heads/${branch}`;
+};
 const REPOSITORY = "https://github.com/wildorder/fixture";
 const GITHUB_TOKEN = "gh-read-token";
 const IDLE_SECONDS = 3;
@@ -250,6 +258,10 @@ interface Plane {
   /** The line program's runs. */
   lineRuns(): Promise<readonly { readonly runId: string; readonly status: string }[]>;
   lineRecord(): Promise<LineRecord>;
+  /** The newest run of the line program, and its dispatch. */
+  latestLineRun(): Promise<{ readonly runId: string; readonly dispatch: Dispatch }>;
+  /** While `reason` is set the git server refuses every push to the line; `attempts` counts them. */
+  readonly refusal: { reason: string | undefined; attempts: number };
 }
 
 const makePlane = async (origin: Origin): Promise<Plane> => {
@@ -302,7 +314,7 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     const f = programs[name];
     await stores.programContracts.put(
       makeProgramContract(f, {
-        repository: { url: REPOSITORY, baseBranch: "main", programBranch: branches[name] },
+        repository: { url: REPOSITORY, baseBranch: LINE, programBranch: branches[name] },
         line: { branch: LINE },
         // The line program inherits these: a repair runs the gate below and is examined.
         scope: { includes: ["**"], excludes: [], forbiddenActions: [] },
@@ -344,9 +356,14 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     provisioned.push({ runId: scope.runId, generation: current.generation });
   };
 
+  const refusal: Plane["refusal"] = { reason: undefined, attempts: 0 };
   const counting = {
     advertise: smartHttpRemote.advertise,
     push: async (input: Parameters<typeof smartHttpRemote.push>[0]) => {
+      if (input.ref === LINE_REF && refusal.reason !== undefined) {
+        refusal.attempts += 1;
+        return { kind: "rejected" as const, reason: refusal.reason };
+      }
       if (input.ref === LINE_REF) origin.linePushes.push(input.newOid);
       return smartHttpRemote.push(input);
     },
@@ -360,6 +377,7 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
       // The refs of the git server standing in for GitHub.
       branchHead: async (_installationId: number, _repository: string, branch: string) =>
         origin.refOf(`refs/heads/${branch}`),
+      defaultBranch: async () => DEFAULT_BRANCH,
     } as unknown as GitHubAppClient,
     dispatcher: {
       provision: provisionRun,
@@ -425,11 +443,25 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     bundles,
     projectId: a.scope.projectId,
     intents,
+    refusal,
     land,
     lineRuns: async () =>
       (
         await stores.runs.listByProgram({ projectId: lineKey.projectId, programId: lineProgram })
       ).items.map((run) => ({ runId: run.runId, status: run.status })),
+    latestLineRun: async () => {
+      const run = (
+        await stores.runs.listByProgram({ projectId: lineKey.projectId, programId: lineProgram })
+      ).items.at(-1);
+      if (run === undefined) throw new Error("the line program has no run");
+      const dispatch = await stores.dispatches.get({
+        projectId: lineKey.projectId,
+        programId: lineProgram,
+        runId: run.runId,
+      });
+      if (dispatch === undefined) throw new Error("no line dispatch");
+      return { runId: run.runId, dispatch };
+    },
     lineRun: async () => {
       const runs = (
         await stores.runs.listByProgram({ projectId: lineKey.projectId, programId: lineProgram })
@@ -1125,7 +1157,8 @@ describe("the project line, end to end", () => {
     expect(origin.isAncestor(commits.a2, head)).toBe(false);
     expect(origin.show(head, "shared.txt")).toMatch(/^from b\n/);
     expect(origin.linePushes).toEqual([head]);
-    expect(await plane.lineRuns()).toEqual([{ runId, status: "succeeded" }]);
+    // A line that parked work ends its run failed, naming the ranges.
+    expect(await plane.lineRuns()).toEqual([{ runId, status: "failed" }]);
   });
 
   it("creates the line branch on the git server when the first composition finds it absent", async () => {
@@ -1223,5 +1256,211 @@ describe("the project line, end to end", () => {
     expect(origin.isAncestor(commits.base, head)).toBe(true);
     expect(record.push).toMatchObject({ head, status: "published", generation: 2 });
     expect((await plane.lineRun()).dispatch.status).toBe("stopped");
+  });
+});
+
+describe("a line on the repository's default branch", () => {
+  beforeAll(() => useLine("main"));
+  afterAll(() => useLine(OWN_LINE));
+
+  it("composes landed ranges onto the default branch, which is the line itself", async () => {
+    const { commits } = origin;
+    await plane.land("a", commits.a1, commits.base);
+    await plane.land("b", commits.b1, commits.base);
+    const started = await plane.lineRun();
+
+    const { code } = await ownerFor(started);
+    expect(code).toBe(0);
+
+    const head = origin.refOf("refs/heads/main") as string;
+    expect(head).not.toBe(commits.base);
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(origin.show(head, "b.txt")).toBe("b");
+    expect(origin.isAncestor(commits.base, head)).toBe(true);
+    const record = await plane.lineRecord();
+    expect(record.branch).toBe("main");
+    expect(record.head).toBe(head);
+    expect(record.compositions[0]?.parent).toBe(commits.base);
+    expect(record.push).toMatchObject({ head, status: "published" });
+    expect(origin.linePushes).toEqual([head]);
+  });
+
+  it("keeps a commit pushed directly to the line between batches: it is in the next batch's base", async () => {
+    const { commits } = origin;
+    await plane.land("a", commits.a1, commits.base);
+    const started = await plane.lineRun();
+    let direct: string | undefined;
+
+    const { code } = await ownerFor(started, {
+      hooks: {
+        afterSettle: async ({ pushed }) => {
+          if (!pushed || direct !== undefined) return;
+          // Someone pushes to main itself, then another range lands.
+          git(origin.work, "fetch", "-q", origin.bare, "main");
+          git(origin.work, "checkout", "-q", "--detach", "FETCH_HEAD");
+          writeFileSync(join(origin.work, "direct.txt"), "direct\n");
+          git(origin.work, "add", "-A");
+          git(origin.work, "commit", "-q", "-m", "a direct push to the line");
+          direct = git(origin.work, "rev-parse", "HEAD");
+          git(origin.work, "push", "-q", origin.bare, `${direct}:refs/heads/main`);
+          await plane.land("b", commits.b2, commits.base);
+        },
+      },
+    });
+    expect(code).toBe(0);
+    expect(direct).toBeDefined();
+    if (direct === undefined) return;
+
+    const head = origin.refOf("refs/heads/main") as string;
+    expect(origin.isAncestor(direct, head)).toBe(true);
+    expect(origin.show(head, "direct.txt")).toBe("direct");
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(origin.show(head, "c.txt")).toBe("c");
+    const record = await plane.lineRecord();
+    expect(record.compositions).toHaveLength(2);
+    expect(record.compositions[1]?.parent).toBe(direct);
+    expect(record.push).toMatchObject({ head, status: "published" });
+    expect(record.waiting?.reason).not.toBe("line_refused");
+  });
+
+  it("holds a protected line with its reason and remediation, does not loop, and retries once on a new landing", async () => {
+    const { commits } = origin;
+    plane.refusal.reason = "protected branch hook declined";
+    await plane.land("a", commits.a1, commits.base);
+    const started = await plane.lineRun();
+
+    const first = await ownerFor(started);
+    expect(first.code).toBe(0);
+
+    // The line is held, not looping: one refused push, the line unmoved.
+    const held = await plane.lineRecord();
+    expect(plane.refusal.attempts).toBe(1);
+    expect(held.waiting?.reason).toBe("line_refused");
+    expect(held.waiting?.detail).toContain("main");
+    expect(held.waiting?.detail).toMatch(
+      /Allow the Nightshift GitHub App to bypass the branch protection/,
+    );
+    expect(held.push?.status).toBe("protected");
+    expect(origin.refOf("refs/heads/main")).toBe(commits.base);
+    expect(origin.linePushes).toEqual([]);
+
+    // The publisher ticking again on its own does not retry: the hold is not a loop.
+    const target = { projectId: plane.projectId, branch: LINE };
+    await publishLine(plane.publisher, target);
+    expect(plane.refusal.attempts).toBe(1);
+
+    // A new landing retries the push once; the remote still refuses, so the line holds again.
+    await plane.land("b", commits.b1, commits.base);
+    await publishLine(plane.publisher, target);
+    await publishLine(plane.publisher, target);
+    expect(plane.refusal.attempts).toBe(2);
+    expect((await plane.lineRecord()).waiting?.reason).toBe("line_refused");
+    expect((await plane.lineRecord()).push?.status).toBe("protected");
+    expect(origin.refOf("refs/heads/main")).toBe(commits.base);
+
+    // Once the App may bypass, a landing retries and the push publishes, clearing the hold.
+    plane.refusal.reason = undefined;
+    await plane.land("b", commits.b2, commits.b1);
+    await publishLine(plane.publisher, target);
+    expect(plane.refusal.attempts).toBe(2);
+    const record = await plane.lineRecord();
+    expect(record.waiting?.reason).not.toBe("line_refused");
+    expect(record.push?.status).toBe("published");
+    const head = origin.refOf("refs/heads/main") as string;
+    expect(head).toBe(record.push?.head);
+    expect(origin.show(head, "a.txt")).toBe("a");
+
+    // The run the landings started composes what is queued and ends.
+    expect((await ownerFor(await plane.latestLineRun())).code).toBe(0);
+    const final = origin.refOf("refs/heads/main") as string;
+    expect(origin.show(final, "b.txt")).toBe("b");
+    expect(origin.show(final, "c.txt")).toBe("c");
+  });
+
+  it("a person's retry with no new landing publishes the held composition once protection is lifted, and holds again if refused", async () => {
+    const { commits } = origin;
+    plane.refusal.reason = "protected branch hook declined";
+    await plane.land("a", commits.a1, commits.base);
+    const started = await plane.lineRun();
+    expect((await ownerFor(started)).code).toBe(0);
+    expect((await plane.lineRecord()).waiting?.reason).toBe("line_refused");
+    expect(plane.refusal.attempts).toBe(1);
+
+    const run = await plane.latestLineRun();
+    const person = nextUserId(plane.programs.a);
+    await plane.stores.memberships.put(makeMembership(person, plane.orgId));
+    const retry = () =>
+      handleRequest(plane.deps, {
+        method: "POST",
+        path: `/projects/${plane.projectId}/programs/${lineProgramId(plane.projectId, LINE)}/runs/${run.runId}/publication/retry`,
+        query: {},
+        body: undefined,
+        principal: { kind: "user", userId: person, activeOrg: plane.orgId },
+      });
+
+    // Still protected: the retry tries the push once, is refused, and the line holds again.
+    const refused = await retry();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(200);
+    expect((refused.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    expect(plane.refusal.attempts).toBe(2);
+    expect((await plane.lineRecord()).push?.status).toBe("protected");
+    expect((await plane.lineRecord()).waiting?.reason).toBe("line_refused");
+    await publishLine(plane.publisher, { projectId: plane.projectId, branch: LINE });
+    expect(plane.refusal.attempts).toBe(2);
+
+    // Protection lifted: one retry, no new landing, publishes the stored composition.
+    plane.refusal.reason = undefined;
+    const landings = (await plane.lineRuns()).length;
+    const published = await retry();
+    expect((published.body as { lineReleased: boolean }).lineReleased).toBe(true);
+    const record = await plane.lineRecord();
+    expect(record.push?.status).toBe("published");
+    expect(record.waiting).toBeUndefined();
+    const head = origin.refOf("refs/heads/main") as string;
+    expect(head).toBe(record.push?.head);
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(plane.refusal.attempts).toBe(2);
+    expect((await plane.lineRuns()).length).toBe(landings);
+
+    // Nothing is held now: a further retry releases nothing.
+    const idle = await retry();
+    expect((idle.body as { lineReleased: boolean }).lineReleased).toBe(false);
+  });
+
+  it("recomposes onto a moved line head when a released refused push settles conflict, clearing the hold", async () => {
+    const { commits } = origin;
+    plane.refusal.reason = "protected branch hook declined";
+    await plane.land("a", commits.a1, commits.base);
+    const started = await plane.lineRun();
+    expect((await ownerFor(started)).code).toBe(0);
+    expect((await plane.lineRecord()).waiting?.reason).toBe("line_refused");
+
+    // Protection is lifted and someone pushes straight to the line before the retry.
+    plane.refusal.reason = undefined;
+    git(origin.work, "fetch", "-q", origin.bare, "main");
+    git(origin.work, "checkout", "-q", "--detach", "FETCH_HEAD");
+    writeFileSync(join(origin.work, "direct.txt"), "direct\n");
+    git(origin.work, "add", "-A");
+    git(origin.work, "commit", "-q", "-m", "a direct push to the line");
+    const direct = git(origin.work, "rev-parse", "HEAD");
+    git(origin.work, "push", "-q", origin.bare, `${direct}:refs/heads/main`);
+
+    // A new landing releases the refused push; the publisher finds the line moved.
+    await plane.land("b", commits.b1, commits.base);
+    await publishLine(plane.publisher, { projectId: plane.projectId, branch: LINE });
+    const conflicted = await plane.lineRecord();
+    expect(conflicted.push?.status).toBe("conflict");
+    expect(conflicted.waiting?.reason).not.toBe("line_refused");
+
+    // The owner is not held: it recomposes onto the moved head and publishes.
+    expect((await ownerFor(await plane.latestLineRun())).code).toBe(0);
+    const head = origin.refOf("refs/heads/main") as string;
+    expect(origin.isAncestor(direct, head)).toBe(true);
+    expect(origin.show(head, "direct.txt")).toBe("direct");
+    expect(origin.show(head, "a.txt")).toBe("a");
+    expect(origin.show(head, "b.txt")).toBe("b");
+    const record = await plane.lineRecord();
+    expect(record.push).toMatchObject({ head, status: "published" });
+    expect(record.waiting).toBeUndefined();
   });
 });

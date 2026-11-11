@@ -17,7 +17,7 @@ import type { Session } from "../session.js";
 
 /** How long the CLI waits for the publisher to push what it was given back. */
 export const REPUBLISH_DEADLINE_MS = 10 * 60_000;
-const POLL_MS = 3_000;
+export const POLL_MS = 3_000;
 
 export type RepublishOutcome = "nothing" | "published" | "blocked" | "pending";
 

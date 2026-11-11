@@ -171,7 +171,6 @@ const world = async () => {
     };
     return createLineComposer(ports, async () => ({
       lineHead: await lr.tip("line"),
-      mainHead: await lr.tip("main"),
     }));
   };
 

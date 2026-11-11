@@ -59,3 +59,22 @@ export const lineAdmission = async (
   }
   return { ok: true };
 };
+
+/**
+ * The waiting reason a line records for an org's dispatch refusal (`mayDispatch`'s
+ * reason, which is also the code of the refusal thrown); undefined for any other code.
+ */
+export const lineWaitingReasonOfRefusal = (code: string): LineWaitingReason | undefined => {
+  switch (code) {
+    case "month_over_cap":
+      return "org_month_ceiling";
+    case "concurrency_over_ceiling":
+      return "org_concurrency";
+    case "tier_over_ceiling":
+    case "hours_over_ceiling":
+    case "run_over_cap":
+      return "org_run_ceiling";
+    default:
+      return undefined;
+  }
+};

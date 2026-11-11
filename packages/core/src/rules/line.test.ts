@@ -14,10 +14,12 @@ import {
   DEFAULT_LINE_MONTHLY_USD,
   dispatchChargeDue,
   dispatchChargeKey,
+  isRequeued,
   LINE_COMPOSITION_SECONDS,
   LINE_IDLE_SECONDS,
   LINE_RESOLVER_ATTEMPTS,
   lineHasWork,
+  lineHeldByRefusal,
   lineQueueOwed,
   MAX_LINE_BATCH_ENTRIES,
   meterProjectUsage,
@@ -25,7 +27,9 @@ import {
   parkBatch,
   previousMonthOf,
   recordAttempt,
+  releaseRefusedPush,
   requestPush,
+  requeueParked,
   resolvePush,
   settleBatch,
   takeBatch,
@@ -324,6 +328,88 @@ describe("requestPush and resolvePush", () => {
     if (!pushed.ok) throw new Error("expected ok");
     expect(resolvePush(pushed.record, B, "published", undefined, AT)).toMatchObject({ ok: false });
   });
+});
+
+describe("a refused push holds the line", () => {
+  const request = { head: C, expectedPredecessor: A, bundleKey: "k" };
+  const held = (status: "protected" | "forbidden" = "protected"): LineRecord => {
+    const batched = takeBatch(queued(), 1, { batchId: "b" }, AT).record;
+    const composed = composeBatch(batched, compositionBody("b") as never, "comp-1", AT);
+    if (!composed.ok) throw new Error("expected ok");
+    const pushed = requestPush({ ...composed.record, head: A }, request, 1, AT);
+    if (!pushed.ok) throw new Error("expected ok");
+    const resolved = resolvePush(pushed.record, C, status, "GitHub said no", LATER);
+    if (!resolved.ok) throw new Error("expected ok");
+    return resolved.record;
+  };
+
+  it.each(["protected", "forbidden"] as const)("%s leaves the queue and records why", (status) => {
+    const record = held(status);
+    expect(record.queue).toEqual([]);
+    expect(record.waiting).toMatchObject({ reason: "line_refused", since: LATER });
+    expect(record.waiting?.detail).toContain(record.branch);
+    expect(record.waiting?.detail).toContain("bypass");
+    expect(record.waiting?.detail).toContain("GitHub said no");
+    expect(lineHasWork(record)).toBe(false);
+  });
+
+  it("is not work even with queued and held entries", () => {
+    const record = held();
+    const more = appendQueueEntry(
+      { ...record, push: record.push, waiting: record.waiting },
+      { program: P2, upTo: B },
+      LATER,
+    );
+    expect(lineHasWork(more)).toBe(true); // a new landing releases the hold
+    const withQueue = { ...record, queue: queued().queue, held: queued().queue };
+    expect(lineHasWork(withQueue)).toBe(false);
+  });
+
+  it("is tried once more by a new queue entry, and a second refusal holds again", () => {
+    const retried = appendQueueEntry(held(), { program: P2, upTo: B }, LATER);
+    expect(retried.push?.status).toBe("pending");
+    expect(retried.queue).toHaveLength(1);
+    const again = resolvePush(retried, C, "protected", "still no", LATER);
+    if (!again.ok) throw new Error("expected ok");
+    expect(again.record.push?.status).toBe("protected");
+    expect(again.record.queue).toEqual(retried.queue);
+    expect(lineHasWork(again.record)).toBe(false);
+    expect(again.record.waiting?.since).toBe(LATER);
+  });
+
+  it("is tried once by the retry path, and an entry already composed is not queued again", () => {
+    const record = held();
+    const entry = record.compositions[0]?.ranges[0];
+    if (entry === undefined) throw new Error("expected a range");
+    expect(appendQueueEntry(record, { program: entry.program, upTo: entry.upTo }, LATER)).toBe(
+      record,
+    );
+    const released = releaseRefusedPush(record, LATER);
+    expect(released.push?.status).toBe("pending");
+    expect(releaseRefusedPush(released, LATER)).toBe(released);
+  });
+
+  it("clears the waiting reason when the retried push publishes", () => {
+    const released = releaseRefusedPush(held(), LATER);
+    const done = resolvePush(released, C, "published", undefined, LATER);
+    if (!done.ok) throw new Error("expected ok");
+    expect(done.record.waiting).toBeUndefined();
+    expect(done.record.head).toBe(C);
+  });
+
+  it.each(["conflict", "error"] as const)(
+    "clears the hold and requeues when the released push settles %s",
+    (status) => {
+      const released = releaseRefusedPush(held(), LATER);
+      expect(released.waiting?.reason).toBe("line_refused");
+      const done = resolvePush(released, C, status, "the line moved", LATER);
+      if (!done.ok) throw new Error("expected ok");
+      expect(done.record.waiting).toBeUndefined();
+      expect(done.record.queue).not.toEqual([]);
+      expect(lineHeldByRefusal(done.record)).toBe(false);
+      expect(lineHasWork(done.record)).toBe(true);
+    },
+  );
 });
 
 describe("the project's self-started usage", () => {
@@ -889,6 +975,65 @@ describe("recordAttempt", () => {
     expect(recordAttempt(held(), { program: P2, upTo: B, repairs: 2 }, 1, LATER)).toMatchObject({
       ok: false,
       reason: "not_held",
+    });
+  });
+});
+
+describe("requeueParked (P25, D-P25-05)", () => {
+  const parked = (): LineRecord =>
+    makeLineRecord(f, {
+      parked: [
+        {
+          compositionId: "b1-p0",
+          ranges: [{ program: P1, upTo: A, repairs: 3 }],
+          reason: "main does not compose onto the line",
+          parkedAt: AT,
+        },
+        {
+          compositionId: "b1-p1",
+          ranges: [{ program: P2, upTo: B }],
+          reason: "main does not compose onto the line",
+          parkedAt: AT,
+        },
+      ],
+    });
+
+  it("queues every parked range afresh, with no repairs, and records who sent it back", () => {
+    const change = requeueParked(parked(), {}, "user-1", LATER);
+    if (!change.ok) throw new Error(change.detail);
+    expect(change.record.queue).toEqual([
+      { program: P1, upTo: A, enqueuedAt: LATER },
+      { program: P2, upTo: B, enqueuedAt: LATER },
+    ]);
+    expect(change.record.requeued).toEqual([
+      { parkedId: "b1-p0", at: LATER, by: "user-1" },
+      { parkedId: "b1-p1", at: LATER, by: "user-1" },
+    ]);
+    // The parked entries stay as they were recorded.
+    expect(change.record.parked).toEqual(parked().parked);
+    expect(isRequeued(change.record, "b1-p0")).toBe(true);
+    expect(lineHasWork(change.record)).toBe(true);
+  });
+
+  it("sends back only one program's ranges when asked", () => {
+    const change = requeueParked(parked(), { program: P2 }, "user-1", LATER);
+    if (!change.ok) throw new Error(change.detail);
+    expect(change.record.queue.map((entry) => entry.program)).toEqual([P2]);
+    expect(isRequeued(change.record, "b1-p0")).toBe(false);
+  });
+
+  it("does not queue a range twice, and refuses when nothing is left to send back", () => {
+    const already = { ...parked(), queue: [{ program: P1, upTo: A, enqueuedAt: AT }] };
+    const change = requeueParked(already, {}, "user-1", LATER);
+    if (!change.ok) throw new Error(change.detail);
+    expect(change.record.queue.map((entry) => entry.program)).toEqual([P1, P2]);
+    expect(requeueParked(change.record, {}, "user-1", LATER)).toMatchObject({
+      ok: false,
+      reason: "nothing_parked",
+    });
+    expect(requeueParked(empty(), { program: P1 }, "user-1", LATER)).toMatchObject({
+      ok: false,
+      reason: "nothing_parked",
     });
   });
 });

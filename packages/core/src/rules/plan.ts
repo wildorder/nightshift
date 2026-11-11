@@ -503,6 +503,7 @@ const sectionHasBody = (section: string | undefined): boolean =>
 // --- readiness ----------------------------------------------------------------
 
 export type PlanReason =
+  | { readonly kind: "base_branch_not_line"; readonly message: string }
   | { readonly kind: "no_strands"; readonly message: string }
   /**
    * P9 (D-P9-04): a correction names a decision that is not there, or not
@@ -889,6 +890,22 @@ const storyReasons = (
   return reasons;
 };
 
+/** D-02: a program of a project with a line is based on the line's branch. */
+const baseBranchReasons = (contract: ProgramContract): PlanReason[] => {
+  if (contract.line === undefined || contract.repository.baseBranch === contract.line.branch) {
+    return [];
+  }
+  return [
+    {
+      kind: "base_branch_not_line",
+      message:
+        `repository.baseBranch is \`${contract.repository.baseBranch}\`, but this project's line is ` +
+        `\`${contract.line.branch}\`, and a program of a line starts from it: set ` +
+        `repository.baseBranch to \`${contract.line.branch}\` or remove it`,
+    },
+  ];
+};
+
 /**
  * Whether a plan can be ratified (D-P7-07): `READY`, or every reason at once so
  * a plan is fixed in one pass. `contract` has already parsed; `planSections` is
@@ -919,6 +936,7 @@ export const checkPlan = (
           } as const,
         ]
       : []),
+    ...baseBranchReasons(contract),
     ...storyReasons(contract, conversation),
     ...criteriaReasons(contract, strands),
     ...strands.flatMap((strand) => strandReasons(contract, strand, planSections)),

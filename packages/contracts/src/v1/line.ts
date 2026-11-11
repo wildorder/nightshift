@@ -41,12 +41,28 @@ export const MAX_LINE_WORDS_CHARS = 2000;
 /** The repairs a lineage has spent; absent means none. */
 export const LineRepairsSchema = z.int().min(0).max(MAX_LINE_REPAIRS);
 
+/** The most earlier heads a range or entry records as subsumed. */
+export const MAX_LINE_COVERS = 50;
+/**
+ * The heads a range subsumes besides its `upTo`: published heads of the same
+ * program that were queued together and are on the line once the range is.
+ * Excludes `upTo`, has no duplicates, and keeps the newest `MAX_LINE_COVERS`.
+ * Absent for a single-entry range and for records written before it existed.
+ */
+export const LineCoversSchema = z
+  .array(CommitShaSchema)
+  .max(MAX_LINE_COVERS)
+  .refine((covers) => new Set(covers).size === covers.length, {
+    message: "covers must not repeat a commit",
+  });
+
 /** One range of a program's landed work: `from` (exclusive, absent for its start) up to `upTo`. */
 export const LineRangeSchema = z.strictObject({
   program: ProgramIdSchema,
   from: CommitShaSchema.optional(),
   upTo: CommitShaSchema,
   repairs: LineRepairsSchema.optional(),
+  covers: LineCoversSchema.optional(),
   /** The commit of the repair that succeeded for this range, kept until its composition is published. */
   repaired: CommitShaSchema.optional(),
 });
@@ -58,6 +74,8 @@ export const LineQueueEntrySchema = z.strictObject({
   upTo: CommitShaSchema,
   enqueuedAt: IsoTimestampSchema,
   repairs: LineRepairsSchema.optional(),
+  /** The earlier heads the range this entry was rebuilt from subsumed; see `LineRangeSchema`. */
+  covers: LineCoversSchema.optional(),
   /** The successful repair commit for this range, composed first when the range returns. */
   repaired: CommitShaSchema.optional(),
   /** The words of the last repair of this range that failed, kept so a replacement owner can say them when the budget is spent. */
@@ -225,7 +243,11 @@ export const LineWaitingReasonSchema = z.enum([
   "monthly_cap",
   "org_month_ceiling",
   "org_concurrency",
+  /** A single run would break the org's per-run ceiling: its tier, its wall clock or its cost. */
+  "org_run_ceiling",
   "not_configured",
+  /** The remote refused the line's push (protected or forbidden); held until a landing, a start or a person's retry tries it once. */
+  "line_refused",
 ]);
 export type LineWaitingReason = z.infer<typeof LineWaitingReasonSchema>;
 
@@ -235,6 +257,17 @@ export const LineWaitingSchema = z.strictObject({
   since: IsoTimestampSchema,
 });
 export type LineWaiting = z.infer<typeof LineWaitingSchema>;
+
+/**
+ * A parked entry a person sent back to the queue (P25, D-P25-05): the entry's
+ * id, when and by whom. The parked entry itself is kept as it was recorded.
+ */
+export const LineRequeuedSchema = z.strictObject({
+  parkedId: z.string().min(1),
+  at: IsoTimestampSchema,
+  by: z.string().min(1),
+});
+export type LineRequeued = z.infer<typeof LineRequeuedSchema>;
 
 const LineRecordShape = z.strictObject({
   ...projectScoped,
@@ -254,6 +287,8 @@ const LineRecordShape = z.strictObject({
   compositions: z.array(LineCompositionSchema),
   /** Newest `MAX_LINE_PARKED` kept. */
   parked: z.array(LineParkedSchema),
+  /** The parked entries sent back to the queue, newest `MAX_LINE_PARKED` kept (P25, D-P25-05). */
+  requeued: z.array(LineRequeuedSchema).optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
   /**
@@ -415,6 +450,25 @@ export const LineSettleBodySchema = z
     }
   });
 export type LineSettleBody = z.infer<typeof LineSettleBodySchema>;
+
+/**
+ * `POST …/line/requeue?branch=` (P25, D-P25-05): a person sends parked ranges
+ * back to the queue, every one, or one program's.
+ */
+export const LineRequeueBodySchema = z.strictObject({
+  program: ProgramIdSchema.optional(),
+});
+export type LineRequeueBody = z.infer<typeof LineRequeueBodySchema>;
+
+export const LineRequeueResponseSchema = z.strictObject({
+  /** The ranges queued again, in the order they were parked. */
+  requeued: z.array(z.strictObject({ program: ProgramIdSchema, upTo: CommitShaSchema })),
+  /** What starting the line's run answered: `started`, `live` (one is running), or `waiting` with why. */
+  run: z.string().min(1),
+  /** Whether a refused push the line was held by went back to pending to be tried once more. */
+  released: z.boolean().optional(),
+});
+export type LineRequeueResponse = z.infer<typeof LineRequeueResponseSchema>;
 
 /** `POST …/line/bundle-upload-url?branch=`. */
 export const LineBundleUploadUrlBodySchema = z.strictObject({

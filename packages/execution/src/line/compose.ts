@@ -5,6 +5,7 @@ import {
   type LineRange,
   type LineRepairRef,
   type LineVerification,
+  MAX_LINE_COVERS,
   MAX_LINE_REPAIRS,
   type ProgramId,
 } from "@nightshift/contracts";
@@ -30,6 +31,13 @@ const withRepairs = (range: LineRange, repairs: number): LineRange => {
   const { repairs: _spent, ...rest } = range;
   return repairs > 0 ? { ...rest, repairs } : rest;
 };
+
+/** Every head an entry stands for: its own and any it already covers. */
+const subsumed = (entry: LineQueueEntry): CommitSha[] => [entry.upTo, ...(entry.covers ?? [])];
+
+/** The heads `upTo` subsumes: deduplicated, without `upTo`, the newest `MAX_LINE_COVERS`. */
+const coversOf = (upTo: CommitSha, heads: CommitSha[]): CommitSha[] =>
+  [...new Set(heads)].filter((head) => head !== upTo).slice(-MAX_LINE_COVERS);
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -146,6 +154,12 @@ const groupRanges = async (
     // A parked (spent) range is not on the line, so the next one does not follow it.
     if (unit.released?.owner.state !== "spent") chain.set(unit.program, upTo);
     if (await ports.checkout.isAncestor(upTo, lineHead)) continue;
+    const covers = coversOf(
+      upTo,
+      unit.released
+        ? [...(unit.released.range.covers ?? []), ...unit.released.entries.flatMap(subsumed)]
+        : unit.entries.flatMap(subsumed),
+    );
     const repaired =
       unit.released?.range.repaired ??
       unit.entries.find((entry) => entry.repairs === unit.repairs && entry.repaired)?.repaired;
@@ -157,6 +171,7 @@ const groupRanges = async (
           program: unit.program,
           ...(from === undefined ? {} : { from }),
           upTo,
+          ...(covers.length === 0 ? {} : { covers }),
           ...(repaired === undefined ? {} : { repaired }),
         },
         unit.repairs,
@@ -226,7 +241,7 @@ export interface LineComposer {
 
 export const createLineComposer = (
   ports: LineComposerPorts,
-  heads: () => Promise<{ lineHead: CommitSha; mainHead: CommitSha }>,
+  heads: () => Promise<{ lineHead: CommitSha }>,
 ): LineComposer => {
   const { checkout, verifier, queue, publisher, clock } = ports;
   const lineages: Lineage[] = [];
@@ -395,11 +410,7 @@ export const createLineComposer = (
     );
   };
 
-  const composeBatch = async (
-    batch: LineBatch,
-    lineHead: CommitSha,
-    mainHead: CommitSha,
-  ): Promise<LineBatchOutcome> => {
+  const composeBatch = async (batch: LineBatch, lineHead: CommitSha): Promise<LineBatchOutcome> => {
     const deadlineMs = clock.now() + (ports.limits?.seconds ?? LINE_COMPOSITION_SECONDS) * 1000;
     const deadline = new Date(deadlineMs).toISOString();
     const passed = () => clock.now() >= deadlineMs;
@@ -515,7 +526,6 @@ export const createLineComposer = (
       lineages.push(lineage);
     }
 
-    const mainMessage = `Merge main ${mainHead} into the line`;
     const rangeMessage = (range: LineRange) => `Merge program ${rangeLabel(range)} into the line`;
     const pathCache = new Map<string, string[]>();
     const pathsOf = async (range: LineRange, at: CommitSha): Promise<string[]> => {
@@ -593,7 +603,7 @@ export const createLineComposer = (
       let wt: LineWorktree | undefined;
       try {
         wt = await checkout.open(lineHead);
-        let merged = (await checkout.merge(wt, mainHead, mainMessage)).kind === "merged";
+        let merged = true;
         for (const range of ordinary) {
           if (!merged) break;
           merged = (await checkout.merge(wt, range.upTo, rangeMessage(range))).kind === "merged";
@@ -661,36 +671,6 @@ export const createLineComposer = (
 
     try {
       await reopen(lineHead);
-      const mainResult = await checkout.merge(current as LineWorktree, mainHead, mainMessage);
-      let mainParked = false;
-      if (mainResult.kind === "conflict") {
-        mainParked = true;
-      } else if (mainResult.head !== head) {
-        const result = await verifier.verify({
-          worktree: current as LineWorktree,
-          commit: mainResult.head,
-          base: head,
-          deadline,
-        });
-        if (result.timedOut || passed()) {
-          for (const range of units) park(range, TIME_LIMIT_REASON);
-          await finish({});
-          return outcome;
-        }
-        if (result.verification.outcome === "passed") {
-          head = mainResult.head;
-          headVerification = result.verification;
-        } else {
-          mainParked = true;
-        }
-      }
-      if (mainParked) {
-        for (const range of units) {
-          park(range, "main does not compose onto the line");
-        }
-        await finish({});
-        return outcome;
-      }
 
       for (let i = 0; i < units.length; i++) {
         const range = units[i] as LineRange;
@@ -848,8 +828,8 @@ export const createLineComposer = (
       for (const lineage of lineages.filter((l) => l.state === "repaired")) dropLineage(lineage);
       return { idle: idle() };
     }
-    const { lineHead, mainHead } = await heads();
-    const outcome = await composeBatch(batch, lineHead, mainHead);
+    const { lineHead } = await heads();
+    const outcome = await composeBatch(batch, lineHead);
     return { outcome, idle: idle() };
   };
 

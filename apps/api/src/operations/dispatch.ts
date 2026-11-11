@@ -59,6 +59,7 @@ import {
   LINE_COMPOSITION_SECONDS,
   leaseExpiryFrom,
   lineAdmission,
+  lineWaitingReasonOfRefusal,
   mayDispatch,
   mayResume,
   meterUsd,
@@ -161,6 +162,106 @@ const endRefusedStart = async (
   }
 };
 
+/**
+ * Every check that decides whether a dispatch may be made, none of which needs
+ * a run: the plan, the dispatcher, a line's own cap, GitHub, and the org's
+ * ceilings. A line's refusal against its cap or the org's month or concurrency
+ * is recorded on the line as what it waits for. `startLineRun` calls it before
+ * it writes the run; `admitDispatch` calls it for every dispatch.
+ */
+export const checkDispatchAdmission = async (
+  deps: ApiDeps,
+  project: Project,
+  program: ProgramContract,
+  body: DispatchBody,
+  at: IsoTimestamp,
+) => {
+  const line = isLineProgram(program);
+  // A line program is the plane's own: no ratification, no plan hash.
+  if (!line) {
+    if (!isPlanned(program) || program.status !== "ratified") {
+      throw new HttpError(
+        409,
+        "plan_not_ratified",
+        `program ${program.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
+      );
+    }
+    if (program.planHash !== body.input.planHash) {
+      throw new HttpError(
+        409,
+        "plan_changed",
+        "the plan hash dispatched is not the one ratified; the plan changed since",
+      );
+    }
+  }
+
+  const dispatcher = deps.dispatcher;
+  if (dispatcher === undefined) {
+    throw new HttpError(
+      501,
+      "dispatch_unavailable",
+      "this control plane was wired without a dispatcher; no machine would be provisioned",
+    );
+  }
+
+  const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
+  if (line) {
+    // The project's self-started cap and the org's month ceiling; a refusal
+    // is recorded on the line as what it is waiting for.
+    const branch = body.input.branch;
+    const admission = await lineAdmission(deps, {
+      projectId: program.projectId,
+      branch,
+      capUsd: await lineCapUsd(deps.stores, program.projectId, branch),
+      orgId: project.orgId,
+    });
+    if (!admission.ok) {
+      await recordLineWaiting(
+        deps.stores,
+        deps.clock,
+        { projectId: program.projectId, branch },
+        { reason: admission.reason, detail: admission.detail },
+      );
+      throw new HttpError(409, admission.reason, admission.detail);
+    }
+  }
+  // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
+  // org's recorded installations must grant the repository, and the branch's
+  // head at GitHub must be the SHA dispatched.
+  await assertGithubInput(
+    deps,
+    orgConfig?.installations ?? [],
+    body.input,
+    line ? program : undefined,
+  );
+
+  const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
+  const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
+  const estimatedUsd = estimateUsd(body.tier, runHours);
+  const usage = await usageOf(deps, project.orgId, at);
+  const refusal = mayDispatch({
+    ceilings,
+    tier: body.tier,
+    runHours,
+    estimatedUsd,
+    monthSpentUsd: usage.meteredUsd,
+    concurrentRuns: await concurrentOf(deps, project.orgId),
+  });
+  if (refusal !== undefined) {
+    const waiting = lineWaitingReasonOfRefusal(refusal.reason);
+    if (line && waiting !== undefined) {
+      await recordLineWaiting(
+        deps.stores,
+        deps.clock,
+        { projectId: program.projectId, branch: body.input.branch },
+        { reason: waiting, detail: refusal.detail },
+      );
+    }
+    throw new HttpError(409, refusal.reason, refusal.detail);
+  }
+  return { dispatcher, runHours, estimatedUsd };
+};
+
 export const createDispatch: Handler = async ({ deps, request, params }) =>
   admitDispatch(deps, runScopeFrom(params), parseBody(DispatchBodySchema, request.body));
 
@@ -202,91 +303,7 @@ export const admitDispatch = async (
   // Every refusal from here on ends the run it was asked for: a pending run
   // with no machine holds its program's one live slot (A-66), and a start the
   // plane refused must not keep the program from the next one (2026-10-28).
-  const line = isLineProgram(program);
-  const admit = async () => {
-    // A line program is the plane's own: no ratification, no plan hash.
-    if (!line) {
-      if (!isPlanned(program) || program.status !== "ratified") {
-        throw new HttpError(
-          409,
-          "plan_not_ratified",
-          `program ${scope.programId} is not a ratified planned program; remote execution needs one (D-P10-09)`,
-        );
-      }
-      if (program.planHash !== body.input.planHash) {
-        throw new HttpError(
-          409,
-          "plan_changed",
-          "the plan hash dispatched is not the one ratified; the plan changed since",
-        );
-      }
-    }
-
-    const dispatcher = deps.dispatcher;
-    if (dispatcher === undefined) {
-      throw new HttpError(
-        501,
-        "dispatch_unavailable",
-        "this control plane was wired without a dispatcher; no machine would be provisioned",
-      );
-    }
-
-    const orgConfig = await deps.stores.orgConfigs.get(project.orgId);
-    if (line) {
-      // The project's self-started cap and the org's month ceiling; a refusal
-      // is recorded on the line as what it is waiting for.
-      const branch = body.input.branch;
-      const admission = await lineAdmission(deps, {
-        projectId: scope.projectId,
-        branch,
-        capUsd: await lineCapUsd(deps.stores, scope.projectId, branch),
-        orgId: project.orgId,
-      });
-      if (!admission.ok) {
-        await recordLineWaiting(
-          deps.stores,
-          deps.clock,
-          { projectId: scope.projectId, branch },
-          { reason: admission.reason, detail: admission.detail },
-        );
-        throw new HttpError(409, admission.reason, admission.detail);
-      }
-    }
-    // Nothing the client claimed about GitHub is trusted (SC-P10-02): one of the
-    // org's recorded installations must grant the repository, and the branch's
-    // head at GitHub must be the SHA dispatched.
-    await assertGithubInput(
-      deps,
-      orgConfig?.installations ?? [],
-      body.input,
-      line ? program : undefined,
-    );
-
-    const ceilings = orgConfig?.compute ?? DEFAULT_COMPUTE_CEILINGS;
-    const runHours = runHoursOf(program.costPolicy.maxWallClockSeconds, ceilings);
-    const estimatedUsd = estimateUsd(body.tier, runHours);
-    const usage = await usageOf(deps, project.orgId, at);
-    const refusal = mayDispatch({
-      ceilings,
-      tier: body.tier,
-      runHours,
-      estimatedUsd,
-      monthSpentUsd: usage.meteredUsd,
-      concurrentRuns: await concurrentOf(deps, project.orgId),
-    });
-    if (refusal !== undefined) {
-      if (line && refusal.reason === "concurrency_over_ceiling") {
-        await recordLineWaiting(
-          deps.stores,
-          deps.clock,
-          { projectId: scope.projectId, branch: body.input.branch },
-          { reason: "org_concurrency", detail: refusal.detail },
-        );
-      }
-      throw new HttpError(409, refusal.reason, refusal.detail);
-    }
-    return { dispatcher, runHours, estimatedUsd };
-  };
+  const admit = () => checkDispatchAdmission(deps, project, program, body, at);
   const { dispatcher, runHours, estimatedUsd } = await admit().catch(async (error: unknown) => {
     await endRefusedStart(deps, run, error, at);
     throw error;
@@ -382,11 +399,7 @@ const assertGithubInput = async (
   // A line's ref may not exist yet: the first owner starts from the base
   // branch's head, which is where the line ref will be cut.
   if (head === undefined && line !== undefined) {
-    head = await deps.github.branchHead(
-      installation.installationId,
-      repository,
-      line.repository.baseBranch,
-    );
+    head = await defaultBranchHead(deps.github, installation.installationId, repository);
   }
   if (head === undefined) {
     throw new HttpError(
@@ -405,8 +418,22 @@ const assertGithubInput = async (
 };
 
 /**
+ * The head of the repository's default branch: where a line ref that does not
+ * exist yet is cut. The contract's base branch is the line itself (D-02), so it
+ * cannot answer.
+ */
+const defaultBranchHead = async (
+  github: NonNullable<ApiDeps["github"]>,
+  installationId: number,
+  repository: string,
+): Promise<string | undefined> => {
+  const name = await github.defaultBranch(installationId, repository);
+  return name === undefined ? undefined : github.branchHead(installationId, repository, name);
+};
+
+/**
  * The commit a line run starts from, as `assertGithubInput` will judge it: the
- * line ref's head at GitHub, or the base branch's when the ref does not exist
+ * line ref's head at GitHub, or the default branch's when the ref does not exist
  * yet. `undefined` when GitHub cannot say; the admission then refuses with the
  * reason.
  */
@@ -428,7 +455,7 @@ export const lineBaseSha = async (
   const { installationId } = installation;
   return (
     (await deps.github.branchHead(installationId, repository, program.repository.programBranch)) ??
-    (await deps.github.branchHead(installationId, repository, program.repository.baseBranch))
+    (await defaultBranchHead(deps.github, installationId, repository))
   );
 };
 

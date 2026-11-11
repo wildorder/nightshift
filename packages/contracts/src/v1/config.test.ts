@@ -25,6 +25,29 @@ describe("nightshift.config.json (D-P7-03)", () => {
     expect("examinationPolicy" in merged).toBe(false);
   });
 
+  it("bases a program on the line, unless the contract states its own baseBranch", () => {
+    const lined = NightshiftConfigSchema.parse({
+      ...config,
+      line: { branch: "nightshift/develop" },
+    });
+    const repository = { url: "https://example.test/r.git", programBranch: "p/x" };
+    const inherited = inheritFromConfig({ repository }, lined) as {
+      repository: Record<string, unknown>;
+    };
+    expect(inherited.repository.baseBranch).toBe("nightshift/develop");
+    const stated = inheritFromConfig(
+      { repository: { ...repository, baseBranch: "main" } },
+      lined,
+    ) as {
+      repository: Record<string, unknown>;
+    };
+    expect(stated.repository.baseBranch).toBe("main");
+    const plain = inheritFromConfig({ repository }, config) as {
+      repository: Record<string, unknown>;
+    };
+    expect("baseBranch" in plain.repository).toBe(false);
+  });
+
   it("leaves anything that is not an object for the contract schema to refuse", () => {
     expect(inheritFromConfig([], config)).toEqual([]);
     expect(inheritFromConfig(null, config)).toBeNull();
