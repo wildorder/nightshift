@@ -21,6 +21,7 @@ import {
   GitHubAccessMissing,
   type GitHubPromotionClient,
   lineProgramId,
+  lineWaitingReasons,
   MAX_PROMOTION_BODY_CHARS,
   makeDecision,
   makeJobContract,
@@ -62,7 +63,8 @@ const fakeGitHub = () => {
     })[],
     aheadBy: 1,
     behindBy: 0,
-    behindCommits: [] as { sha: string; subject: string; parents: string[] }[],
+    behindCommits: [] as { sha: string; subject: string; parents: string[]; tree: string }[],
+    trees: new Map<string, string>(),
     denied: false,
     failure: undefined as Error | undefined,
     targetHead: T0 as string | undefined,
@@ -83,6 +85,7 @@ const fakeGitHub = () => {
               sha: sha(500 + index),
               subject: `commit ${index}`,
               parents: [],
+              tree: `tree${index}`,
             })),
             complete: true,
           }
@@ -92,6 +95,10 @@ const fakeGitHub = () => {
             commits: state.behindCommits,
             complete: true,
           };
+    },
+    commitTree: async (_i, _r, commitSha) => {
+      guard("tree");
+      return state.trees.get(commitSha);
     },
     findOpenPullRequest: async () => {
       guard("find");
@@ -264,7 +271,7 @@ describe("promotion after a push", () => {
     const w = await world();
     w.github.state.behindBy = 1;
     w.github.state.behindCommits = [
-      { sha: sha(900), subject: "hotfix on main", parents: [sha(1)] },
+      { sha: sha(900), subject: "hotfix on main", parents: [sha(1)], tree: "t900" },
     ];
     await w.push(H1);
     const record = await w.record();
@@ -292,13 +299,74 @@ describe("promotion after a push", () => {
     const first = w.github.state.prs[0];
     if (first === undefined) throw new Error("no pull request");
     first.state = "merged";
-    // Same head after the merge: nothing new to open.
+    // A merge commit leaves nothing ahead: nothing new to open.
+    w.github.state.aheadBy = 0;
     await maintainPromotion(w.deps, w.line);
     expect((await w.record()).promotion?.state).toBe("merged");
     expect(w.github.state.prs).toHaveLength(1);
+    w.github.state.aheadBy = 1;
     await w.push(H2);
     expect(w.github.state.prs).toHaveLength(2);
     expect((await w.record()).promotion).toMatchObject({ number: 2, state: "open", head: H2 });
+  });
+
+  it("opens a fresh pull request after a squash merge even with the line unmoved", async () => {
+    const w = await world();
+    await w.push(H1);
+    const first = w.github.state.prs[0];
+    if (first === undefined) throw new Error("no pull request");
+    first.state = "merged";
+    // The squash commit is on the target only; the line is still ahead.
+    w.github.state.targetHead = T1;
+    w.github.state.behindBy = 1;
+    w.github.state.behindCommits = [
+      { sha: sha(901), subject: "Promote line (#1)", parents: [sha(100)], tree: "squash" },
+    ];
+    expect(await publishPromotion(w.deps, w.line)).toBe("opened");
+    expect(w.github.state.prs).toHaveLength(2);
+    expect(w.github.state.prs[1]?.body.split("\n")[0]).toContain("Warning");
+    expect(w.github.state.prs[1]?.body).toContain("Promote line (#1)");
+    expect((await w.record()).promotion).toMatchObject({ number: 2, state: "open", head: H1 });
+  });
+
+  describe("target-only merge commits", () => {
+    const mergeOf = (tree: string) => ({
+      sha: sha(902),
+      subject: "Merge branch line into main",
+      parents: [sha(100), sha(1)],
+      tree,
+    });
+
+    it("a clean merge (tree equals its line parent's) is not divergence", async () => {
+      const w = await world();
+      w.github.state.behindBy = 1;
+      w.github.state.behindCommits = [mergeOf("clean")];
+      w.github.state.trees.set(sha(1), "clean");
+      await w.push(H1);
+      const record = await w.record();
+      expect(record.promotion?.diverged).toBeUndefined();
+      expect(w.github.state.prs[0]?.body).not.toContain("Warning");
+    });
+
+    it("a merge with an extra edit, the only target-only commit, is divergence", async () => {
+      const w = await world();
+      w.github.state.behindBy = 1;
+      w.github.state.behindCommits = [mergeOf("edited")];
+      w.github.state.trees.set(sha(1), "clean");
+      await w.push(H1);
+      const record = await w.record();
+      expect(record.promotion?.diverged).toMatchObject({ count: 1 });
+      expect(w.github.state.prs[0]?.body.split("\n")[0]).toContain("Warning");
+      expect(lineWaitingReasons(record).map((r) => r.reason)).toContain("promotion_diverged");
+    });
+
+    it("a merge whose parent tree cannot be read is divergence", async () => {
+      const w = await world();
+      w.github.state.behindBy = 1;
+      w.github.state.behindCommits = [mergeOf("clean")];
+      await w.push(H1);
+      expect((await w.record()).promotion?.diverged).toMatchObject({ count: 1 });
+    });
   });
 });
 

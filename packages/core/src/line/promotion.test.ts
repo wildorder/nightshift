@@ -19,6 +19,7 @@ const commit = (n: number, subject = `commit ${n}`, parents: string[] = [sha(n -
   sha: sha(n),
   subject,
   parents,
+  tree: `tree${n}`,
 });
 const compare = (
   commits: ReturnType<typeof commit>[],
@@ -55,11 +56,23 @@ describe("divergedCommits", () => {
     expect(divergedCommits(compare([])).count).toBe(0);
   });
 
-  it("does not count the merge commit of an earlier promotion", () => {
+  it("does not count the merge commit of an earlier promotion (tree equals its line parent's)", () => {
     const merge = commit(5, "Merge pull request #1 from x/line", [sha(4), sha(100)]);
-    const result = divergedCommits(compare([merge]));
+    const result = divergedCommits(compare([merge]), new Map([[sha(100), "tree5"]]));
     expect(result.commits).toEqual([]);
     expect(result.count).toBe(0);
+  });
+
+  it("counts a merge with edits beyond its line parent, even alone", () => {
+    const merge = commit(5, "Merge line into main", [sha(4), sha(100)]);
+    const result = divergedCommits(compare([merge]), new Map([[sha(100), "other"]]));
+    expect(result.count).toBe(1);
+  });
+
+  it("counts a merge without tree evidence", () => {
+    const merge = commit(5, "Merge line into main", [sha(4), sha(100)]);
+    expect(divergedCommits(compare([merge])).count).toBe(1);
+    expect(divergedCommits(compare([merge]), new Map()).count).toBe(1);
   });
 
   it("counts a squash merge and a direct commit", () => {

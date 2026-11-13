@@ -86,9 +86,12 @@ export interface GitHubPromotionClient {
       readonly sha: string;
       readonly subject: string;
       readonly parents: readonly string[];
+      readonly tree: string;
     }[];
     readonly complete: boolean;
   }>;
+  /** The tree a commit records; undefined when GitHub has no such commit. */
+  commitTree(installationId: number, repository: string, sha: string): Promise<string | undefined>;
   findOpenPullRequest(
     installationId: number,
     repository: string,

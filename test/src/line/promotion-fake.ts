@@ -57,13 +57,19 @@ export const promotionFake = (bare: string, repository: string): PromotionFake =
       const from = resolve(bare, base);
       const to = resolve(bare, head);
       const count = (range: string): number => Number(gitIn(bare, "rev-list", "--count", range));
-      const log = gitIn(bare, "log", "--reverse", "--format=%H%x1f%s%x1f%P", `${from}..${to}`);
+      const log = gitIn(
+        bare,
+        "log",
+        "--reverse",
+        "--format=%H%x1f%s%x1f%P%x1f%T",
+        `${from}..${to}`,
+      );
       const commits =
         log === ""
           ? []
           : log.split("\n").map((line) => {
-              const [sha = "", subject = "", parents = ""] = line.split("\x1f");
-              return { sha, subject, parents: parents === "" ? [] : parents.split(" ") };
+              const [sha = "", subject = "", parents = "", tree = ""] = line.split("\x1f");
+              return { sha, subject, parents: parents === "" ? [] : parents.split(" "), tree };
             });
       return {
         aheadBy: count(`${from}..${to}`),
@@ -71,6 +77,14 @@ export const promotionFake = (bare: string, repository: string): PromotionFake =
         commits,
         complete: true,
       };
+    },
+    commitTree: async (_installation, _repository, sha) => {
+      calls.push("tree");
+      try {
+        return gitIn(bare, "rev-parse", "--verify", "-q", `${sha}^{tree}`);
+      } catch {
+        return undefined;
+      }
     },
     findOpenPullRequest: async (_installation, _repository, branches) => {
       calls.push("find");

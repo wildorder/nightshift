@@ -18,6 +18,7 @@ import {
   type GitHubAppClient,
   type GitHubPromotionClient,
   installationGranting,
+  lineParentsOf,
   lineProgramId,
   type NightshiftStores,
   nowIso,
@@ -135,6 +136,36 @@ const repairFacts = async (
     }
   }
   return facts;
+};
+
+/** The most commit lookups one refresh makes to tell a clean merge from one with edits. */
+const MAX_TREE_LOOKUPS = 10;
+
+/** What the target holds that the line lacks; a merge commit is spared only on proof of its tree. */
+const divergence = async (
+  client: GitHubPromotionClient,
+  installationId: number,
+  repository: string,
+  lineHead: string,
+  to: string,
+) => {
+  const behind = await client.compare(installationId, repository, lineHead, to);
+  const trees = new Map<string, string>();
+  let lookups = 0;
+  for (const commit of behind.commits) {
+    for (const parent of lineParentsOf(behind, commit)) {
+      if (trees.has(parent)) continue;
+      if (lookups >= MAX_TREE_LOOKUPS) break;
+      lookups += 1;
+      try {
+        const tree = await client.commitTree(installationId, repository, parent);
+        if (tree !== undefined) trees.set(parent, tree);
+      } catch (error) {
+        if (error instanceof GitHubAccessMissing) throw error;
+      }
+    }
+  }
+  return divergedCommits(behind, trees);
 };
 
 /** Records `change` on the line's promotion alone; `undefined` leaves the record. */
@@ -259,9 +290,7 @@ const maintain = async (
     const ahead: PromotionCompare = await client.compare(installationId, repository, to, lineHead);
     const behindBy = ahead.behindBy;
     const diverged =
-      behindBy > 0
-        ? divergedCommits(await client.compare(installationId, repository, lineHead, to))
-        : undefined;
+      behindBy > 0 ? await divergence(client, installationId, repository, lineHead, to) : undefined;
 
     // (c) Open, update, or leave.
     let step: PromotionStep = "nothing_to_promote";
@@ -304,8 +333,6 @@ const maintain = async (
       } else if (state === "closed" && lineHead === closedAtHead) {
         // D-02: a person closed it; a fresh one only once the line moves.
         step = "closed";
-      } else if (state === "merged" && previous?.head === lineHead) {
-        step = "merged";
       } else {
         let opened: PullRequest;
         try {

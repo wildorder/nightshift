@@ -103,7 +103,7 @@ describe("the promotion pull request client (P26)", () => {
   const commitList = (from: number, count: number) =>
     Array.from({ length: count }, (_, index) => ({
       sha: `sha${from + index}`,
-      commit: { message: `subject ${from + index}\n\nbody` },
+      commit: { message: `subject ${from + index}\n\nbody`, tree: { sha: `tree${from + index}` } },
       parents: [{ sha: `sha${from + index - 1}` }],
     }));
   const pull = (extra: Record<string, unknown> = {}) => ({
@@ -147,9 +147,22 @@ describe("the promotion pull request client (P26)", () => {
       sha: "sha0",
       subject: "subject 0",
       parents: ["sha-1"],
+      tree: "tree0",
     });
     expect(seen.filter((s) => s.url.includes("/compare/"))).toHaveLength(3);
     expect(seen[1]?.url).toContain("/repos/o/r/compare/main...line?per_page=100&page=1");
+  });
+
+  it("reads a commit's tree, 404 as undefined", async () => {
+    const { client, seen } = rig(() => json({ tree: { sha: "t1" } }));
+    await expect(client.commitTree(7, "o/r", "abc")).resolves.toBe("t1");
+    expect(seen[1]?.url).toContain("/repos/o/r/git/commits/abc");
+    const none = rig(() => json({ message: "Not Found" }, 404));
+    await expect(none.client.commitTree(7, "o/r", "abc")).resolves.toBeUndefined();
+    const denied = rig(() => json({ message: "Resource not accessible by integration" }, 403));
+    await expect(denied.client.commitTree(7, "o/r", "abc")).rejects.toMatchObject({
+      name: "GitHubAccessMissing",
+    });
   });
 
   it("stops at the cap and says the list is not complete", async () => {

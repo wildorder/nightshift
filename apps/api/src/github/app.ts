@@ -297,12 +297,12 @@ export const createGitHubAppClient = (
         behind_by?: number;
         commits?: {
           sha: string;
-          commit: { message: string };
+          commit: { message: string; tree?: { sha: string } };
           parents?: { sha: string }[];
         }[];
         message?: string;
       }
-      const commits: { sha: string; subject: string; parents: string[] }[] = [];
+      const commits: { sha: string; subject: string; parents: string[]; tree: string }[] = [];
       let aheadBy = 0;
       let behindBy = 0;
       for (let page = 1; ; page += 1) {
@@ -323,6 +323,7 @@ export const createGitHubAppClient = (
             sha: commit.sha,
             subject: commit.commit.message.split("\n")[0] ?? "",
             parents: (commit.parents ?? []).map((parent) => parent.sha),
+            tree: commit.commit.tree?.sha ?? "",
           });
         }
         if (listed.length === 0 || commits.length >= Math.min(aheadBy, COMPARE_CAP)) break;
@@ -334,6 +335,19 @@ export const createGitHubAppClient = (
         commits: kept,
         complete: kept.length >= aheadBy,
       };
+    },
+    commitTree: async (installationId, repository, sha) => {
+      const { status, body } = await pulls<{ tree?: { sha?: string } }>(
+        installationId,
+        repository,
+        "GET",
+        `/repos/${repository}/git/commits/${encodeURIComponent(sha)}`,
+      );
+      if (status === 404) return undefined;
+      if (status !== 200 || body.tree?.sha === undefined) {
+        throw new GitHubError(status, "commit", body?.message ?? "no tree");
+      }
+      return body.tree.sha;
     },
     findOpenPullRequest: async (installationId, repository, branches) => {
       const owner = repository.split("/")[0] ?? "";

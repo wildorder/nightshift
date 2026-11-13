@@ -20,6 +20,8 @@ export interface PromotionCommit {
   readonly sha: string;
   readonly subject: string;
   readonly parents: readonly string[];
+  /** The tree the commit records. */
+  readonly tree: string;
 }
 
 /** A GitHub compare's result, as `GitHubPromotionClient.compare` returns it. */
@@ -53,22 +55,39 @@ const oneLine = (text: string, max = MAX_TEXT_CHARS): string => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
+/** The non-first parents of a merge commit, when none is itself target-only; else none. */
+export const lineParentsOf = (
+  behind: Pick<PromotionCompare, "commits">,
+  commit: PromotionCommit,
+): readonly string[] => {
+  if (commit.parents.length < 2) return [];
+  const listed = new Set(behind.commits.map((candidate) => candidate.sha));
+  const others = commit.parents.slice(1);
+  return others.some((parent) => listed.has(parent)) ? [] : others;
+};
+
 /**
  * The target's commits the line lacks. `behind` is `compare(base = line head,
  * head = target)`: its `commits` are the target-only ones and `aheadBy` counts
- * them. A merge commit whose every non-first parent is not among them is a
- * merge of something the line already holds (the merge commit of an earlier
- * promotion), so it is not divergence; squash and rebase merges and direct
- * commits are. An incomplete list cannot show that exclusion, so it counts
+ * them. A merge commit is not divergence only with evidence that it introduced
+ * nothing: every non-first parent is on the line (absent from the list) and
+ * the commit's tree equals the tree of one of them (`lineParentTrees`, by
+ * sha), as the merge commit of an earlier promotion does. A merge with edits,
+ * a squash or rebase merge, a direct commit, or a merge without that evidence
+ * is divergence. An incomplete list cannot show the exclusion, so it counts
  * `aheadBy`, conservatively diverged.
  */
-export const divergedCommits = (behind: PromotionCompare): DivergedCommits => {
-  const listed = new Set(behind.commits.map((commit) => commit.sha));
+export const divergedCommits = (
+  behind: PromotionCompare,
+  lineParentTrees: ReadonlyMap<string, string> = new Map(),
+): DivergedCommits => {
   const kept = behind.commits
-    .filter(
-      (commit) =>
-        commit.parents.length < 2 || commit.parents.slice(1).some((parent) => listed.has(parent)),
-    )
+    .filter((commit) => {
+      const parents = lineParentsOf(behind, commit);
+      return !(
+        parents.length > 0 && parents.some((parent) => lineParentTrees.get(parent) === commit.tree)
+      );
+    })
     .map((commit) => ({ sha: commit.sha, subject: commit.subject }));
   return {
     commits: kept,
