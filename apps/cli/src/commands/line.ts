@@ -17,6 +17,7 @@ import {
   type ProgramId,
   type Run,
 } from "@nightshift/contracts";
+import { lineWaitingReasons } from "@nightshift/core";
 import { routes, send } from "@nightshift/persistence/http";
 import type { CliEnvironment } from "../environment.js";
 import { readConfig, resolveFrom } from "../program-files.js";
@@ -102,6 +103,30 @@ const describeParked = (
   return lines;
 };
 
+/** The promotion's lines: the pull request it keeps open and how the line and target stand. */
+const describePromotion = (record: LineView["record"]): string[] => {
+  const { promotion } = record;
+  if (promotion === undefined) return [];
+  const lines: string[] = [];
+  if (promotion.number === undefined || promotion.aheadBy === 0) {
+    lines.push(`promotion → ${promotion.to}: nothing to promote`);
+  } else {
+    const described = promotion.head === undefined ? "" : `, describes ${short(promotion.head)}`;
+    lines.push(
+      `promotion → ${promotion.to}: #${promotion.number} ${promotion.state ?? "unknown"}${promotion.url === undefined ? "" : ` ${promotion.url}`}${described}`,
+    );
+  }
+  if (record.head !== undefined && promotion.head !== undefined && record.head !== promotion.head) {
+    lines.push(`  line head ${short(record.head)} differs from the described head`);
+  }
+  if (promotion.aheadBy !== undefined || promotion.behindBy !== undefined) {
+    lines.push(
+      `  ${promotion.to}: ${promotion.aheadBy ?? 0} ahead, ${promotion.behindBy ?? 0} behind the line`,
+    );
+  }
+  return lines;
+};
+
 /** The whole of `line status` for one view, a line per entry. */
 export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = []): string[] => {
   const { record, usage } = view;
@@ -140,9 +165,10 @@ export const describeLine = (view: LineView, runs: readonly LineRunEntry[] = [])
       `self-started spend ${usage.month}: ${usd(usage.meteredUsd)} of ${usd(usage.capUsd)} cap${usage.reachedAt === undefined ? "" : ` (reached ${usage.reachedAt})`}`,
     );
   }
-  if (record.waiting !== undefined) {
-    lines.push(`waiting (${record.waiting.reason}): ${record.waiting.detail}`);
-    if (record.waiting.reason === "line_refused") {
+  lines.push(...describePromotion(record));
+  for (const waiting of lineWaitingReasons(record)) {
+    lines.push(`waiting (${waiting.reason}): ${waiting.detail}`);
+    if (waiting.reason === "line_refused") {
       lines.push(
         "  to retry: lift the protection, then run `nightshift line requeue --all` (or `nightshift land` for the line program)",
       );
