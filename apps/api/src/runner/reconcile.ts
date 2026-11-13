@@ -16,11 +16,17 @@
  */
 import type { LineRecord, ProgramContract, ProjectId } from "@nightshift/contracts";
 import { DispatchStatusSchema } from "@nightshift/contracts";
-import { hasPendingIntent, lineQueueOwed } from "@nightshift/core";
+import {
+  hasPendingIntent,
+  installationGranting,
+  lineQueueOwed,
+  repositoryNameOf,
+} from "@nightshift/core";
 import type { ApiDeps } from "../http.js";
 import { cleanupStopped, enforceStop } from "./cleanup.js";
 import { followLineRun } from "./line-lifecycle.js";
 import { startLineRun } from "./line-run.js";
+import { promotionDue } from "./promotion.js";
 import { type ProvisionDeps, provisionDispatch } from "./provision.js";
 import { recoverLostLease } from "./recover.js";
 import { followCancelledRun, followUnstartedRun } from "./run-lifecycle.js";
@@ -31,7 +37,8 @@ export const REQUESTED_GRACE_MS = 2 * 60_000;
 /** What the publisher is asked about: a run's intents, or the line's push. */
 export type PublisherRequest =
   | { readonly projectId: string; readonly programId: string; readonly runId: string }
-  | { readonly kind: "line"; readonly projectId: string; readonly branch: string };
+  | { readonly kind: "line"; readonly projectId: string; readonly branch: string }
+  | { readonly kind: "promotion"; readonly projectId: string; readonly branch: string };
 
 export interface ReconcileDeps {
   readonly provision: ProvisionDeps;
@@ -129,6 +136,51 @@ export const reconcileLinesWithWork = async (
   }
 };
 
+/**
+ * Lines with a promotion: the publisher is asked to refresh one when the
+ * target's head moved, the described head is stale (a crash between push and
+ * maintenance), or an open pull request may have been closed by a person. An
+ * error block is retried every tick; a permission block only when the line or
+ * target moved, or after an hour.
+ */
+export const reconcileLinePromotions = async (
+  deps: ReconcileDeps,
+  count: Counter,
+): Promise<void> => {
+  const { stores, clock } = deps.provision;
+  const github = deps.plane.github;
+  for (const record of await stores.lines.listPromoting()) {
+    const promotion = record.promotion;
+    if (promotion === undefined) continue;
+    try {
+      const repository = repositoryNameOf(record.repositoryUrl);
+      const project = await stores.projects.get(record.projectId);
+      const orgConfig =
+        project === undefined ? undefined : await stores.orgConfigs.get(project.orgId);
+      const installation =
+        repository === undefined
+          ? undefined
+          : installationGranting(orgConfig?.installations ?? [], repository);
+      if (github === undefined || repository === undefined || installation === undefined) continue;
+      const targetHead = await github.branchHead(
+        installation.installationId,
+        repository,
+        promotion.to,
+      );
+      if (!promotionDue(record, targetHead, clock.now())) continue;
+      await deps.askPublisher({
+        kind: "promotion",
+        projectId: record.projectId,
+        branch: record.branch,
+      });
+      count("publish:promotion-asked");
+    } catch (error) {
+      count("error");
+      console.error(`reconciler: promotion ${record.projectId}/${record.branch}:`, error);
+    }
+  }
+};
+
 /** How long a machine may run before its dispatch names it: a launch being recorded. */
 export const SWEEP_GRACE_MS = 15 * 60_000;
 
@@ -211,5 +263,6 @@ export const reconcile = async (deps: ReconcileDeps): Promise<Record<string, num
   // A machine no live dispatch owns is terminated before anything else is started.
   await sweepMachines(deps, count);
   await reconcileLinesWithWork(deps, count);
+  await reconcileLinePromotions(deps, count);
   return counts;
 };

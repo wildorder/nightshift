@@ -34,6 +34,7 @@ import {
   type Clock,
   chainOrder,
   type GitHubAppClient,
+  type GitHubPromotionClient,
   hasPendingIntent,
   holdBehind,
   type IdGenerator,
@@ -58,6 +59,8 @@ import {
 } from "../github/smart-http.js";
 import type { ApiDeps } from "../http.js";
 import { startLineRun } from "./line-run.js";
+import { promotionConfigOf, seedPromotion } from "./line-support.js";
+import { maintainPromotion, type PromotionStep } from "./promotion.js";
 
 /** Where the packs the engine uploaded are read back from. */
 export interface BundleStore {
@@ -131,7 +134,10 @@ export const smartHttpRemote: GitRemote = {
 export interface PublisherDeps {
   readonly stores: NightshiftStores;
   readonly clock: Clock;
-  readonly github: Pick<GitHubAppClient, "writeToken">;
+  readonly github: Pick<GitHubAppClient, "writeToken"> &
+    Partial<Pick<GitHubAppClient, "branchHead">>;
+  /** Keeps the line's promotion pull request; absent where nothing may write pull requests, and no call is made. */
+  readonly promotions?: GitHubPromotionClient;
   readonly bundles: BundleStore;
   readonly lock?: PublishLock;
   readonly remote?: GitRemote;
@@ -490,8 +496,9 @@ const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promi
     // A line is created by its first range, with one look at where its ref stands.
     const existing = await deps.stores.lines.get(scope.projectId, branch);
     const head = existing === undefined ? await lineRefHead(deps, scope, program) : undefined;
-    await deps.stores.lines.update(scope.projectId, branch, (current) =>
-      appendQueueEntry(
+    const promote = await promotionConfigOf(deps.stores, scope.projectId, branch);
+    await deps.stores.lines.update(scope.projectId, branch, (current) => {
+      const queued = appendQueueEntry(
         current ?? {
           schemaVersion: 1,
           projectId: scope.projectId,
@@ -507,8 +514,9 @@ const settleLineObligation = async (deps: PublisherDeps, scope: RunScope): Promi
         },
         { program: scope.programId, upTo },
         at,
-      ),
-    );
+      );
+      return seedPromotion(queued, promote?.to, at) ?? queued;
+    });
     const latest = (await deps.stores.dispatches.get(scope)) ?? dispatch;
     await deps.stores.dispatches.put({
       ...latest,
@@ -588,7 +596,27 @@ export const publishLine = async (
   const lock = deps.lock ?? createLocalPublishLock();
   if (!(await lock.acquire(key, PUBLISH_LEASE_MS))) return "locked";
   try {
-    return await pushLine(deps, input, log);
+    const step = await pushLine(deps, input, log);
+    // Under the same lock: the pull request describes the head just pushed.
+    if (step === "published" || step === "already_published") {
+      await maintainPromotion(deps, input);
+    }
+    return step;
+  } finally {
+    await lock.release(key);
+  }
+};
+
+/** Refreshes the line's promotion pull request alone (the reconciler's ask), under the line's lock. */
+export const publishPromotion = async (
+  deps: PublisherDeps,
+  input: { readonly projectId: ProjectId; readonly branch: string },
+): Promise<PromotionStep | "locked"> => {
+  const key: LineScope = { kind: "line", ...input };
+  const lock = deps.lock ?? createLocalPublishLock();
+  if (!(await lock.acquire(key, PUBLISH_LEASE_MS))) return "locked";
+  try {
+    return await maintainPromotion(deps, input);
   } finally {
     await lock.release(key);
   }
@@ -605,6 +633,12 @@ const pushLine = async (
   if (record === undefined || push === undefined || push.status !== "pending") {
     return "nothing_pending";
   }
+  // Seeded before the push, so a crash between push and maintenance leaves a stale
+  // promotion.head the reconciler finds.
+  const promote = await promotionConfigOf(deps.stores, projectId, branch);
+  await deps.stores.lines.update(projectId, branch, (current) =>
+    current === undefined ? undefined : seedPromotion(current, promote?.to, nowIso(deps.clock)),
+  );
   const settle = async (
     status: Parameters<typeof resolvePush>[2],
     detail: string | undefined,
