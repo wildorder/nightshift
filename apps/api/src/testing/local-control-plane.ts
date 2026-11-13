@@ -43,6 +43,7 @@ export {
   type PublisherDeps,
   publishAll,
   publishLine,
+  publishPromotion,
   smartHttpRemote,
 } from "../runner/publisher.js";
 

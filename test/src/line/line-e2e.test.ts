@@ -37,6 +37,7 @@ import {
   type PublisherDeps,
   publishAll,
   publishLine,
+  publishPromotion,
   smartHttpRemote,
   startGitHttpServer,
   startLocalControlPlane,
@@ -107,6 +108,7 @@ import { createInMemoryStores, type InMemoryStores } from "@nightshift/persisten
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createFakeHarness, type ScriptContext } from "../execution/fake-harness.js";
 import { localPathsIn } from "../execution/world.js";
+import { type PromotionFake, promotionFake } from "./promotion-fake.js";
 
 const START = Date.parse("2026-10-27T12:00:00.000Z");
 /** The repository's default branch at the stand-in GitHub. */
@@ -119,6 +121,8 @@ const useLine = (branch: string): void => {
   LINE = branch;
   LINE_REF = `refs/heads/${branch}`;
 };
+/** The branch the line under test promotes to, when it names one. */
+let PROMOTE_TO: string | undefined;
 const REPOSITORY = "https://github.com/wildorder/fixture";
 const GITHUB_TOKEN = "gh-read-token";
 const IDLE_SECONDS = 3;
@@ -251,6 +255,8 @@ interface Plane {
   readonly provisioned: { runId: string; generation: number }[];
   readonly bundles: Map<string, Uint8Array>;
   readonly projectId: Fixtures["scope"]["projectId"];
+  /** The stand-in for GitHub's pull requests, when the line promotes. */
+  readonly promotion: PromotionFake | undefined;
   readonly intents: Map<string, number>;
   land(name: "a" | "b", head: string, predecessor: string): Promise<void>;
   /** The line program's one run, and its dispatch. */
@@ -315,7 +321,10 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     await stores.programContracts.put(
       makeProgramContract(f, {
         repository: { url: REPOSITORY, baseBranch: LINE, programBranch: branches[name] },
-        line: { branch: LINE },
+        line: {
+          branch: LINE,
+          ...(PROMOTE_TO === undefined ? {} : { promote: { to: PROMOTE_TO } }),
+        },
         // The line program inherits these: a repair runs the gate below and is examined.
         scope: { includes: ["**"], excludes: [], forbiddenActions: [] },
         verification: [{ id: "ok", command: 'node -e "process.exit(0)"' }],
@@ -398,10 +407,17 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
       }),
     },
   };
+  const promotion =
+    PROMOTE_TO === undefined ? undefined : promotionFake(origin.bare, "wildorder/fixture");
   const publisher: PublisherDeps = {
     stores,
     clock,
-    github: { writeToken: async () => ({ token: "ghs_write", expiresAt: at() }) },
+    github: {
+      writeToken: async () => ({ token: "ghs_write", expiresAt: at() }),
+      branchHead: async (_installationId: number, _repository: string, branch: string) =>
+        origin.refOf(`refs/heads/${branch}`),
+    },
+    ...(promotion === undefined ? {} : { promotions: promotion.client }),
     bundles: {
       get: async (key) => {
         const found = bundles.get(key);
@@ -442,6 +458,7 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
     provisioned,
     bundles,
     projectId: a.scope.projectId,
+    promotion,
     intents,
     refusal,
     land,
@@ -1462,5 +1479,98 @@ describe("a line on the repository's default branch", () => {
     const record = await plane.lineRecord();
     expect(record.push).toMatchObject({ head, status: "published" });
     expect(record.waiting).toBeUndefined();
+  });
+});
+
+describe("a line that promotes to the default branch", () => {
+  beforeAll(() => {
+    PROMOTE_TO = DEFAULT_BRANCH;
+  });
+  afterAll(() => {
+    PROMOTE_TO = undefined;
+  });
+
+  it("keeps one pull request, updates it in place, and says so when the target diverges while the line goes on composing", async () => {
+    const { commits } = origin;
+    const promotion = plane.promotion;
+    if (promotion === undefined) throw new Error("no promotion stand-in");
+    const line = { projectId: plane.projectId, branch: LINE };
+    const programA = plane.programs.a.scope.programId;
+    const programB = plane.programs.b.scope.programId;
+
+    // The first push opens exactly one pull request from the line to main.
+    await plane.land("a", commits.a1, commits.base);
+    expect((await ownerFor(await plane.lineRun())).code).toBe(0);
+    const first = origin.refOf(LINE_REF) as string;
+    expect(first).not.toBe(commits.base);
+    expect(promotion.pulls).toHaveLength(1);
+    const opened = promotion.pulls[0];
+    expect(opened).toMatchObject({ head: LINE, base: DEFAULT_BRANCH, state: "open" });
+    expect(opened?.body).toContain(first);
+    expect(opened?.body).toContain(programA);
+    expect(opened?.body).toMatch(
+      new RegExp(`${programA}\\\`[^\\n]*: (whole|part), \\[report\\]\\(`),
+    );
+    expect(opened?.body).toContain(`/${programA}/report.md`);
+    expect(opened?.body).toContain("Verification of");
+    expect(opened?.body).toContain("Merge with a merge commit");
+    expect(opened?.body.split("\n")[0]).not.toContain("Warning");
+    expect((await plane.lineRecord()).promotion).toMatchObject({
+      to: DEFAULT_BRANCH,
+      number: 1,
+      state: "open",
+      head: first,
+    });
+
+    // The next push updates the same pull request.
+    await plane.land("b", commits.b1, commits.base);
+    expect((await ownerFor(await plane.latestLineRun())).code).toBe(0);
+    const second = origin.refOf(LINE_REF) as string;
+    expect(second).not.toBe(first);
+    expect(promotion.pulls).toHaveLength(1);
+    expect(promotion.calls.filter((call) => call === "open")).toHaveLength(1);
+    expect(promotion.calls).toContain("update");
+    expect(promotion.pulls[0]?.body).toContain(second);
+    expect(promotion.pulls[0]?.body).toContain(programB);
+    expect(promotion.pulls[0]?.body).toContain(programA);
+
+    // A commit pushed straight to main: the next refresh records the divergence.
+    git(origin.work, "fetch", "-q", origin.bare, DEFAULT_BRANCH);
+    git(origin.work, "checkout", "-q", "--detach", "FETCH_HEAD");
+    writeFileSync(join(origin.work, "hotfix.txt"), "hotfix\n");
+    git(origin.work, "add", "-A");
+    git(origin.work, "commit", "-q", "-m", "a hotfix straight to main");
+    const hotfix = git(origin.work, "rev-parse", "HEAD");
+    git(origin.work, "push", "-q", origin.bare, `${hotfix}:refs/heads/${DEFAULT_BRANCH}`);
+    expect(await publishPromotion(plane.publisher, line)).not.toBe("locked");
+    const diverged = (await plane.lineRecord()).promotion;
+    expect(diverged?.diverged).toMatchObject({
+      count: 1,
+      commits: [{ sha: hotfix, subject: "a hotfix straight to main" }],
+    });
+    expect(diverged?.behindBy).toBe(1);
+    expect(promotion.pulls).toHaveLength(1);
+    const lead = (promotion.pulls[0]?.body ?? "").split("\n").slice(0, 4).join("\n");
+    expect(lead).toContain("Warning");
+    expect(lead).toContain(DEFAULT_BRANCH);
+    expect(promotion.pulls[0]?.body).toContain("a hotfix straight to main");
+
+    // The line still composes: a further landing is composed and pushed.
+    await plane.land("b", commits.b2, commits.b1);
+    expect((await ownerFor(await plane.latestLineRun())).code).toBe(0);
+    const third = origin.refOf(LINE_REF) as string;
+    expect(third).not.toBe(second);
+    expect(origin.isAncestor(second, third)).toBe(true);
+    expect(origin.show(third, "c.txt")).toBe("c");
+    const record = await plane.lineRecord();
+    expect(record.push).toMatchObject({ head: third, status: "published" });
+    expect(record.waiting?.reason).not.toBe("line_refused");
+    expect(promotion.pulls).toHaveLength(1);
+    expect(promotion.pulls[0]?.body).toContain(third);
+    expect((promotion.pulls[0]?.body ?? "").split("\n")[0]).toContain("Warning");
+    expect(record.promotion?.diverged?.count).toBe(1);
+    // Nightshift merged nothing: main is the hotfix, and the line was not touched by it.
+    expect(origin.refOf(`refs/heads/${DEFAULT_BRANCH}`)).toBe(hotfix);
+    expect(origin.isAncestor(hotfix, third)).toBe(false);
   });
 });
