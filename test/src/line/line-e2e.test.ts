@@ -68,6 +68,8 @@ import {
   lineProgramId,
   makeDispatch,
   makeMembership,
+  makePlanDraft,
+  makePlanDraftVersion,
   makeProgramContract,
   makeProject,
   makeRun,
@@ -318,6 +320,10 @@ const makePlane = async (origin: Origin): Promise<Plane> => {
   const branches = { a: "program/a", b: "program/b" } as const;
   for (const name of ["a", "b"] as const) {
     const f = programs[name];
+    // A run publishes its report under its plan draft's name.
+    await stores.planDrafts.appendVersion(makePlanDraftVersion(f), () =>
+      makePlanDraft(f, { name: `p-${name}` }),
+    );
     await stores.programContracts.put(
       makeProgramContract(f, {
         repository: { url: REPOSITORY, baseBranch: LINE, programBranch: branches[name] },
@@ -1511,7 +1517,7 @@ describe("a line that promotes to the default branch", () => {
     expect(opened?.body).toMatch(
       new RegExp(`${programA}\\\`[^\\n]*: (whole|part), \\[report\\]\\(`),
     );
-    expect(opened?.body).toContain(`/${programA}/report.md`);
+    expect(opened?.body).toContain("/docs/programs/p-a/report.md");
     expect(opened?.body).toContain("Verification of");
     expect(opened?.body).toContain("Merge with a merge commit");
     expect(opened?.body.split("\n")[0]).not.toContain("Warning");

@@ -118,6 +118,19 @@ export interface PromotionProgramFacts {
   /** Its run has ended succeeded; otherwise only part of it is on the line. */
   readonly whole: boolean;
   readonly programsDirectory: string;
+  /**
+   * The directory name a run publishes the program under (its plan draft's
+   * name); absent when it has no draft, in which case nothing was published.
+   */
+  readonly name?: string;
+}
+
+/** The decision a line repair recorded, as the body words it. */
+export interface PromotionRepairFacts {
+  readonly cause?: string;
+  readonly gates?: readonly string[];
+  readonly choice: string;
+  readonly rationale?: string;
 }
 
 export interface PromotionBodyInput {
@@ -129,6 +142,8 @@ export interface PromotionBodyInput {
   readonly ahead: PromotionCompare;
   readonly diverged: DivergedCommits;
   readonly programs: ReadonlyMap<ProgramId, PromotionProgramFacts>;
+  /** By repair job contract id; a repair absent here is worded "decision not recorded". */
+  readonly repairs?: ReadonlyMap<string, PromotionRepairFacts>;
 }
 
 const divergedWords = (
@@ -164,7 +179,24 @@ const withinBudget = (lines: readonly string[], budget: number): string[] => {
   return out;
 };
 
-const repairLines = (record: LineRecord, aheadShas: ReadonlySet<string>): string[] =>
+const repairDecisionWords = (facts: PromotionRepairFacts | undefined): string => {
+  if (facts === undefined) return "decision not recorded";
+  const why: string[] = [];
+  if (facts.cause !== undefined) why.push(`cause ${oneLine(facts.cause, 60)}`);
+  if (facts.gates !== undefined && facts.gates.length > 0) {
+    why.push(`gates ${oneLine(facts.gates.join(", "), 120)}`);
+  }
+  const decided = `decided: ${oneLine(facts.choice, 200)}`;
+  const rationale =
+    facts.rationale === undefined ? "" : `, because ${oneLine(facts.rationale, 200)}`;
+  return [...why, `${decided}${rationale}`].join("; ");
+};
+
+const repairLines = (
+  record: LineRecord,
+  aheadShas: ReadonlySet<string>,
+  repairs: ReadonlyMap<string, PromotionRepairFacts>,
+): string[] =>
   record.compositions
     .filter(
       (composition) =>
@@ -182,7 +214,7 @@ const repairLines = (record: LineRecord, aheadShas: ReadonlySet<string>): string
       }
       if (composition.repair !== undefined) {
         parts.push(
-          `repair run ${composition.repair.runId}, job ${composition.repair.jobContractId}`,
+          `repair run ${composition.repair.runId}, job ${composition.repair.jobContractId}; ${repairDecisionWords(repairs.get(composition.repair.jobContractId))}`,
         );
       }
       return `- ${parts.join("; ")}`;
@@ -245,9 +277,14 @@ export const promotionBody = (input: PromotionBodyInput): string => {
   } else {
     const rows = ids.map((id) => {
       const facts = programs.get(id);
-      const link = `https://github.com/${repository}/blob/${record.branch}/${facts?.programsDirectory ?? "docs/programs"}/${id}/report.md`;
-      const title = facts?.title === undefined ? "" : ` ${oneLine(facts.title, 120)}`;
-      return `- \`${id}\`${title}: ${facts?.whole === true ? "whole" : "part"}, [report](${link})`;
+      const name = facts?.name;
+      const link =
+        name === undefined
+          ? "no report published"
+          : `[report](https://github.com/${repository}/blob/${record.branch}/${facts?.programsDirectory ?? "docs/programs"}/${name}/report.md)`;
+      const shown = facts?.title ?? name;
+      const title = shown === undefined ? "" : ` ${oneLine(shown, 120)}`;
+      return `- \`${id}\`${title}: ${facts?.whole === true ? "whole" : "part"}, ${link}`;
     });
     out.push(...withinBudget(rows, PROGRAMS_BUDGET));
   }
@@ -259,7 +296,7 @@ export const promotionBody = (input: PromotionBodyInput): string => {
     );
   }
 
-  const repairs = repairLines(record, aheadShas);
+  const repairs = repairLines(record, aheadShas, input.repairs ?? new Map());
   if (repairs.length > 0) {
     out.push("", "## Repairs made on the line", "", ...withinBudget(repairs, REPAIRS_BUDGET));
   }

@@ -18,10 +18,12 @@ import {
   type GitHubAppClient,
   type GitHubPromotionClient,
   installationGranting,
+  lineProgramId,
   type NightshiftStores,
   nowIso,
   type PromotionCompare,
   type PromotionProgramFacts,
+  type PromotionRepairFacts,
   promotionBody,
   promotionPrograms,
   promotionTitle,
@@ -89,12 +91,48 @@ const programFacts = async (
       }
       cursor = page.cursor;
     } while (cursor !== undefined);
+    const name = (await deps.stores.planDrafts.get(projectId, id))?.name;
     const title = contract === undefined ? undefined : titleOfObjective(contract.objective);
     facts.set(id, {
       ...(title === undefined ? {} : { title }),
+      ...(name === undefined ? {} : { name }),
       whole: latest?.status === "succeeded",
       programsDirectory: programsDirectoryOf(contract),
     });
+  }
+  return facts;
+};
+
+/** The decision each repaired composition's job recorded, by job contract id; absent where unreadable. */
+const repairFacts = async (
+  deps: PromotionDeps,
+  record: LineRecord,
+  aheadShas: ReadonlySet<string>,
+): Promise<Map<string, PromotionRepairFacts>> => {
+  const facts = new Map<string, PromotionRepairFacts>();
+  for (const composition of record.compositions) {
+    const { repair } = composition;
+    if (repair === undefined || !aheadShas.has(composition.commit)) continue;
+    if (facts.has(repair.jobContractId)) continue;
+    try {
+      const scope = {
+        projectId: record.projectId,
+        programId: lineProgramId(record.projectId, record.branch),
+        runId: repair.runId,
+      };
+      const job = await deps.stores.jobContracts.get(scope, repair.jobContractId);
+      if (job?.repair === undefined) continue;
+      const decision = await deps.stores.decisions.get(scope, job.repair.decisionId);
+      if (decision === undefined) continue;
+      facts.set(repair.jobContractId, {
+        cause: job.repair.cause,
+        gates: job.repair.gates,
+        choice: decision.choice,
+        rationale: decision.rationale,
+      });
+    } catch (error) {
+      deps.log?.(`line ${record.branch}: promotion: repair decision: ${String(error)}`);
+    }
   }
   return facts;
 };
@@ -246,6 +284,7 @@ const maintain = async (
           ahead,
           diverged: diverged ?? { commits: [], count: 0, complete: true },
           programs,
+          repairs: await repairFacts(deps, record, new Set(ahead.commits.map((c) => c.sha))),
         }),
       };
       const sameAsDescribed =

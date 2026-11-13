@@ -160,14 +160,18 @@ describe("promotionBody", () => {
 
   it("links each program's report and says whole or part", () => {
     const programs = new Map<ProgramId, PromotionProgramFacts>([
-      [pid(1), { whole: true, programsDirectory: "docs/programs", title: "One" }],
+      [
+        pid(1),
+        { whole: true, programsDirectory: "docs/programs", title: "One", name: "p1-billing" },
+      ],
       [pid(2), { whole: false, programsDirectory: "docs/programs" }],
     ]);
     const text = body({ programs });
     expect(text).toContain(
-      `- \`${pid(1)}\` One: whole, [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/${pid(1)}/report.md)`,
+      `- \`${pid(1)}\` One: whole, [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/p1-billing/report.md)`,
     );
-    expect(text).toContain(`\`${pid(2)}\`: part`);
+    expect(text).not.toContain(`/${pid(1)}/report.md`);
+    expect(text).toContain(`\`${pid(2)}\`: part, no report published`);
   });
 
   it("calls a program missing from the map part", () => {
@@ -177,9 +181,9 @@ describe("promotionBody", () => {
   it("gives an evicted composition's program a link and whole/part", () => {
     const record = line({ compositions: [] });
     const ahead = compare([commit(1, `Merge program ${pid(7)} (start)..abc into the line`)]);
-    const text = body({ record, ahead, programs: facts([7], { whole: false }) });
+    const text = body({ record, ahead, programs: facts([7], { whole: false, name: "p7-x" }) });
     expect(text).toContain(
-      `\`${pid(7)}\`: part, [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/${pid(7)}/report.md)`,
+      `\`${pid(7)}\` p7-x: part, [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/p7-x/report.md)`,
     );
   });
 
@@ -197,6 +201,36 @@ describe("promotionBody", () => {
     expect(text).toContain("## Repairs made on the line");
     expect(text).toContain("resolver resolved: kept both imports");
     expect(text).toContain(`repair run ${f.scope.runId}, job ${job}`);
+  });
+
+  it("states each repair's decision, or that none was recorded", () => {
+    const [jobA, jobB] = [f.ids.next("job"), f.ids.next("job")];
+    const record = line({
+      compositions: [
+        composition(3, [1], { repair: { runId: f.scope.runId, jobContractId: jobA } }),
+        composition(4, [2], { repair: { runId: f.scope.runId, jobContractId: jobB } }),
+      ],
+    });
+    const text = body({
+      record,
+      ahead: compare([commit(3), commit(4)]),
+      repairs: new Map([
+        [
+          jobA,
+          {
+            cause: "gate_failure",
+            gates: ["npm test", "npm run lint"],
+            choice: "Delegate repair attempt 1 of 3",
+            rationale: "only this range waits",
+          },
+        ],
+      ]),
+    });
+    expect(text).toContain("cause gate_failure; gates npm test, npm run lint;");
+    expect(text).toContain(
+      "decided: Delegate repair attempt 1 of 3, because only this range waits",
+    );
+    expect(text).toContain(`job ${jobB}; decision not recorded`);
   });
 
   it("omits repairs when none were made", () => {
@@ -241,6 +275,12 @@ describe("promotionBody", () => {
       programs: facts(
         Array.from({ length: 150 }, (_, i) => i + 1),
         { title: big },
+      ),
+      repairs: new Map(
+        compositions.map((c) => [
+          c.repair?.jobContractId ?? "",
+          { cause: big, gates: [big], choice: big, rationale: big },
+        ]),
       ),
     });
     expect(text.length).toBeLessThanOrEqual(MAX_PROMOTION_BODY_CHARS);

@@ -9,17 +9,26 @@ import {
   type CommitSha,
   DEFAULT_EXAMINATION_POLICY,
   DEFAULT_ROUTING_POLICY,
+  type ExecutionNodeId,
   type LineRecord,
   type OrgId,
   type ProgramId,
+  programsDirectoryOf,
 } from "@nightshift/contracts";
 import {
   createFixedClock,
   createFixtures,
   GitHubAccessMissing,
   type GitHubPromotionClient,
+  lineProgramId,
+  MAX_PROMOTION_BODY_CHARS,
+  makeDecision,
+  makeJobContract,
   makeLineRecord,
+  makeLineVerification,
   makeMembership,
+  makePlanDraft,
+  makePlanDraftVersion,
   makeProgramContract,
   makeProject,
   makeRun,
@@ -395,6 +404,86 @@ describe("what blocks the promotion", () => {
     await w.stores.runs.put(makeRun(w.f, { status: "succeeded", location: "remote" }));
     await w.push(H1);
     expect(w.github.state.prs[0]?.body).toContain("## Programs");
+  });
+
+  /** A composition of the commit the fake compare lists, for the world's program. */
+  const withComposition = async (
+    w: Awaited<ReturnType<typeof world>>,
+    over: Partial<LineRecord["compositions"][number]> = {},
+  ) => {
+    await w.stores.lines.update(w.line.projectId, LINE, (c) =>
+      c === undefined
+        ? undefined
+        : {
+            ...c,
+            compositions: [
+              {
+                compositionId: "c1",
+                commit: sha(500),
+                parent: H0,
+                ranges: [{ program: w.f.scope.programId, upTo: sha(900) }],
+                verification: makeLineVerification(w.f, { commitSha: sha(500) }),
+                composedAt: NOW,
+                ...over,
+              },
+            ],
+          },
+    );
+  };
+
+  it("links the report at the path a run publishes it to, by the plan draft's name", async () => {
+    const w = await world();
+    await w.stores.planDrafts.appendVersion(makePlanDraftVersion(w.f), () =>
+      makePlanDraft(w.f, { name: "p1-billing" }),
+    );
+    await withComposition(w);
+    await w.push(H1);
+    const body = w.github.state.prs[0]?.body ?? "";
+    const contract = await w.stores.programContracts.get(w.line.projectId, w.f.scope.programId);
+    // publish-run.ts: `${programsDirectoryOf(program)}/${name}` plus report.md.
+    const published = `${programsDirectoryOf(contract)}/p1-billing/report.md`;
+    expect(published).toBe("docs/programs/p1-billing/report.md");
+    expect(body).toContain(`](https://github.com/${REPOSITORY}/blob/${LINE}/${published})`);
+    expect(body).not.toContain(`${w.f.scope.programId}/report.md`);
+  });
+
+  it("states each repair's decision from the line run's job contract", async () => {
+    const w = await world();
+    const scope = {
+      projectId: w.line.projectId,
+      programId: lineProgramId(w.line.projectId, LINE),
+      runId: w.f.scope.runId,
+    };
+    const decision = makeDecision(w.f, w.f.ids.next("node") as ExecutionNodeId, {
+      ...scope,
+      choice: "Delegate repair attempt 1 of 3 as a line_red job.",
+      rationale: "Only this range waits.",
+    });
+    const job = makeJobContract(w.f, {
+      ...scope,
+      repair: { cause: "line_red", gates: ["npm test"], decisionId: decision.decisionId },
+    });
+    const missing = makeJobContract(w.f, { ...scope });
+    await w.stores.decisions.put(decision);
+    await w.stores.jobContracts.put(job);
+    await w.stores.jobContracts.put(missing);
+    await withComposition(w, {
+      repair: { runId: scope.runId, jobContractId: job.jobContractId },
+    });
+    await w.push(H1);
+    const body = w.github.state.prs[0]?.body ?? "";
+    expect(body).toContain("Delegate repair attempt 1 of 3 as a line_red job.");
+    expect(body).toContain("because Only this range waits.");
+    expect(body).toContain("cause line_red; gates npm test");
+    expect(body.length).toBeLessThanOrEqual(MAX_PROMOTION_BODY_CHARS);
+  });
+
+  it("says the decision is not recorded when the repair job is unknown", async () => {
+    const w = await world();
+    const ghost = w.f.ids.next("job");
+    await withComposition(w, { repair: { runId: w.f.scope.runId, jobContractId: ghost } });
+    await w.push(H1);
+    expect(w.github.state.prs[0]?.body).toContain(`job ${ghost}; decision not recorded`);
   });
 });
 
