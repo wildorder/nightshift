@@ -504,6 +504,7 @@ const sectionHasBody = (section: string | undefined): boolean =>
 
 export type PlanReason =
   | { readonly kind: "base_branch_not_line"; readonly message: string }
+  | { readonly kind: "promote_to_line"; readonly message: string }
   | { readonly kind: "no_strands"; readonly message: string }
   /**
    * P9 (D-P9-04): a correction names a decision that is not there, or not
@@ -906,6 +907,19 @@ const baseBranchReasons = (contract: ProgramContract): PlanReason[] => {
   ];
 };
 
+/** A line promotes to another branch, never to itself. */
+const promoteReasons = (contract: ProgramContract): PlanReason[] =>
+  contract.line?.promote !== undefined && contract.line.promote.to === contract.line.branch
+    ? [
+        {
+          kind: "promote_to_line",
+          message:
+            `line.promote.to is the line's own branch \`${contract.line.branch}\`; name the branch ` +
+            "the line promotes to, e.g. `main`, or remove promote",
+        },
+      ]
+    : [];
+
 /**
  * Whether a plan can be ratified (D-P7-07): `READY`, or every reason at once so
  * a plan is fixed in one pass. `contract` has already parsed; `planSections` is
@@ -937,6 +951,7 @@ export const checkPlan = (
         ]
       : []),
     ...baseBranchReasons(contract),
+    ...promoteReasons(contract),
     ...storyReasons(contract, conversation),
     ...criteriaReasons(contract, strands),
     ...strands.flatMap((strand) => strandReasons(contract, strand, planSections)),

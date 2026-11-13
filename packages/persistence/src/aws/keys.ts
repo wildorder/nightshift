@@ -266,7 +266,8 @@ export const keys = {
 
   /**
    * The line's place in the work index: sparse, the line carries it only while
-   * `lineHasWork` holds, so one query of the partition lists every line with work.
+   * `lineHasWork` holds or the record has `promotion` (the one GSI1 entry a record has), so one
+   * query of the partition lists both kinds; readers filter by the predicate they want.
    */
   lineWorkIndex: (projectId: ProjectId, branch: string): NodeIndexKey => ({
     GSI1PK: "LINEWORK",

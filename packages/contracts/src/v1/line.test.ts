@@ -107,7 +107,48 @@ describe("the line setting", () => {
   });
 });
 
+describe("the line's promote setting", () => {
+  it("accepts a target other than the line, in the config schema and the line schema", () => {
+    const line = { branch: "nightshift/develop", promote: { to: "main" } };
+    expect(LineConfigSchema.parse(line)).toEqual(line);
+    expect(LineConfigSchema.safeParse({ branch: "x", promote: { to: "" } }).success).toBe(false);
+  });
+
+  it("refuses the line's own branch, naming the fix", () => {
+    const result = LineConfigSchema.safeParse({
+      branch: "nightshift/develop",
+      promote: { to: "nightshift/develop" },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toBe(
+      "line.promote.to is the line's own branch `nightshift/develop`; name the branch the line promotes to, e.g. `main`, or remove promote",
+    );
+  });
+});
+
 describe("the line record", () => {
+  it("round-trips a promotion, and parses a record without one", () => {
+    expect(LineRecordSchema.parse(record).promotion).toBeUndefined();
+    const promotion = {
+      to: "main",
+      number: 7,
+      url: "https://github.com/o/r/pull/7",
+      state: "open",
+      head: B,
+      targetHead: A,
+      aheadBy: 3,
+      behindBy: 1,
+      diverged: { commits: [{ sha: A, subject: "s" }], count: 1, since: AT },
+      blocked: { reason: "pull_requests_permission", detail: "d", since: AT, at: AT },
+      updatedAt: AT,
+    };
+    const parsed = LineRecordSchema.parse({ ...record, promotion });
+    expect(parsed.promotion).toEqual(promotion);
+    expect(
+      LineRecordSchema.safeParse({ ...record, promotion: { ...promotion, state: "x" } }).success,
+    ).toBe(false);
+  });
+
   it("parses a queued line, and refuses a stray key", () => {
     expect(LineRecordSchema.safeParse(record).success).toBe(true);
     expect(LineRecordSchema.safeParse({ ...record, stray: 1 }).success).toBe(false);

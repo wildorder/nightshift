@@ -157,6 +157,20 @@ describe("checkPlan (SC-P7-03)", () => {
       expect(message).toContain("set repository.baseBranch to `nightshift/develop` or remove it");
     });
 
+    it("refuses promote.to equal to the line's branch, with the fix", () => {
+      // The schema refuses this at parse; checkPlan still names it for a contract built around it.
+      const contract = {
+        ...onLine("nightshift/develop", "nightshift/develop"),
+        line: { branch: "nightshift/develop", promote: { to: "nightshift/develop" } },
+      };
+      expect(kinds(contract)).toEqual(["promote_to_line"]);
+      const result = checkPlan(contract, splitPlanSections(PLAN));
+      const message = !result.ready ? (result.reasons[0]?.message ?? "") : "";
+      expect(message).toContain(
+        "name the branch the line promotes to, e.g. `main`, or remove promote",
+      );
+    });
+
     it("passes a baseBranch equal to the line, and a project with no line", () => {
       expect(kinds(onLine("nightshift/develop", "nightshift/develop"))).toEqual([]);
       expect(kinds(planned())).toEqual([]);

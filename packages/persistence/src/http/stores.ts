@@ -583,6 +583,9 @@ export const createHttpStores = (options: HttpStoresOptions): ProjectStores => {
     listWithWork: async () => {
       throw new Error("listing lines with work is the reconciler's read; no route serves it");
     },
+    listPromoting: async () => {
+      throw new Error("listing promoting lines is the reconciler's read; no route serves it");
+    },
   };
   const projectSelfStartedUsage: ProjectSelfStartedUsageStore = {
     get: async (projectId, month) => {

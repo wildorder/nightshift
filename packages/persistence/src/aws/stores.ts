@@ -328,7 +328,10 @@ export const createAwsStores = ({
       const current = await getRecord(schema, key);
       const next = change(current);
       if (next === undefined) return current;
-      const parsed = schema.parse({ ...next, version: (current?.version ?? 0) + 1 });
+      const parsed = schema.parse({
+        ...next,
+        version: (current?.version ?? 0) + 1,
+      });
       try {
         await table.put({
           TableName: tableName,
@@ -359,9 +362,17 @@ export const createAwsStores = ({
           const next = change(current);
           return next === undefined ? undefined : { ...next, projectId, branch };
         },
-        (record) => (lineHasWork(record) ? keys.lineWorkIndex(projectId, branch) : undefined),
+        (record) =>
+          lineHasWork(record) || record.promotion !== undefined
+            ? keys.lineWorkIndex(projectId, branch)
+            : undefined,
       ),
-    listWithWork: async () => listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition())),
+    listWithWork: async () =>
+      (await listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition()))).filter(lineHasWork),
+    listPromoting: async () =>
+      (await listAll(LineRecordSchema, inIndex(keys.lineWorkIndexPartition()))).filter(
+        (record) => record.promotion !== undefined,
+      ),
   };
 
   const projectSelfStartedUsage: NightshiftStores["projectSelfStartedUsage"] = {
