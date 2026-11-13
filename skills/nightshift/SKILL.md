@@ -58,7 +58,11 @@ expensive decisions in a plan that lives in the control plane, as `plan.md` and
   in part as it lands. For a line that ships, user-facing work of an unfinished
   program stays unreachable (unrouted or behind a flag) until its program
   completes. Promotion beyond the line is the project's own CI/CD; relay where
-  the run's work reached the line, and do not open a pull request.
+  the run's work reached the line, and do not open a pull request yourself. When
+  the line names `line.promote`, Nightshift itself keeps one promotion pull
+  request open from the line branch to that target, and never merges it: the team
+  merges it with a merge commit (not squash or rebase) and protects the target so
+  only the promotion merges into it.
 - If the plan in the plane was edited after it was ratified, the run is refused until
   it is ratified again. That is the gate working. Tell the human; do not work
   around it.
