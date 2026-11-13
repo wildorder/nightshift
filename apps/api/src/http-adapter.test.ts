@@ -147,7 +147,7 @@ const PORT_METHODS = {
   // P21: the reads go over the routes; the two writes name the routes that make versions.
   planDrafts: ["get", "listByProject", "getVersion", "listVersions", "appendVersion", "update"],
   // Pipkin M1b: the line is read over its view route (J3 serves it) and written by the plane.
-  lines: ["get", "update", "listWithWork"],
+  lines: ["get", "update", "listWithWork", "listPromoting"],
   projectSelfStartedUsage: ["get", "update"],
 } as const satisfies Record<keyof ProjectStores, readonly string[]>;
 
@@ -1016,6 +1016,7 @@ describe("the project line's records (Pipkin M1b)", () => {
     expect(await http.lines.get(projectId, "nightshift/develop")).toBeUndefined();
     await expect(http.lines.update(projectId, "b", () => undefined)).rejects.toThrow(/line record/);
     await expect(http.lines.listWithWork()).rejects.toThrow(/reconciler/);
+    await expect(http.lines.listPromoting()).rejects.toThrow(/reconciler/);
     await expect(http.projectSelfStartedUsage.get(projectId, "2026-09")).rejects.toThrow(
       /line view/,
     );

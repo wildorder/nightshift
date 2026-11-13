@@ -116,7 +116,11 @@ describe("describeLine", () => {
               parent: sha("a"),
               ranges: [range(ALPHA, sha("d")), range(BETA, sha("e"), sha("1"))],
               verification: verification(),
-              resolver: { decision: "resolved", attempts: 2, detail: "kept both imports" },
+              resolver: {
+                decision: "resolved",
+                attempts: 2,
+                detail: "kept both imports",
+              },
               composedAt: AT,
               pushed: { at: AT },
             },
@@ -143,7 +147,10 @@ describe("describeLine", () => {
               parent: sha("a"),
               ranges: [range(ALPHA, sha("d"))],
               verification: verification(),
-              repair: { runId: RUN_A, jobContractId: "job_00000000000000000000000001" },
+              repair: {
+                runId: RUN_A,
+                jobContractId: "job_00000000000000000000000001",
+              },
               composedAt: AT,
             },
           ],
@@ -155,8 +162,16 @@ describe("describeLine", () => {
 
   it("lists the runs newest first, with machine and spend, or no machine", () => {
     const running = {
-      run: { runId: RUN_A, status: "running", startedAt: "2026-10-27T11:00:00.000Z" },
-      dispatch: { instanceType: "c7i.xlarge", instanceId: "i-abc", spend: { meteredUsd: 1.5 } },
+      run: {
+        runId: RUN_A,
+        status: "running",
+        startedAt: "2026-10-27T11:00:00.000Z",
+      },
+      dispatch: {
+        instanceType: "c7i.xlarge",
+        instanceId: "i-abc",
+        spend: { meteredUsd: 1.5 },
+      },
     } as unknown as { run: Run; dispatch: Dispatch };
     const ended = {
       run: {
@@ -221,7 +236,13 @@ describe("describeLine", () => {
     const out = text(
       describeLine(
         view(
-          { waiting: { reason: "monthly_cap", detail: "the $50.00 cap is reached", since: AT } },
+          {
+            waiting: {
+              reason: "monthly_cap",
+              detail: "the $50.00 cap is reached",
+              since: AT,
+            },
+          },
           {
             usage: {
               month: "2026-10",
@@ -270,7 +291,11 @@ describe("nightshift line status", () => {
         projectId: PROJECT,
         contextDocs: [],
         verification: [{ id: "test", command: "npm test" }],
-        modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
+        modelPolicy: {
+          allowedProviders: ["anthropic"],
+          allowedModels: [],
+          forbiddenModels: [],
+        },
         delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
         costPolicy: {},
       }),
@@ -312,7 +337,11 @@ describe("nightshift line requeue", () => {
         projectId: PROJECT,
         contextDocs: [],
         verification: [{ id: "test", command: "npm test" }],
-        modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
+        modelPolicy: {
+          allowedProviders: ["anthropic"],
+          allowedModels: [],
+          forbiddenModels: [],
+        },
         delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
         costPolicy: {},
         line: { branch: "main" },
@@ -366,7 +395,11 @@ describe("nightshift land for the line program", () => {
           requestedAt: AT,
           ...(detail === undefined ? {} : { detail }),
         },
-        waiting: { reason: "line_refused", detail: "protected branch", since: AT },
+        waiting: {
+          reason: "line_refused",
+          detail: "protected branch",
+          since: AT,
+        },
       },
       { programId: ALPHA, runId: LINE_RUN },
     );
@@ -411,7 +444,11 @@ describe("nightshift land for the line program", () => {
         projectId: PROJECT,
         contextDocs: [],
         verification: [{ id: "test", command: "npm test" }],
-        modelPolicy: { allowedProviders: ["anthropic"], allowedModels: [], forbiddenModels: [] },
+        modelPolicy: {
+          allowedProviders: ["anthropic"],
+          allowedModels: [],
+          forbiddenModels: [],
+        },
         delegationLimits: { maxDepth: 2, maxConcurrency: 2 },
         costPolicy: {},
         line: { branch: "main" },
@@ -444,7 +481,9 @@ describe("nightshift land for the line program", () => {
 
   it("stops waiting at the deadline when the push stays pending", async () => {
     let now = 0;
-    const { created, retries } = await prepare([held("pending")], { now: () => (now += 60_000) });
+    const { created, retries } = await prepare([held("pending")], {
+      now: () => (now += 60_000),
+    });
     expect(await runCli(created.environment, ["land", "main"])).toBe(1);
     expect(retries).toHaveLength(1);
     expect(created.err.join("\n")).toContain("has not finished");
@@ -464,5 +503,83 @@ describe("nightshift land for the line program", () => {
     expect(await runCli(created.environment, ["land", "main", "--run", RUN_B])).toBe(2);
     expect(retries).toEqual([]);
     expect(created.err.join("\n")).toContain(LINE_RUN);
+  });
+
+  describe("promotion", () => {
+    const promotion = {
+      to: "main",
+      number: 7,
+      url: "https://github.test/o/r/pull/7",
+      state: "open",
+      head: sha("a"),
+      aheadBy: 3,
+      behindBy: 0,
+      updatedAt: AT,
+    };
+
+    it("prints the open pull request, described head and counts", () => {
+      const out = text(describeLine(view({ head: sha("b"), promotion })));
+      expect(out).toContain(
+        "promotion → main: #7 open https://github.test/o/r/pull/7, describes aaaaaaa",
+      );
+      expect(out).toContain("line head bbbbbbb differs from the described head");
+      expect(out).toContain("main: 3 ahead, 0 behind the line");
+    });
+
+    it("says there is nothing to promote", () => {
+      const out = text(
+        describeLine(view({ promotion: { to: "main", aheadBy: 0, updatedAt: AT } })),
+      );
+      expect(out).toContain("promotion → main: nothing to promote");
+    });
+
+    it("prints divergence as a waiting reason with commits and remedy", () => {
+      const out = text(
+        describeLine(
+          view({
+            promotion: {
+              ...promotion,
+              behindBy: 1,
+              diverged: {
+                commits: [{ sha: sha("d"), subject: "hotfix" }],
+                count: 1,
+                since: AT,
+              },
+            },
+          }),
+        ),
+      );
+      expect(out).toContain(
+        "waiting (promotion_diverged): main has 1 commit the line lacks (ddddddd hotfix)",
+      );
+      expect(out).toContain("Merge `main` into `nightshift/develop`");
+    });
+
+    it("prints a missing grant as a waiting reason", () => {
+      const out = text(
+        describeLine(
+          view({
+            promotion: {
+              to: "main",
+              blocked: {
+                reason: "pull_requests_permission",
+                detail: "403",
+                since: AT,
+                at: AT,
+              },
+              updatedAt: AT,
+            },
+          }),
+        ),
+      );
+      expect(out).toContain("waiting (promotion_forbidden):");
+      expect(out).toContain("Pull requests: Read and write");
+    });
+
+    it("prints a record without promotion as before", () => {
+      const out = text(describeLine(view({ head: sha("a") })));
+      expect(out).not.toContain("promotion");
+      expect(out).not.toContain("waiting");
+    });
   });
 });

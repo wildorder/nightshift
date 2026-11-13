@@ -97,6 +97,15 @@ describe("lines.update", () => {
     expect(withWork.map((line) => `${line.projectId}/${line.branch}`).sort()).toEqual(
       [`${projectId}/${OTHER_BRANCH}`, `${elsewhere.scope.projectId}/${BRANCH}`].sort(),
     );
+
+    // A promoting line is listed by listPromoting, and by listWithWork only if it has work.
+    expect(await stores.lines.listPromoting()).toEqual([]);
+    await stores.lines.update(projectId, BRANCH, (current) => ({
+      ...(current ?? makeLineRecord(f)),
+      promotion: { to: "main", updatedAt: "2026-10-27T10:00:00.000Z" as never },
+    }));
+    expect((await stores.lines.listPromoting()).map((line) => line.branch)).toEqual([BRANCH]);
+    expect((await stores.lines.listWithWork()).length).toBe(withWork.length);
   });
 });
 

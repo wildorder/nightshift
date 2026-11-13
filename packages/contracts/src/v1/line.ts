@@ -240,6 +240,10 @@ export const LinePushSchema = z.strictObject({
 export type LinePush = z.infer<typeof LinePushSchema>;
 
 export const LineWaitingReasonSchema = z.enum([
+  /** The target branch has commits the line lacks; the promotion pull request waits for the team. */
+  "promotion_diverged",
+  /** The App may not open or update pull requests on the repository. */
+  "promotion_forbidden",
   "monthly_cap",
   "org_month_ceiling",
   "org_concurrency",
@@ -269,6 +273,47 @@ export const LineRequeuedSchema = z.strictObject({
 });
 export type LineRequeued = z.infer<typeof LineRequeuedSchema>;
 
+/** The most diverged commits a promotion records. */
+export const MAX_PROMOTION_DIVERGED_COMMITS = 20;
+
+/** The promotion pull request from the line to the branch it promotes to, as last known. */
+export const LinePromotionSchema = z.strictObject({
+  to: z.string().min(1),
+  number: z.int().optional(),
+  url: z.string().min(1).optional(),
+  state: z.enum(["open", "closed", "merged"]).optional(),
+  /** The line head the PR body last described. */
+  head: CommitShaSchema.optional(),
+  /** The line head the closed PR described when a person closed it. */
+  closedAtHead: CommitShaSchema.optional(),
+  /** The target head last seen. */
+  targetHead: CommitShaSchema.optional(),
+  aheadBy: z.int().min(0).optional(),
+  behindBy: z.int().min(0).optional(),
+  diverged: z
+    .strictObject({
+      commits: z
+        .array(z.strictObject({ sha: CommitShaSchema, subject: z.string() }))
+        .max(MAX_PROMOTION_DIVERGED_COMMITS),
+      count: z.int().min(0),
+      since: IsoTimestampSchema,
+    })
+    .optional(),
+  blocked: z
+    .strictObject({
+      reason: z.enum(["pull_requests_permission", "error"]),
+      detail: z.string(),
+      since: IsoTimestampSchema,
+      /** When it was last tried. */
+      at: IsoTimestampSchema,
+      head: CommitShaSchema.optional(),
+      targetHead: CommitShaSchema.optional(),
+    })
+    .optional(),
+  updatedAt: IsoTimestampSchema,
+});
+export type LinePromotion = z.infer<typeof LinePromotionSchema>;
+
 const LineRecordShape = z.strictObject({
   ...projectScoped,
   branch: LineBranchSchema,
@@ -291,6 +336,8 @@ const LineRecordShape = z.strictObject({
   requeued: z.array(LineRequeuedSchema).optional(),
   push: LinePushSchema.optional(),
   waiting: LineWaitingSchema.optional(),
+  /** The promotion pull request, when the line names a branch it promotes to. */
+  promotion: LinePromotionSchema.optional(),
   /**
    * The settlement that last committed: its batch, the digest of the whole
    * settle body, who made it and when. A settle that arrives again for this

@@ -51,6 +51,75 @@ export interface GitHubAppClient {
   ): Promise<{ readonly token: string; readonly expiresAt: string }>;
 }
 
+export interface PullRequestFacts {
+  readonly number: number;
+  readonly url: string;
+  readonly state: "open" | "closed" | "merged";
+  /** The head commit of the pull request's branch. */
+  readonly head: string;
+  readonly base: string;
+}
+
+/** The App lacks a permission the call needs (e.g. `pull_requests`). */
+export class GitHubAccessMissing extends Error {
+  constructor(
+    readonly permission: string,
+    readonly detail: string,
+  ) {
+    super(`GitHub access missing: ${permission}: ${detail}`);
+    this.name = "GitHubAccessMissing";
+  }
+}
+
+/** What the publisher asks GitHub to keep a promotion pull request (only the publisher Lambda writes). */
+export interface GitHubPromotionClient {
+  /** `commits` are those in `head` not in `base`, oldest first; `complete` when all `aheadBy` are listed. */
+  compare(
+    installationId: number,
+    repository: string,
+    base: string,
+    head: string,
+  ): Promise<{
+    readonly aheadBy: number;
+    readonly behindBy: number;
+    readonly commits: readonly {
+      readonly sha: string;
+      readonly subject: string;
+      readonly parents: readonly string[];
+      readonly tree: string;
+    }[];
+    readonly complete: boolean;
+  }>;
+  /** The tree a commit records; undefined when GitHub has no such commit. */
+  commitTree(installationId: number, repository: string, sha: string): Promise<string | undefined>;
+  findOpenPullRequest(
+    installationId: number,
+    repository: string,
+    branches: { readonly head: string; readonly base: string },
+  ): Promise<PullRequestFacts | undefined>;
+  pullRequest(
+    installationId: number,
+    repository: string,
+    number: number,
+  ): Promise<PullRequestFacts | undefined>;
+  openPullRequest(
+    installationId: number,
+    repository: string,
+    pull: {
+      readonly head: string;
+      readonly base: string;
+      readonly title: string;
+      readonly body: string;
+    },
+  ): Promise<PullRequestFacts>;
+  updatePullRequest(
+    installationId: number,
+    repository: string,
+    number: number,
+    pull: { readonly title: string; readonly body: string },
+  ): Promise<PullRequestFacts>;
+}
+
 /** `owner/name` from the forms a contract's `repository.url` takes. */
 export const repositoryNameOf = (url: string): string | undefined => {
   const match =

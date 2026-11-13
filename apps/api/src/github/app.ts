@@ -12,9 +12,21 @@
  * without it (2026-10-14, a run's deploy-workflow change blocked everything
  * landed after it). An installation that has not yet accepted that permission
  * gets a token without it, and such a push is then refused as `forbidden`.
+ *
+ * The promotion pull request (P26) is kept through the same App: every compare
+ * and pull-request call uses a token minted for the one repository with
+ * `pull_requests: write`, `contents: read`, `metadata: read`. An installation
+ * that has not granted `pull_requests` answers 422 at minting, or 403 "Resource
+ * not accessible by integration" at the route; both are `GitHubAccessMissing`,
+ * not retried.
  */
 import { createSign } from "node:crypto";
-import type { GitHubAppClient } from "@nightshift/core";
+import {
+  GitHubAccessMissing,
+  type GitHubAppClient,
+  type GitHubPromotionClient,
+  type PullRequestFacts,
+} from "@nightshift/core";
 
 export interface GitHubAppSecret {
   readonly appId: string;
@@ -52,14 +64,29 @@ export class GitHubError extends Error {
   }
 }
 
-export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClient => {
+/** Most commits a compare lists; beyond it the answer is `complete: false`. */
+const COMPARE_CAP = 2500;
+
+interface RawPull {
+  readonly number?: number;
+  readonly html_url?: string;
+  readonly state?: string;
+  readonly merged_at?: string | null;
+  readonly head?: { readonly sha?: string };
+  readonly base?: { readonly ref?: string };
+  readonly message?: string;
+}
+
+export const createGitHubAppClient = (
+  options: GitHubAppOptions,
+): GitHubAppClient & GitHubPromotionClient => {
   const doFetch = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
   const base = options.apiBase ?? "https://api.github.com";
 
   const call = async <T>(
     authorization: string,
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PATCH",
     path: string,
     body?: unknown,
   ): Promise<{ readonly status: number; readonly body: T }> => {
@@ -114,6 +141,70 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
     }
     return { token: body.token, expiresAt: body.expires_at };
   };
+  const pullsToken = async (installationId: number, repository: string): Promise<string> => {
+    const name = repository.split("/")[1];
+    const { status, body } = await call<{
+      token?: string;
+      expires_at?: string;
+      message?: string;
+    }>(await asApp(), "POST", `/app/installations/${installationId}/access_tokens`, {
+      permissions: {
+        pull_requests: "write",
+        contents: "read",
+        metadata: "read",
+      },
+      repositories: name === undefined ? [] : [name],
+    });
+    if (status === 422) {
+      throw new GitHubAccessMissing(
+        "pull_requests",
+        body.message ?? "installation has not granted it",
+      );
+    }
+    if (status !== 201 || body.token === undefined) {
+      throw new GitHubError(status, "access_tokens", body.message ?? "no token");
+    }
+    return `token ${body.token}`;
+  };
+  /** A call on the repository's pull-request or compare routes, with its own token. */
+  const pulls = async <T>(
+    installationId: number,
+    repository: string,
+    method: "GET" | "POST" | "PATCH",
+    path: string,
+    body?: unknown,
+  ) => {
+    const result = await call<T & { message?: string }>(
+      await pullsToken(installationId, repository),
+      method,
+      path,
+      body,
+    );
+    if (
+      result.status === 403 &&
+      /not accessible by integration/i.test(result.body?.message ?? "")
+    ) {
+      throw new GitHubAccessMissing("pull_requests", result.body.message ?? "");
+    }
+    return result;
+  };
+  const factsOf = (raw: RawPull, path: string): PullRequestFacts => {
+    if (
+      raw.number === undefined ||
+      raw.html_url === undefined ||
+      raw.head?.sha === undefined ||
+      raw.base?.ref === undefined
+    ) {
+      throw new GitHubError(200, path, raw.message ?? "not a pull request");
+    }
+    return {
+      number: raw.number,
+      url: raw.html_url,
+      state: raw.merged_at ? "merged" : raw.state === "closed" ? "closed" : "open",
+      head: raw.head.sha,
+      base: raw.base.ref,
+    };
+  };
   const readToken = (installationId: number, repositories: readonly string[]) =>
     installationToken(installationId, repositories, "read");
   const writeToken = (installationId: number, repository: string) =>
@@ -121,11 +212,11 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
 
   return {
     app: async () => {
-      const { status, body } = await call<{ slug?: string; html_url?: string; message?: string }>(
-        await asApp(),
-        "GET",
-        "/app",
-      );
+      const { status, body } = await call<{
+        slug?: string;
+        html_url?: string;
+        message?: string;
+      }>(await asApp(), "GET", "/app");
       if (status !== 200 || body.slug === undefined) {
         throw new GitHubError(status, "/app", body.message ?? "no slug");
       }
@@ -135,11 +226,10 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
       };
     },
     installation: async (installationId) => {
-      const found = await call<{ account?: { login?: string }; message?: string }>(
-        await asApp(),
-        "GET",
-        `/app/installations/${installationId}`,
-      );
+      const found = await call<{
+        account?: { login?: string };
+        message?: string;
+      }>(await asApp(), "GET", `/app/installations/${installationId}`);
       if (found.status === 404) return undefined;
       if (found.status !== 200 || found.body.account?.login === undefined) {
         throw new GitHubError(found.status, "installation", found.body.message ?? "no account");
@@ -155,7 +245,10 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
       }
       const repositories: string[] = [];
       for (let page = 1; page < 20; page += 1) {
-        const listed = await call<{ repositories?: { full_name: string }[]; message?: string }>(
+        const listed = await call<{
+          repositories?: { full_name: string }[];
+          message?: string;
+        }>(
           `token ${minted.body.token}`,
           "GET",
           `/installation/repositories?per_page=100&page=${page}`,
@@ -197,5 +290,108 @@ export const createGitHubAppClient = (options: GitHubAppOptions): GitHubAppClien
     },
     readToken,
     writeToken,
+    compare: async (installationId, repository, baseBranch, head) => {
+      const path = `/repos/${repository}/compare/${encodeURIComponent(baseBranch)}...${encodeURIComponent(head)}`;
+      interface Page {
+        ahead_by?: number;
+        behind_by?: number;
+        commits?: {
+          sha: string;
+          commit: { message: string; tree?: { sha: string } };
+          parents?: { sha: string }[];
+        }[];
+        message?: string;
+      }
+      const commits: { sha: string; subject: string; parents: string[]; tree: string }[] = [];
+      let aheadBy = 0;
+      let behindBy = 0;
+      for (let page = 1; ; page += 1) {
+        const { status, body } = await pulls<Page>(
+          installationId,
+          repository,
+          "GET",
+          `${path}?per_page=100&page=${page}`,
+        );
+        if (status !== 200 || body.ahead_by === undefined) {
+          throw new GitHubError(status, "compare", body?.message ?? "no comparison");
+        }
+        aheadBy = body.ahead_by;
+        behindBy = body.behind_by ?? 0;
+        const listed = body.commits ?? [];
+        for (const commit of listed) {
+          commits.push({
+            sha: commit.sha,
+            subject: commit.commit.message.split("\n")[0] ?? "",
+            parents: (commit.parents ?? []).map((parent) => parent.sha),
+            tree: commit.commit.tree?.sha ?? "",
+          });
+        }
+        if (listed.length === 0 || commits.length >= Math.min(aheadBy, COMPARE_CAP)) break;
+      }
+      const kept = commits.slice(0, COMPARE_CAP);
+      return {
+        aheadBy,
+        behindBy,
+        commits: kept,
+        complete: kept.length >= aheadBy,
+      };
+    },
+    commitTree: async (installationId, repository, sha) => {
+      const { status, body } = await pulls<{ tree?: { sha?: string } }>(
+        installationId,
+        repository,
+        "GET",
+        `/repos/${repository}/git/commits/${encodeURIComponent(sha)}`,
+      );
+      if (status === 404) return undefined;
+      if (status !== 200 || body.tree?.sha === undefined) {
+        throw new GitHubError(status, "commit", body?.message ?? "no tree");
+      }
+      return body.tree.sha;
+    },
+    findOpenPullRequest: async (installationId, repository, branches) => {
+      const owner = repository.split("/")[0] ?? "";
+      const path = `/repos/${repository}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branches.head}`)}&base=${encodeURIComponent(branches.base)}`;
+      const { status, body } = await pulls<RawPull[]>(installationId, repository, "GET", path);
+      if (status !== 200 || !Array.isArray(body)) {
+        throw new GitHubError(status, "pulls", "no list");
+      }
+      const first = body[0];
+      return first === undefined ? undefined : factsOf(first, "pulls");
+    },
+    pullRequest: async (installationId, repository, number) => {
+      const path = `/repos/${repository}/pulls/${number}`;
+      const { status, body } = await pulls<RawPull>(installationId, repository, "GET", path);
+      if (status === 404) return undefined;
+      if (status !== 200) throw new GitHubError(status, "pull", body?.message ?? "");
+      return factsOf(body, "pull");
+    },
+    openPullRequest: async (installationId, repository, pull) => {
+      const { status, body } = await pulls<RawPull>(
+        installationId,
+        repository,
+        "POST",
+        `/repos/${repository}/pulls`,
+        {
+          head: pull.head,
+          base: pull.base,
+          title: pull.title,
+          body: pull.body,
+        },
+      );
+      if (status !== 201) throw new GitHubError(status, "pulls", body?.message ?? "");
+      return factsOf(body, "pulls");
+    },
+    updatePullRequest: async (installationId, repository, number, pull) => {
+      const { status, body } = await pulls<RawPull>(
+        installationId,
+        repository,
+        "PATCH",
+        `/repos/${repository}/pulls/${number}`,
+        { title: pull.title, body: pull.body },
+      );
+      if (status !== 200) throw new GitHubError(status, "pull", body?.message ?? "");
+      return factsOf(body, "pull");
+    },
   };
 };

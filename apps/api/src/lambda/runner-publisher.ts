@@ -19,7 +19,7 @@ import { createS3BundleStore } from "../aws/s3-bundles.js";
 import { loadConfig } from "../config.js";
 import { createGitHubAppClient, type GitHubAppSecret } from "../github/app.js";
 import type { ApiDeps } from "../http.js";
-import { publishAll, publishLine } from "../runner/publisher.js";
+import { publishAll, publishLine, publishPromotion } from "../runner/publisher.js";
 
 const config = loadConfig(process.env);
 const table = createAwsClients().table;
@@ -56,12 +56,18 @@ export interface RunPublishEvent {
 /** A run's intents (`RunPublishEvent`), or a line's push. */
 export type PublishEvent =
   | RunPublishEvent
-  | { readonly kind: "line"; readonly projectId: string; readonly branch: string };
+  | { readonly kind: "line"; readonly projectId: string; readonly branch: string }
+  | { readonly kind: "promotion"; readonly projectId: string; readonly branch: string };
 
 const isLineEvent = (
   event: PublishEvent,
 ): event is Extract<PublishEvent, { readonly kind: "line" }> =>
   "kind" in event && event.kind === "line";
+
+const isPromotionEvent = (
+  event: PublishEvent,
+): event is Extract<PublishEvent, { readonly kind: "promotion" }> =>
+  "kind" in event && event.kind === "promotion";
 
 /**
  * The control plane's wiring a line run is started through (`startLineRun`):
@@ -97,11 +103,20 @@ export const handler = async (event: PublishEvent): Promise<Record<string, numbe
     stores,
     clock: systemClock,
     github,
+    promotions: github,
     bundles,
     lock,
     plane,
     log: (line: string) => console.warn(`publisher: ${line}`),
   };
+  if (isPromotionEvent(event)) {
+    const step = await publishPromotion(deps, {
+      projectId: ProjectIdSchema.parse(event.projectId),
+      branch: event.branch,
+    });
+    console.warn(`publisher promotion ${event.branch}: ${step}`);
+    return { [`promotion:${step}`]: 1 };
+  }
   if (isLineEvent(event)) {
     const step = await publishLine(deps, {
       projectId: ProjectIdSchema.parse(event.projectId),

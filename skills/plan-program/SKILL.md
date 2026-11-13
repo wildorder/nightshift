@@ -194,7 +194,13 @@ starts from it, and work reaches it whole or in part as it lands. For a line
 that ships, user-facing work of an unfinished program stays unreachable
 (unrouted or behind a flag) until its program completes, so plan for this: put
 the flag or the unrouted wiring in an early strand and the route or switch-on in
-the last. Promotion beyond the line is the project's own CI/CD, not the plan's.
+the last. Promotion beyond the line is the project's own CI/CD, not the plan's, unless
+the line names `line.promote`: Nightshift then keeps one pull request open from
+the line to that branch, its head the moving line branch, and never merges it.
+The team merges it with a merge commit (not squash or rebase) and protects the
+target so only the promotion merges into it. This is the trade-off in choosing a
+line: a `main` line ships work as it lands, while a staging line with `promote`
+gives a reviewed promotion pull request before the work reaches the target.
 
 Watch for a file every program appends to (foodfly's `docs/as-built.md` is the
 example). Each program's branch changes the same lines, so that file is where

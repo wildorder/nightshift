@@ -3,7 +3,12 @@
  * M1b): its monthly cap, and the `waiting` a line records when the plane
  * cannot start its owner.
  */
-import type { LineWaitingReason, ProgramContract, ProjectId } from "@nightshift/contracts";
+import type {
+  LineRecord,
+  LineWaitingReason,
+  ProgramContract,
+  ProjectId,
+} from "@nightshift/contracts";
 import {
   type Clock,
   DEFAULT_LINE_MONTHLY_USD,
@@ -54,4 +59,49 @@ export const recordLineWaiting = async (
     const since = current.waiting?.reason === waiting.reason ? current.waiting.since : at;
     return { ...current, waiting: { ...waiting, since }, updatedAt: at };
   });
+};
+
+/**
+ * The branch the line promotes to: `line.promote.to` of the newest non-line
+ * program contract of the project whose `line.branch` is this branch. That
+ * contract is authoritative; an older contract's `promote` is ignored.
+ */
+export const promotionConfigOf = async (
+  stores: Pick<ProjectStores, "programContracts">,
+  projectId: ProjectId,
+  branch: string,
+): Promise<{ readonly to: string } | undefined> => {
+  let newest: ProgramContract | undefined;
+  let cursor: string | undefined;
+  do {
+    const page: Page<ProgramContract> = await stores.programContracts.listByProject(
+      projectId,
+      cursor === undefined ? {} : { cursor },
+    );
+    for (const contract of page.items) {
+      if (contract.kind === "line" || contract.line?.branch !== branch) continue;
+      if (newest === undefined || contract.createdAt > newest.createdAt) newest = contract;
+    }
+    cursor = page.cursor;
+  } while (cursor !== undefined);
+  return newest?.line?.promote;
+};
+
+/**
+ * The record with its promotion seeded for `to`: prior fields kept when `to` is
+ * unchanged, reset to `{ to }` when it changed, removed when there is no `to`.
+ * `undefined` when the record already is so.
+ */
+export const seedPromotion = (
+  record: LineRecord,
+  to: string | undefined,
+  at: string,
+): LineRecord | undefined => {
+  if (to === undefined) {
+    if (record.promotion === undefined) return undefined;
+    const { promotion: _removed, ...rest } = record;
+    return { ...rest, updatedAt: at };
+  }
+  if (record.promotion?.to === to) return undefined;
+  return { ...record, promotion: { to, updatedAt: at }, updatedAt: at };
 };

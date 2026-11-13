@@ -978,6 +978,7 @@ export const createInMemoryStores = (options: InMemoryOptions = {}): InMemorySto
         return parsed;
       }),
     listWithWork: async () => lines.all().filter(lineHasWork),
+    listPromoting: async () => lines.all().filter((line) => line.promotion !== undefined),
   };
 
   const projectSelfStartedUsageStore: ProjectSelfStartedUsageStore = {
