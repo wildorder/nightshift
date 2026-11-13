@@ -689,7 +689,11 @@ decisions are A-42, A-43 and A-44.
   the next program, planned with the report in hand.
 - A project's **line** is the branch its work ships from; programs start from it
   and their work reaches it as it lands (A-69). Promotion beyond it is the
-  project's own CI/CD.
+  project's own CI/CD, unless the line names `line.promote` (A-70): Nightshift
+  then keeps one pull request open from the line to that branch, its head the
+  moving line branch. The team merges it with a merge commit (not squash or
+  rebase) and protects the target so only the promotion merges into it;
+  Nightshift never merges it.
 - `isDirty` lists untracked files individually and ignores an untracked
   `docs/programs/*/report.md`, which older runs left in the checkout (since P21
   the report is published at finish, on the program branch).

@@ -115,8 +115,12 @@ remote and the project has a line, work reaches the line whole or in part as it
 lands: the run's published program branch is queued onto the line, and the run
 never waits on it. For a line that ships, user-facing work of an unfinished
 program stays unreachable (unrouted or behind a flag) until its program
-completes. Promotion beyond the line is the project's own CI/CD, not
-Nightshift's. The line is
+completes. Promotion beyond the line is the project's own CI/CD, unless the
+line names `line.promote` (for example `line: { branch: "staging", promote:
+"main" }`): then Nightshift keeps one pull request open from the line to that
+branch, its head the moving line branch. The team reviews it and merges it with a
+merge commit (not squash or rebase), and protects the target so only the
+promotion merges into it; Nightshift never merges it. The line is
 itself a run: of a per-line program of kind `line` that the plane makes per
 (project, line branch). The composer sits in the root orchestrator's seat and
 composes each queued branch range onto the line candidate. A repair is an
@@ -127,7 +131,8 @@ budget parks its range. Every machine keeps its runner log as an artifact.
 A verification made on the line is never landing evidence for a program run.
 A protected line holds with its reason instead of looping.
 
-`nightshift line status` prints the line record, then the line program's runs
+`nightshift line status` prints the line record (and the promotion pull request
+when `line.promote` is set), then the line program's runs
 with their machines and spend. The Studio lists the line apart from plan
 programs; a line run's page and report read as compositions, parked ranges and
 repairs.
