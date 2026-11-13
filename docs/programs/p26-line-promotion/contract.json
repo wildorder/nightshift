@@ -1,0 +1,293 @@
+{
+  "schemaVersion": 1,
+  "projectId": "proj_01M49RRHPS6B770S9G5HDCPSD2",
+  "programId": "prog_01M79J6N7631BE97QCFYF3EACF",
+  "objective": "A project whose line is a development or staging branch can name the branch it promotes to, and Nightshift keeps one pull request open from the line to it, its head the moving line branch, its body saying what the line holds that the target lacks (programs and part-programs, their reports, repairs made on the line) and what verification proved the head it describes; the team reviews and merges it, and Nightshift never merges it or resolves a conflict at it, saying so when the target has commits the line lacks. The authority is the plan document stored with this contract.",
+  "repository": {
+    "url": "https://github.com/wildorder/nightshift.git",
+    "baseBranch": "main",
+    "programBranch": "program/p26-line-promotion"
+  },
+  "successCriteria": [
+    {
+      "id": "SC-01",
+      "outcome": "With line.promote set, whenever the line is ahead of the target there is exactly one open pull request from the line branch to the target, updated after every line push and whenever the target moves; when the line is not ahead there is none.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-02",
+      "outcome": "The pull request's body names the head commit it describes, every program on the line that the target lacks with a link to its report and whether it is whole or part, the repairs made on the line, the verification of that head, and to merge with a merge commit.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-03",
+      "outcome": "When the target has commits the line lacks, the pull request's first lines and nightshift line status say so, naming the commits and the remedy; Nightshift merges nothing into the line and resolves nothing at the pull request, and the line keeps composing.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-04",
+      "outcome": "A project without line.promote is unchanged; an installation that has not granted the App pull request access gets no pull request and a line status naming what to grant, and its line keeps composing.",
+      "serves": [
+        "US-01"
+      ]
+    },
+    {
+      "id": "SC-05",
+      "outcome": "The architecture record, the skills and AGENTS.md describe how a staging line promotes by pull request and that Nightshift never merges it.",
+      "serves": [
+        "US-01"
+      ]
+    }
+  ],
+  "constraints": [
+    "A project with no line, or a line with no promote, behaves exactly as it does today.",
+    "Nightshift never merges, approves or force-pushes the promotion pull request or its target, never merges the target into the line, and never edits a repository's branch protection or merge settings.",
+    "Only the publisher Lambda writes to GitHub (D-P10-22).",
+    "Nothing in this program changes a project repository other than this one, its pipeline or its configuration.",
+    "Windows keeps working: nothing added assumes a POSIX shell or path."
+  ],
+  "scope": {
+    "includes": [
+      "packages/**",
+      "apps/**",
+      "test/**",
+      "docs/**",
+      "skills/**",
+      "AGENTS.md"
+    ],
+    "excludes": [
+      "infra/**"
+    ],
+    "forbiddenActions": [
+      "deploy any stack",
+      "build a runner image",
+      "push to main",
+      "edit another program's documents under docs/programs/",
+      "change any repository other than this one"
+    ]
+  },
+  "setup": [
+    {
+      "id": "install",
+      "command": "npm ci --prefer-offline"
+    }
+  ],
+  "verification": [
+    {
+      "id": "build",
+      "command": "npm run build"
+    },
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck"
+    },
+    {
+      "id": "lint",
+      "command": "npm run lint"
+    },
+    {
+      "id": "test",
+      "command": "npm run test"
+    },
+    {
+      "id": "synth",
+      "command": "npm --workspace @nightshift/cdk run synth"
+    },
+    {
+      "id": "sterility",
+      "command": "npm run check:sterility"
+    }
+  ],
+  "modelPolicy": {
+    "allowedProviders": [
+      "anthropic",
+      "openai"
+    ],
+    "allowedModels": [],
+    "forbiddenModels": []
+  },
+  "examinationPolicy": {
+    "low": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "medium": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    },
+    "high": {
+      "required": false,
+      "mustDifferModel": false,
+      "mustDifferProvider": false,
+      "blockOnMaterialFindings": false
+    }
+  },
+  "delegationLimits": {
+    "maxDepth": 2,
+    "maxConcurrency": 2
+  },
+  "costPolicy": {},
+  "defaultRisk": "medium",
+  "createdAt": "2026-11-12T00:00:00Z",
+  "status": "ratified",
+  "stories": [
+    {
+      "id": "US-01",
+      "who": "A team whose line is a develop or staging branch and who promote to main by reviewed pull request",
+      "problem": "Nothing tells them what the line holds that main lacks or what proved it, so they open the promotion pull request by hand and describe it from memory.",
+      "outcome": "One pull request from the line to main is always open while the line is ahead, saying which programs it promotes, whether each is whole or part, the repairs made on the line and the verification of the head it describes; they review it and merge it.",
+      "words": [
+        "it would be rad if the line were a dev or staging branch, and PR's with candidates were opened to the main branch so teams just reviewed them"
+      ]
+    }
+  ],
+  "strands": [
+    {
+      "id": "S-01",
+      "name": "The promotion pull request",
+      "scope": {
+        "summary": "line.promote in the config and contract, the GitHub port and App client's compare and pull request calls, the pull request body in core, the publisher's and reconciler's upkeep, line status, and their tests",
+        "includes": [
+          "packages/contracts/**",
+          "packages/core/src/**",
+          "packages/persistence/**",
+          "apps/api/src/**",
+          "apps/cli/src/**",
+          "test/src/line/**"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "line.promote { to } is accepted in nightshift.config.json and the contract; a target equal to the line branch is refused with the fix in the message",
+        "After each successful line push, and when the target's head moves, the publisher opens or updates exactly one pull request from the line branch to the target while the line is ahead, and opens none when it is not",
+        "The body names the head commit, each program the target lacks with its report link and whole-or-part, the repairs made on the line, the head's verification, and 'merge with a merge commit', within GitHub's size limit",
+        "A target ahead of the line is reported in the body's first lines and as a line waiting reason with the commits and the remedy; nothing is merged into the line and the line keeps composing",
+        "An installation without pull request access gets no pull request and a line status naming the grant; a project without promote makes no GitHub pull request calls",
+        "A promotion pull request a person closed without merging is followed by a fresh one the next time the line moves (D-02)",
+        "nightshift line status shows the promotion pull request, its state, the head it describes and any divergence",
+        "Tests cover the body, the publisher and reconciler against a fake GitHub (open, update, nothing to promote, diverged, merged, closed by a person, no permission), and a promoting line in the line end-to-end test",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-01",
+        "SC-02",
+        "SC-03",
+        "SC-04"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    },
+    {
+      "id": "S-02",
+      "name": "Saying it: architecture, skills, status",
+      "scope": {
+        "summary": "The architecture record, the skills and AGENTS.md where they describe the line",
+        "includes": [
+          "docs/**",
+          "skills/**",
+          "AGENTS.md"
+        ],
+        "excludes": []
+      },
+      "acceptance": [
+        "docs/architecture.md records the promotion pull request as row A-70, amending A-69",
+        "The run-program, plan-program and nightshift skills and AGENTS.md say how a staging line promotes: line.promote, one moving pull request, merge with a merge commit, protect the target so only the promotion merges into it, and that Nightshift never merges it",
+        "build, typecheck, lint, test, synth and sterility are green"
+      ],
+      "successCriteria": [
+        "SC-05"
+      ],
+      "dependsOn": [],
+      "prerequisites": []
+    }
+  ],
+  "prerequisites": [],
+  "decisions": [
+    {
+      "id": "D-01",
+      "question": "Is the promotion pull request's head the moving line branch, or a pinned commit per qualified head?",
+      "options": [
+        "Moving: one long-lived pull request whose head is the line branch, its body naming the head it describes",
+        "Pinned: a candidate branch per qualified head, superseding and closing the previous pull request"
+      ],
+      "leaning": "Moving: one long-lived pull request whose head is the line branch, its body naming the head it describes",
+      "answer": "Moving: one long-lived pull request whose head is the line branch, its body naming the head it describes",
+      "rationale": "No supersede-and-close churn and one place to review; GitHub's dismiss-stale-approvals covers a push after review. The owner's choice, 2026-11-12.",
+      "touches": [
+        "S-01",
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-02",
+      "question": "A person closes the promotion pull request without merging it: what does Nightshift do?",
+      "options": [
+        "Open a fresh pull request the next time the line moves",
+        "Leave it closed until someone asks for it again"
+      ],
+      "leaning": "Open a fresh pull request the next time the line moves",
+      "answer": "Open a fresh pull request the next time the line moves",
+      "rationale": "There is always one pull request showing what the target lacks; a team that does not want it removes promote from the config.",
+      "touches": [
+        "S-01",
+        "S-02"
+      ]
+    },
+    {
+      "id": "D-03",
+      "question": "When the target has commits the line lacks, what happens to the promotion pull request?",
+      "options": [
+        "Keep updating it, with a warning in its first lines and in line status",
+        "Hold it, stale, until the line contains the target again"
+      ],
+      "leaning": "Keep updating it, with a warning in its first lines and in line status",
+      "answer": "Keep updating it, with a warning in its first lines and in line status",
+      "rationale": "It may still merge cleanly and GitHub shows whether it conflicts; the warning names the commits and the remedy.",
+      "touches": [
+        "S-01"
+      ]
+    }
+  ],
+  "outOfScope": [
+    "Pinned, immutable release candidates",
+    "Merging the promotion pull request, a Deploy button, or any deployment",
+    "Changing a repository's branch protection or merge settings"
+  ],
+  "planHash": "8a859ff447793b566c17f14956c82555f22e39631bf1336b5cc6a9968a3e0061",
+  "planDocument": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M79J6N7631BE97QCFYF3EACF/107e76009615d622d00f0630fda51cb4210635503a63bc377175790644a46162.md",
+    "sha256": "107e76009615d622d00f0630fda51cb4210635503a63bc377175790644a46162",
+    "sizeBytes": 8702
+  },
+  "conversation": {
+    "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M79J6N7631BE97QCFYF3EACF/54b17f5f9fee3e839d34bd8e01482bb17acc4a98489d4c4be7250fee5fe81a23.md",
+    "sha256": "54b17f5f9fee3e839d34bd8e01482bb17acc4a98489d4c4be7250fee5fe81a23",
+    "sizeBytes": 8514
+  },
+  "ratifications": [
+    {
+      "planHash": "8a859ff447793b566c17f14956c82555f22e39631bf1336b5cc6a9968a3e0061",
+      "planDocument": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M79J6N7631BE97QCFYF3EACF/107e76009615d622d00f0630fda51cb4210635503a63bc377175790644a46162.md",
+        "sha256": "107e76009615d622d00f0630fda51cb4210635503a63bc377175790644a46162",
+        "sizeBytes": 8702
+      },
+      "conversation": {
+        "uri": "s3://nightshift-dev-data-artifactbucket7410c9ef-rslqnihuwhgm/plans/proj_01M49RRHPS6B770S9G5HDCPSD2/prog_01M79J6N7631BE97QCFYF3EACF/54b17f5f9fee3e839d34bd8e01482bb17acc4a98489d4c4be7250fee5fe81a23.md",
+        "sha256": "54b17f5f9fee3e839d34bd8e01482bb17acc4a98489d4c4be7250fee5fe81a23",
+        "sizeBytes": 8514
+      },
+      "ratifiedAt": "2026-11-13T04:30:39.029Z"
+    }
+  ]
+}
