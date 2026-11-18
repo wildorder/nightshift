@@ -16,6 +16,7 @@
  * first, so a half-cleaned run can be finished by hand. Two smoke runs must not
  * overlap: the conformance phase uses deterministic identifiers.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolveNs } from "node:dns/promises";
 import { HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
@@ -433,6 +434,55 @@ describePortConformance(
 
 // --- Phase 3 ----------------------------------------------------------------------------
 describe("phase 3: live-only assertions", () => {
+  // The reconciler reads every stored line, dispatch and run on each tick. One
+  // that threw on records the deployed schema refused went unseen for six days
+  // (2026-11-11): every deploy is followed by one real tick, and it must not fail.
+  it("completes one reconciler tick against the deployed table", () => {
+    const outputs = JSON.parse(
+      execFileSync(
+        "aws",
+        [
+          "cloudformation",
+          "describe-stacks",
+          "--stack-name",
+          `nightshift-${context.stage}-runner`,
+          "--query",
+          "Stacks[0].Outputs",
+          "--region",
+          REGION,
+          "--output",
+          "json",
+        ],
+        { encoding: "utf8", shell: process.platform === "win32" },
+      ),
+    ) as { OutputKey: string; OutputValue: string }[];
+    const fn = outputs.find((o) => o.OutputKey === "ReconcilerFunctionName")?.OutputValue;
+    expect(fn, "the runner stack names its reconciler").toBeDefined();
+    const response = JSON.parse(
+      execFileSync(
+        "aws",
+        [
+          "lambda",
+          "invoke",
+          "--function-name",
+          String(fn),
+          "--invocation-type",
+          "RequestResponse",
+          "--log-type",
+          "Tail",
+          "--region",
+          REGION,
+          "--output",
+          "json",
+          process.platform === "win32" ? "NUL" : "/dev/null",
+        ],
+        { encoding: "utf8", shell: process.platform === "win32" },
+      ),
+    ) as { FunctionError?: string; LogResult?: string };
+    const log = Buffer.from(response.LogResult ?? "", "base64").toString("utf8");
+    expect(response.FunctionError, `the reconciler's tick failed:\n${log}`).toBeUndefined();
+  });
+
   it("keeps Project A / Program X and Project B / Program X apart (SC-P2-05)", async () => {
     for (const [f, label] of [
       [worldA, "A"],

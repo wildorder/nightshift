@@ -66,11 +66,6 @@ const isAlreadyExists = (error: unknown): boolean =>
     error instanceof Error ? error.message : String(error),
   );
 
-const titleOfObjective = (objective: string): string | undefined => {
-  const first = objective.split(/\r?\n/).find((line) => line.trim() !== "");
-  return first === undefined ? undefined : first.trim().slice(0, 120);
-};
-
 /** What the body says about each program the line holds that the target lacks. */
 const programFacts = async (
   deps: PromotionDeps,
@@ -93,9 +88,8 @@ const programFacts = async (
       cursor = page.cursor;
     } while (cursor !== undefined);
     const name = (await deps.stores.planDrafts.get(projectId, id))?.name;
-    const title = contract === undefined ? undefined : titleOfObjective(contract.objective);
     facts.set(id, {
-      ...(title === undefined ? {} : { title }),
+      ...(contract === undefined ? {} : { objective: contract.objective }),
       ...(name === undefined ? {} : { name }),
       whole: latest?.status === "succeeded",
       programsDirectory: programsDirectoryOf(contract),

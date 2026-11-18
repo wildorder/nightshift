@@ -55,6 +55,23 @@ const oneLine = (text: string, max = MAX_TEXT_CHARS): string => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
+/** How much of a program's objective one row of the body shows. */
+const SUMMARY_CHARS = 200;
+
+/**
+ * The first sentence of a text, on one line; one longer than `max` is cut at a
+ * word, never inside one, and ends in an ellipsis.
+ */
+const firstSentence = (text: string, max: number): string => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  const end = flat.search(/[.!?](\s|$)/);
+  const sentence = end === -1 ? flat : flat.slice(0, end + 1);
+  if (sentence.length <= max) return sentence;
+  const cut = sentence.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 0 ? cut.slice(0, space) : cut).replace(/[\s,;:–—-]+$/, "")}…`;
+};
+
 /** The non-first parents of a merge commit, when none is itself target-only; else none. */
 export const lineParentsOf = (
   behind: Pick<PromotionCompare, "commits">,
@@ -133,7 +150,8 @@ export const promotionTitle = (record: LineRecord, to: string): string =>
   `Promote ${record.branch} to ${to}`;
 
 export interface PromotionProgramFacts {
-  readonly title?: string;
+  /** The program's objective; the body shows its first sentence. */
+  readonly objective?: string;
   /** Its run has ended succeeded; otherwise only part of it is on the line. */
   readonly whole: boolean;
   readonly programsDirectory: string;
@@ -301,9 +319,10 @@ export const promotionBody = (input: PromotionBodyInput): string => {
         name === undefined
           ? "no report published"
           : `[report](https://github.com/${repository}/blob/${record.branch}/${facts?.programsDirectory ?? "docs/programs"}/${name}/report.md)`;
-      const shown = facts?.title ?? name;
-      const title = shown === undefined ? "" : ` ${oneLine(shown, 120)}`;
-      return `- \`${id}\`${title}: ${facts?.whole === true ? "whole" : "part"}, ${link}`;
+      const label = name === undefined ? `\`${id}\`` : `**${name}** (\`${id}\`)`;
+      const summary =
+        facts?.objective === undefined ? "" : ` ${firstSentence(facts.objective, SUMMARY_CHARS)}`;
+      return `- ${label}, ${facts?.whole === true ? "whole" : "part"}:${summary} ${link}`;
     });
     out.push(...withinBudget(rows, PROGRAMS_BUDGET));
   }
