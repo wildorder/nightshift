@@ -269,6 +269,27 @@ describe("NightshiftRunnerStack", () => {
       template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(1 minute)" });
     });
 
+    it("mails the operator when a background function fails period after period", () => {
+      const { template } = synth();
+      template.resourceCountIs("AWS::CloudWatch::Alarm", 3);
+      template.resourceCountIs("AWS::SNS::Subscription", 1);
+      template.hasResourceProperties("AWS::SNS::Subscription", { Protocol: "email" });
+      const alarms = resourcesOf(template, "AWS::CloudWatch::Alarm");
+      for (const alarm of alarms) {
+        expect(alarm.Properties).toMatchObject({
+          MetricName: "Errors",
+          Namespace: "AWS/Lambda",
+          Period: 300,
+          EvaluationPeriods: 3,
+          DatapointsToAlarm: 3,
+          TreatMissingData: "notBreaching",
+        });
+      }
+      expect(
+        alarms.map((a) => String(a.Properties?.AlarmDescription).split(" ")[0]).sort(),
+      ).toEqual(["Dispatch", "Publisher", "Reconciler"]);
+    });
+
     it("lets only the publisher and the reconciler read the GitHub App's secret, and no machine", () => {
       const { template } = synth();
       const secretReaders = resourcesOf(template, "AWS::IAM::Policy").filter((policy) =>

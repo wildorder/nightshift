@@ -175,20 +175,37 @@ describe("promotionBody", () => {
     const programs = new Map<ProgramId, PromotionProgramFacts>([
       [
         pid(1),
-        { whole: true, programsDirectory: "docs/programs", title: "One", name: "p1-billing" },
+        {
+          whole: true,
+          programsDirectory: "docs/programs",
+          objective: "Bill each tenant monthly: invoices from usage. Then email them.",
+          name: "p1-billing",
+        },
       ],
       [pid(2), { whole: false, programsDirectory: "docs/programs" }],
     ]);
     const text = body({ programs });
     expect(text).toContain(
-      `- \`${pid(1)}\` One: whole, [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/p1-billing/report.md)`,
+      `- **p1-billing** (\`${pid(1)}\`), whole: Bill each tenant monthly: invoices from usage. [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/p1-billing/report.md)`,
     );
     expect(text).not.toContain(`/${pid(1)}/report.md`);
-    expect(text).toContain(`\`${pid(2)}\`: part, no report published`);
+    expect(text).toContain(`- \`${pid(2)}\`, part: no report published`);
+  });
+
+  it("shows a long objective's first sentence cut at a word", () => {
+    const objective = `${"Sort the cached homepage by each restaurant's availability window ".repeat(5)}today. More.`;
+    const text = body({ programs: facts([1], { whole: true, objective, name: "p1" }) });
+    const row = text.split("\n").find((line) => line.includes("**p1**")) ?? "";
+    const summary = row.slice(row.indexOf("whole: ") + "whole: ".length, row.indexOf(" [report]"));
+    expect(summary.endsWith("…")).toBe(true);
+    expect(summary.length).toBeLessThanOrEqual(200);
+    const kept = summary.slice(0, -1);
+    expect(objective.startsWith(kept)).toBe(true);
+    expect(objective[kept.length]).toBe(" ");
   });
 
   it("calls a program missing from the map part", () => {
-    expect(body({ programs: new Map() })).toContain(`\`${pid(1)}\`: part`);
+    expect(body({ programs: new Map() })).toContain(`\`${pid(1)}\`, part:`);
   });
 
   it("gives an evicted composition's program a link and whole/part", () => {
@@ -196,7 +213,7 @@ describe("promotionBody", () => {
     const ahead = compare([commit(1, `Merge program ${pid(7)} (start)..abc into the line`)]);
     const text = body({ record, ahead, programs: facts([7], { whole: false, name: "p7-x" }) });
     expect(text).toContain(
-      `\`${pid(7)}\` p7-x: part, [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/p7-x/report.md)`,
+      `**p7-x** (\`${pid(7)}\`), part: [report](https://github.com/acme/app/blob/nightshift/develop/docs/programs/p7-x/report.md)`,
     );
   });
 
@@ -287,7 +304,7 @@ describe("promotionBody", () => {
       diverged: divergedCommits(compare(commits.map((c) => ({ ...c, parents: [sha(0)] })))),
       programs: facts(
         Array.from({ length: 150 }, (_, i) => i + 1),
-        { title: big },
+        { objective: big },
       ),
       repairs: new Map(
         compositions.map((c) => [

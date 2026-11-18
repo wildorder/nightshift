@@ -25,7 +25,8 @@ import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
 import * as logs from "aws-cdk-lib/aws-logs";
 import type { Construct } from "constructs";
 import { type DataExportKey, dataExportName } from "./data-exports.js";
-import { EVENT_SEQUENCE_INDEX_NAME, NODE_INDEX_NAME } from "./data-stack.js";
+import { BUDGET_NOTIFY_EMAIL, EVENT_SEQUENCE_INDEX_NAME, NODE_INDEX_NAME } from "./data-stack.js";
+import { FunctionAlarms } from "./function-alarms.js";
 import { apiHostnameFor } from "./hostnames.js";
 import {
   containmentComponent,
@@ -688,6 +689,15 @@ export class NightshiftRunnerStack extends Stack {
       value: publisherFunction.functionArn,
       exportName: runnerExportName(stage, "PublisherFunctionArn"),
     });
+    new FunctionAlarms(this, "FunctionAlarms", {
+      notifyEmail: BUDGET_NOTIFY_EMAIL,
+      functions: {
+        Reconciler: reconcilerFunction,
+        Publisher: publisherFunction,
+        Dispatch: dispatchFunction,
+      },
+    });
+
     new CfnOutput(this, "ProjectUser", { value: PROJECT_USER });
     new CfnOutput(this, "Toolchain", { value: JSON.stringify(RUNNER_TOOLCHAIN) });
   }

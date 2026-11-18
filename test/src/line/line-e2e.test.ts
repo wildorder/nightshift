@@ -1515,7 +1515,7 @@ describe("a line that promotes to the default branch", () => {
     expect(opened?.body).toContain(first);
     expect(opened?.body).toContain(programA);
     expect(opened?.body).toMatch(
-      new RegExp(`${programA}\\\`[^\\n]*: (whole|part), \\[report\\]\\(`),
+      new RegExp(`\\(\\\`${programA}\\\`\\), (whole|part): [^\\n]*\\[report\\]\\(`),
     );
     expect(opened?.body).toContain("/docs/programs/p-a/report.md");
     expect(opened?.body).toContain("Verification of");
