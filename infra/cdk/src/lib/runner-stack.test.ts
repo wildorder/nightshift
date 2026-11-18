@@ -290,6 +290,28 @@ describe("NightshiftRunnerStack", () => {
       ).toEqual(["Dispatch", "Publisher", "Reconciler"]);
     });
 
+    it("puts a machine subnet in each of the region's four zones, keeping the first two as they were", () => {
+      const { template } = synth();
+      const subnets = Object.entries(template.findResources("AWS::EC2::Subnet"))
+        .map(([id, subnet]) => ({
+          id,
+          zone: subnet.Properties?.AvailabilityZone,
+          cidr: subnet.Properties?.CidrBlock,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      // The logical ids and CIDRs of the two subnets deployed before 2026-11-17:
+      // changing either would replace a subnet a machine may be running in.
+      expect(subnets).toEqual(
+        [0, 1, 2, 3].map((index) => ({
+          id: expect.stringMatching(new RegExp(`^RunnerVpcpublicSubnet${index + 1}Subnet`)),
+          zone: { "Fn::Select": [index, { "Fn::GetAZs": "" }] },
+          cidr: `10.0.${index * 16}.0/20`,
+        })),
+      );
+      expect(subnets[0]?.id).toBe("RunnerVpcpublicSubnet1Subnet740263F6");
+      expect(subnets[1]?.id).toBe("RunnerVpcpublicSubnet2Subnet60D516A1");
+    });
+
     it("lets only the publisher and the reconciler read the GitHub App's secret, and no machine", () => {
       const { template } = synth();
       const secretReaders = resourcesOf(template, "AWS::IAM::Policy").filter((policy) =>

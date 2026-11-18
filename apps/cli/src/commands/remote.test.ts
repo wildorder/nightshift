@@ -330,6 +330,25 @@ describe("remote status (P16 SC-07)", () => {
     );
   });
 
+  it("says a dispatch is waiting for EC2 capacity, until when, and what EC2 said", () => {
+    const lines = describeDispatch(
+      makeDispatch(createFixtures(), {
+        status: "requested",
+        capacityWait: {
+          since: "2026-11-17T18:23:00.000Z",
+          attempts: 3,
+          nextAttemptAt: "2026-11-17T18:30:00.000Z",
+          lastRefusal: "c8id.2xlarge in us-west-2a: no capacity",
+        },
+      }),
+    ).join("\n");
+    expect(lines).toContain("waiting for EC2 capacity since 2026-11-17T18:23:00.000Z (3 attempts)");
+    expect(lines).toContain(
+      "next try at 2026-11-17T18:30:00.000Z, giving up 120 minutes after the first",
+    );
+    expect(lines).toContain("last refusal: c8id.2xlarge in us-west-2a: no capacity");
+  });
+
   it("says nothing of a failure when there is none", () => {
     const lines = describeDispatch(makeDispatch(createFixtures(), { status: "running" }));
     expect(lines.some((line) => line.includes("failure"))).toBe(false);

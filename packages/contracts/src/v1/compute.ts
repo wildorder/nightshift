@@ -19,7 +19,15 @@ export const COMPUTE_TIER_ORDER: readonly ComputeTier[] = ["good", "better", "be
 export const ComputeArchitectureSchema = z.enum(["arm64", "x86_64"]);
 export type ComputeArchitecture = z.infer<typeof ComputeArchitectureSchema>;
 
+/** A machine type a tier may launch, at the price written down for it (D-P10-19). */
+export interface InstanceOffer {
+  readonly instanceType: string;
+  /** On-demand Linux in `us-west-2`. */
+  readonly usdPerHour: number;
+}
+
 export interface ComputeTierSpec {
+  /** The tier's machine, launched whenever EC2 has one. */
   readonly instanceType: string;
   readonly vcpu: number;
   readonly memoryGiB: number;
@@ -27,6 +35,13 @@ export interface ComputeTierSpec {
   readonly volumeGiB: number;
   /** On-demand Linux in `us-west-2`, from AWS's price feed of 2026-09-25 (D-P10-26). */
   readonly usdPerHour: number;
+  /**
+   * Machines of the same architecture, vCPU and at least the memory, in the
+   * order a launch tries them when no zone has {@link instanceType}
+   * (2026-11-17: `c8id.2xlarge` was out in every zone tried and a line run
+   * failed to start). Prices from AWS's price feed of 2026-11-17.
+   */
+  readonly alternatives: readonly InstanceOffer[];
 }
 
 /**
@@ -43,6 +58,14 @@ export const COMPUTE_TIERS: Readonly<Record<ComputeTier, ComputeTierSpec>> = {
     memoryGiB: 16,
     volumeGiB: 100,
     usdPerHour: 0.44352,
+    alternatives: [
+      // The same Intel class one generation back, with a local NVMe disk.
+      { instanceType: "c6id.2xlarge", usdPerHour: 0.4032 },
+      // Twice the memory, with a local NVMe disk.
+      { instanceType: "m6id.2xlarge", usdPerHour: 0.4746 },
+      // No local disk: the workspace goes on the volume (D-P10-27).
+      { instanceType: "c7i.2xlarge", usdPerHour: 0.357 },
+    ],
   },
   better: {
     instanceType: "c8id.4xlarge",
@@ -50,6 +73,14 @@ export const COMPUTE_TIERS: Readonly<Record<ComputeTier, ComputeTierSpec>> = {
     memoryGiB: 32,
     volumeGiB: 200,
     usdPerHour: 0.88704,
+    alternatives: [
+      // The same Intel class one generation back, with a local NVMe disk.
+      { instanceType: "c6id.4xlarge", usdPerHour: 0.8064 },
+      // Twice the memory, with a local NVMe disk.
+      { instanceType: "m6id.4xlarge", usdPerHour: 0.9492 },
+      // No local disk: the workspace goes on the volume (D-P10-27).
+      { instanceType: "c7i.4xlarge", usdPerHour: 0.714 },
+    ],
   },
   best: {
     instanceType: "c8id.8xlarge",
@@ -57,11 +88,25 @@ export const COMPUTE_TIERS: Readonly<Record<ComputeTier, ComputeTierSpec>> = {
     memoryGiB: 64,
     volumeGiB: 400,
     usdPerHour: 1.77408,
+    alternatives: [
+      // The same Intel class one generation back, with a local NVMe disk.
+      { instanceType: "c6id.8xlarge", usdPerHour: 1.6128 },
+      // Twice the memory, with a local NVMe disk.
+      { instanceType: "m6id.8xlarge", usdPerHour: 1.8984 },
+      // No local disk: the workspace goes on the volume (D-P10-27).
+      { instanceType: "c7i.8xlarge", usdPerHour: 1.428 },
+    ],
   },
 };
 
 /** gp3 storage in `us-west-2`, per GiB-month, so a run's volume is priced beside its hours. */
 export const GP3_USD_PER_GIB_MONTH = 0.08;
+
+/** Every machine a tier may launch, its own first. */
+export const instanceOffersOf = (tier: ComputeTier): readonly InstanceOffer[] => {
+  const spec = COMPUTE_TIERS[tier];
+  return [{ instanceType: spec.instanceType, usdPerHour: spec.usdPerHour }, ...spec.alternatives];
+};
 
 export const computeTierRank = (tier: ComputeTier): number => COMPUTE_TIER_ORDER.indexOf(tier);
 

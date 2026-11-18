@@ -3,11 +3,10 @@
  * the reconciler do, held to the record they leave.
  */
 import { generateKeyPairSync, sign as signWith } from "node:crypto";
-import type { Dispatch, ProgramContract } from "@nightshift/contracts";
+import { CAPACITY_WAIT_MS, type Dispatch, type ProgramContract } from "@nightshift/contracts";
 import type { ComputeControl, FirstTokenStore, InstanceDescription } from "@nightshift/core";
 import {
   BOOT_LEASE_SECONDS,
-  createFixedClock,
   createFixtures,
   type Fixtures,
   makeComputeUtilization,
@@ -20,7 +19,13 @@ import {
 import { createInMemoryStores, type InMemoryStores } from "@nightshift/persistence/memory";
 import { describe, expect, it } from "vitest";
 import { cleanupStopped, confirmTerminations, enforceStop } from "./cleanup.js";
-import { machineTags, provisionDispatch, subnetFor, subnetsFor } from "./provision.js";
+import {
+  capacityBackoffMs,
+  machineTags,
+  provisionDispatch,
+  subnetFor,
+  subnetsFor,
+} from "./provision.js";
 import { recoverLostLease } from "./recover.js";
 
 const NOW = Date.parse("2026-10-01T12:00:00.000Z");
@@ -43,6 +48,10 @@ interface FakeCompute extends ComputeControl {
   failLaunch: boolean;
   /** Subnets EC2 has no room in, and an error that is not about room. */
   noCapacityIn: Set<string>;
+  /** Machine types EC2 has none of, in any zone. */
+  noCapacityOf: Set<string>;
+  /** Every launch EC2 refused for capacity, as `type@subnet`. */
+  refusedLaunches: string[];
   launchError: string | undefined;
 }
 
@@ -59,12 +68,18 @@ const fakeCompute = (): FakeCompute => {
     image: "ami-1",
     failLaunch: false,
     noCapacityIn: new Set(),
+    noCapacityOf: new Set(),
+    refusedLaunches: [],
     launchError: undefined,
     latestImage: async () => compute.image,
     launch: async (request) => {
-      if (compute.failLaunch) throw new Error("InsufficientInstanceCapacity");
+      if (compute.failLaunch) throw new Error("InternalError: the launch failed");
       if (compute.launchError !== undefined) throw new Error(compute.launchError);
-      if (compute.noCapacityIn.has(request.subnetId)) {
+      if (
+        compute.noCapacityIn.has(request.subnetId) ||
+        compute.noCapacityOf.has(request.instanceType)
+      ) {
+        compute.refusedLaunches.push(`${request.instanceType}@${request.subnetId}`);
         throw Object.assign(
           new Error(
             `We currently do not have sufficient ${request.instanceType} capacity in the Availability Zone you requested.`,
@@ -146,6 +161,8 @@ interface World {
   deps(): Parameters<typeof provisionDispatch>[0];
   cleanup(): Parameters<typeof cleanupStopped>[0];
   recover(): Parameters<typeof recoverLostLease>[0];
+  /** Moves the world's clock on. */
+  advance(ms: number): void;
 }
 
 const world = async (dispatch: Partial<Dispatch> = {}): Promise<World> => {
@@ -158,8 +175,12 @@ const world = async (dispatch: Partial<Dispatch> = {}): Promise<World> => {
   await stores.dispatches.put(makeDispatch(f, dispatch));
   const compute = fakeCompute();
   const tokens = fakeTokens();
-  const clock = createFixedClock(NOW);
+  let now = NOW;
+  const clock = { now: () => now };
   return {
+    advance: (ms) => {
+      now += ms;
+    },
     stores,
     f,
     compute,
@@ -268,7 +289,7 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
     expect(outcome.kind).toBe("failed");
     expect((await w.stores.dispatches.get(w.f.scope))?.failure).toMatchObject({
       code: "provisioning_failed",
-      message: expect.stringContaining("InsufficientInstanceCapacity"),
+      message: expect.stringContaining("the launch failed"),
     });
     expect(w.tokens.parameters.size).toBe(0);
   });
@@ -282,15 +303,86 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
     expect(w.compute.launches.map((launch) => launch.subnetId)).toEqual([second]);
   });
 
-  it("fails, naming every zone, when none has capacity, and at once on any other error", async () => {
+  it("tries the tier's other machines in every zone before giving up on one, and is metered at the one it got", async () => {
+    const w = await world({
+      priceBasis: {
+        usdPerHour: 0.44352,
+        volumeUsdPerHour: 0.01,
+        source: "COMPUTE_TIERS",
+        asOf: "2026-09-25",
+        region: "us-west-2",
+      },
+    });
+    w.compute.noCapacityOf = new Set(["c8id.2xlarge", "c6id.2xlarge"]);
+    const outcome = await provisionDispatch(w.deps(), w.f.scope);
+    expect(outcome.kind).toBe("provisioned");
+    const zones = subnetsFor(w.f.scope.runId, ["subnet-a", "subnet-b"]);
+    expect(w.compute.refusedLaunches).toEqual([
+      ...zones.map((zone) => `c8id.2xlarge@${zone}`),
+      ...zones.map((zone) => `c6id.2xlarge@${zone}`),
+    ]);
+    expect(w.compute.launches.map((launch) => launch.instanceType)).toEqual(["m6id.2xlarge"]);
+    const dispatch = await w.stores.dispatches.get(w.f.scope);
+    expect(dispatch).toMatchObject({ instanceType: "m6id.2xlarge", usdPerHour: 0.4746 });
+    expect(dispatch?.priceBasis?.usdPerHour).toBe(0.4746);
+    expect(dispatch?.capacityWait).toBeUndefined();
+  });
+
+  it("waits, backing off, when no zone has any of the tier's machines, then launches when one comes back", async () => {
     const w = await world();
     w.compute.noCapacityIn = new Set(["subnet-a", "subnet-b"]);
+    const first = await provisionDispatch(w.deps(), w.f.scope);
+    expect(first.kind).toBe("waiting");
+    let dispatch = await w.stores.dispatches.get(w.f.scope);
+    expect(dispatch?.status).toBe("requested");
+    expect(dispatch?.failure).toBeUndefined();
+    expect(dispatch?.capacityWait).toMatchObject({
+      since: new Date(NOW).toISOString(),
+      attempts: 1,
+      nextAttemptAt: new Date(NOW + 60_000).toISOString(),
+    });
+    for (const type of ["c8id.2xlarge", "c6id.2xlarge", "m6id.2xlarge", "c7i.2xlarge"]) {
+      expect(dispatch?.capacityWait?.lastRefusal).toContain(`${type} in us-west-2a`);
+      expect(dispatch?.capacityWait?.lastRefusal).toContain(`${type} in us-west-2b`);
+    }
+    expect(w.tokens.parameters.size).toBe(0);
+
+    // Not before its time.
+    const refused = w.compute.refusedLaunches.length;
+    expect((await provisionDispatch(w.deps(), w.f.scope)).kind).toBe("skipped");
+    expect(w.compute.refusedLaunches).toHaveLength(refused);
+
+    w.advance(60_000);
+    expect((await provisionDispatch(w.deps(), w.f.scope)).kind).toBe("waiting");
+    dispatch = await w.stores.dispatches.get(w.f.scope);
+    expect(dispatch?.capacityWait).toMatchObject({
+      since: new Date(NOW).toISOString(),
+      attempts: 2,
+      nextAttemptAt: new Date(NOW + 60_000 + 120_000).toISOString(),
+    });
+
+    w.advance(120_000);
+    w.compute.noCapacityIn = new Set();
+    expect((await provisionDispatch(w.deps(), w.f.scope)).kind).toBe("provisioned");
+    dispatch = await w.stores.dispatches.get(w.f.scope);
+    expect(dispatch?.status).toBe("provisioning");
+    expect(dispatch?.instanceType).toBe("c8id.2xlarge");
+    expect(dispatch?.capacityWait).toBeUndefined();
+  });
+
+  it("fails once it has waited two hours for capacity, naming every zone", async () => {
+    const w = await world();
+    w.compute.noCapacityIn = new Set(["subnet-a", "subnet-b"]);
+    expect((await provisionDispatch(w.deps(), w.f.scope)).kind).toBe("waiting");
+    w.advance(CAPACITY_WAIT_MS);
     expect((await provisionDispatch(w.deps(), w.f.scope)).kind).toBe("failed");
     const failure = (await w.stores.dispatches.get(w.f.scope))?.failure?.message ?? "";
-    expect(failure).toContain("no zone had capacity");
+    expect(failure).toContain("no capacity for 120 minutes");
     expect(failure).toContain("us-west-2a");
     expect(failure).toContain("us-west-2b");
+  });
 
+  it("fails at once on an error that is not about capacity", async () => {
     const other = await world();
     other.compute.launchError = "UnauthorizedOperation";
     expect((await provisionDispatch(other.deps(), other.f.scope)).kind).toBe("failed");
@@ -298,6 +390,12 @@ describe("provisionDispatch (D-P10-18, D-P10-15, D-P10-20)", () => {
     expect((await other.stores.dispatches.get(other.f.scope))?.failure?.message).toContain(
       "UnauthorizedOperation",
     );
+  });
+
+  it("backs off a minute, doubling, to at most ten", () => {
+    expect([1, 2, 3, 4, 5, 6, 9].map(capacityBackoffMs)).toEqual([
+      60_000, 120_000, 240_000, 480_000, 600_000, 600_000, 600_000,
+    ]);
   });
 
   it("fails plainly without an image for the version, and skips a dispatch with a machine", async () => {

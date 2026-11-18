@@ -10,6 +10,7 @@
  * its price per hour, and what the run could cost at its ceiling.
  */
 import {
+  CAPACITY_WAIT_MS,
   COMPUTE_TIERS,
   type ComputeTier,
   ComputeTierSchema,
@@ -412,6 +413,13 @@ export const describeDispatch = (
     );
   }
   if (dispatch.progress !== undefined) lines.push(progressLine(dispatch.progress));
+  if (dispatch.capacityWait !== undefined) {
+    const wait = dispatch.capacityWait;
+    lines.push(
+      `  waiting for EC2 capacity since ${wait.since} (${wait.attempts} attempt${wait.attempts === 1 ? "" : "s"}); next try at ${wait.nextAttemptAt}, giving up ${Math.round(CAPACITY_WAIT_MS / 60_000)} minutes after the first`,
+      `  last refusal: ${wait.lastRefusal}`,
+    );
+  }
   const publication = publicationStateOf(dispatch.publication);
   if (dispatch.publication.head !== undefined)
     lines.push(`  published ${dispatch.publication.head}`);

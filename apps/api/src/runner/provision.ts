@@ -11,10 +11,12 @@
  * `failed` with the reason, so nothing runs that the record does not name.
  */
 import {
+  CAPACITY_WAIT_MS,
   COMPUTE_TIERS,
   type ComputeArchitecture,
   type ComputeTier,
   type Dispatch,
+  instanceOffersOf,
   type Project,
   type ProjectId,
   type WarmCache,
@@ -79,7 +81,27 @@ export interface ProvisionDeps {
 export type ProvisionOutcome =
   | { readonly kind: "provisioned"; readonly dispatch: Dispatch }
   | { readonly kind: "skipped"; readonly reason: string }
+  /** EC2 had no capacity; the dispatch keeps its place and is tried again later. */
+  | { readonly kind: "waiting"; readonly dispatch: Dispatch; readonly reason: string }
   | { readonly kind: "failed"; readonly dispatch: Dispatch; readonly reason: string };
+
+/** The wait before the next try for capacity: a minute, doubling, at most ten. */
+export const capacityBackoffMs = (attempts: number): number =>
+  Math.min(60_000 * 2 ** Math.max(attempts - 1, 0), 10 * 60_000);
+
+/**
+ * The machine types a dispatch may launch, in order: the one it was made with,
+ * then its tier's alternatives of the same architecture.
+ */
+export const instanceTypesFor = (dispatch: Pick<Dispatch, "tier" | "instanceType">): string[] => {
+  const architecture = architectureOf(dispatch.instanceType);
+  return [
+    dispatch.instanceType,
+    ...instanceOffersOf(dispatch.tier)
+      .map((offer) => offer.instanceType)
+      .filter((type) => type !== dispatch.instanceType && architectureOf(type) === architecture),
+  ];
+};
 
 /** A zone for the run: stable per run id, spread across the subnets. */
 export const subnetFor = (runId: string, subnetIds: readonly string[]): string | undefined =>
@@ -135,7 +157,8 @@ export interface LaunchMachineInput {
   /** Chooses the first subnet: stable per run, or per line owner. */
   readonly hashKey: string;
   readonly architecture: ComputeArchitecture;
-  readonly instanceType: string;
+  /** In the order to try them: each in every zone before the next. */
+  readonly instanceTypes: readonly string[];
   readonly tier: ComputeTier;
   readonly tags: Readonly<Record<string, string>>;
   readonly workspace?:
@@ -165,8 +188,15 @@ export type LaunchMachineResult =
       readonly description: InstanceDescription | undefined;
       /** The image version it launched on: the configured one, or the newest older one while that builds. */
       readonly imageVersion: string;
+      /** The machine type EC2 had. */
+      readonly instanceType: string;
     }
-  | { readonly ok: false; readonly reason: string };
+  | {
+      readonly ok: false;
+      readonly reason: string;
+      /** EC2 had none of the types in any zone tried: worth trying again later. */
+      readonly capacity?: true;
+    };
 
 /**
  * The launch core a run and the line share: the image, the subnet, the first
@@ -241,10 +271,10 @@ export const launchMachine = async (
     }
   }
   const spec = COMPUTE_TIERS[input.tier];
-  const launchIn = (subnetId: string) =>
+  const launchIn = (subnetId: string, instanceType: string) =>
     compute.launch({
       imageId,
-      instanceType: input.instanceType,
+      instanceType,
       subnetId,
       tags: input.tags,
       ...(input.clientToken === undefined ? {} : { clientToken: input.clientToken }),
@@ -265,23 +295,31 @@ export const launchMachine = async (
           }),
     });
   let instanceId: string | undefined;
+  let instanceType: string | undefined;
   const refusals: string[] = [];
-  for (const subnetId of subnets) {
-    try {
-      ({ instanceId } = await launchIn(subnetId));
-      break;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!isCapacityRefusal(error)) {
-        await input.unpark();
-        return fail(`launch failed: ${message}`);
+  launching: for (const type of input.instanceTypes) {
+    for (const subnetId of subnets) {
+      try {
+        ({ instanceId } = await launchIn(subnetId, type));
+        instanceType = type;
+        break launching;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isCapacityRefusal(error)) {
+          await input.unpark();
+          return fail(`launch failed: ${message}`);
+        }
+        refusals.push(`${type} in ${deps.subnetZones?.[subnetId] ?? subnetId}: ${message}`);
       }
-      refusals.push(`${deps.subnetZones?.[subnetId] ?? subnetId}: ${message}`);
     }
   }
-  if (instanceId === undefined) {
+  if (instanceId === undefined || instanceType === undefined) {
     await input.unpark();
-    return fail(`launch failed: no zone had capacity. ${refusals.join(" | ")}`);
+    return {
+      ok: false,
+      capacity: true,
+      reason: `no zone had capacity for ${input.instanceTypes.join(", ")}. ${refusals.join(" | ")}`,
+    };
   }
 
   // EC2 reports the zone at once and the volume once the instance is past
@@ -324,7 +362,7 @@ export const launchMachine = async (
     await sleep(5_000);
     description = await compute.describe(instanceId);
   }
-  return { ok: true, instanceId, description, imageVersion };
+  return { ok: true, instanceId, description, imageVersion, instanceType };
 };
 
 export const provisionDispatch = async (
@@ -343,6 +381,10 @@ export const provisionDispatch = async (
     )
   ) {
     return { kind: "skipped", reason: `dispatch is ${dispatch.status} with a machine` };
+  }
+  const waitingUntil = dispatch.capacityWait?.nextAttemptAt;
+  if (waitingUntil !== undefined && deps.clock.now() < Date.parse(waitingUntil)) {
+    return { kind: "skipped", reason: `waiting for EC2 capacity until ${waitingUntil}` };
   }
   const run = await stores.runs.get(scope, scope.runId);
   const program = await stores.programContracts.get(scope.projectId, scope.programId);
@@ -377,7 +419,7 @@ export const provisionDispatch = async (
     projectId: scope.projectId,
     hashKey: scope.runId,
     architecture,
-    instanceType: dispatch.instanceType,
+    instanceTypes: instanceTypesFor(dispatch),
     tier: dispatch.tier,
     tags: machineTags(
       dispatch,
@@ -413,14 +455,57 @@ export const provisionDispatch = async (
     },
     unpark: () => deps.tokens.delete(parameter).catch(() => undefined),
   });
+  if (!launched.ok && launched.capacity === true) {
+    const since = dispatch.capacityWait?.since ?? at;
+    if (deps.clock.now() - Date.parse(since) >= CAPACITY_WAIT_MS) {
+      return fail(
+        `launch failed: EC2 had no capacity for ${Math.round(CAPACITY_WAIT_MS / 60_000)} minutes since ${since}. ${launched.reason}`,
+      );
+    }
+    const attempts = (dispatch.capacityWait?.attempts ?? 0) + 1;
+    const waiting: Dispatch = {
+      ...dispatch,
+      capacityWait: {
+        since,
+        attempts,
+        nextAttemptAt: new Date(deps.clock.now() + capacityBackoffMs(attempts)).toISOString(),
+        lastRefusal: launched.reason.slice(0, 4000),
+      },
+      updatedAt: at,
+    };
+    await stores.dispatches.put(waiting);
+    return { kind: "waiting", dispatch: waiting, reason: launched.reason };
+  }
   if (!launched.ok) return fail(launched.reason);
   const { instanceId, description } = launched;
+  const offer = instanceOffersOf(dispatch.tier).find(
+    (candidate) => candidate.instanceType === launched.instanceType,
+  );
 
   const attempts = dispatch.attempts.map((attempt) =>
     attempt.generation === dispatch.generation ? { ...attempt, instanceId } : attempt,
   );
+  const { capacityWait: _waited, ...settled } = dispatch;
   const withMachine: Dispatch = {
-    ...dispatch,
+    ...settled,
+    // Another of the tier's machines when EC2 had none of the first: it is
+    // metered at its own price (D-P10-19).
+    ...(offer === undefined || offer.instanceType === dispatch.instanceType
+      ? {}
+      : {
+          instanceType: offer.instanceType,
+          usdPerHour: offer.usdPerHour,
+          ...(dispatch.priceBasis === undefined
+            ? {}
+            : {
+                priceBasis: {
+                  ...dispatch.priceBasis,
+                  usdPerHour: offer.usdPerHour,
+                  source: "COMPUTE_TIERS alternatives (AWS on-demand price feed)",
+                  asOf: "2026-11-17",
+                },
+              }),
+        }),
     instanceId,
     leaseExpiresAt: bootLeaseFrom(deps.clock.now()),
     ...(description?.availabilityZone === undefined
