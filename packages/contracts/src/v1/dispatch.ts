@@ -519,6 +519,9 @@ export const DispatchProgressSchema = z
   });
 export type DispatchProgress = z.infer<typeof DispatchProgressSchema>;
 
+/** How long a dispatch waits for EC2 capacity before it fails. */
+export const CAPACITY_WAIT_MS = 2 * 60 * 60_000;
+
 export const DispatchSchema = z.strictObject({
   ...runScoped,
   status: DispatchStatusSchema,
@@ -549,6 +552,21 @@ export const DispatchSchema = z.strictObject({
   publication: DispatchPublicationSchema,
   cleanup: DispatchCleanupSchema,
   failure: DispatchFailureSchema.optional(),
+  /**
+   * EC2 had none of the tier's machines in any zone (2026-11-17). The dispatch
+   * keeps its place and the reconciler tries again at `nextAttemptAt`, backing
+   * off, until {@link CAPACITY_WAIT_MS} has passed since `since`; only then does
+   * it fail. Cleared when a machine launches.
+   */
+  capacityWait: z
+    .strictObject({
+      since: IsoTimestampSchema,
+      attempts: z.int().min(1),
+      nextAttemptAt: IsoTimestampSchema,
+      /** What EC2 said, zone by zone and type by type, at the last attempt. */
+      lastRefusal: z.string().min(1).max(4000),
+    })
+    .optional(),
   /** The root orchestrator's harness session, so a replacement resumes it (D-P10-20). */
   rootSessionId: z.string().min(1).optional(),
   /** `sha256` per lockfile path, as the runner last reported them, for the warm cache (D-P10-15). */

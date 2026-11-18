@@ -46,6 +46,8 @@ export const PUBLISHER_ENTRY = `${REPO_ROOT}apps/api/dist/lambda/runner-publishe
 
 /** The reconciler's tick (D-P10-18). */
 export const RECONCILER_INTERVAL = Duration.minutes(1);
+/** The zones machines launch in: all four of `us-west-2`. A region with fewer fails the deploy. */
+export const RUNNER_ZONES = 4;
 export const LOG_RETENTION = logs.RetentionDays.ONE_MONTH;
 
 /** Every machine, volume and snapshot the service makes carries this tag; IAM is conditioned on it. */
@@ -118,8 +120,15 @@ export class NightshiftRunnerStack extends Stack {
     // Read as the interface: `Vpc`'s optional members are typed `string |
     // undefined`, which `exactOptionalPropertyTypes` will not pass where `IVpc`
     // is wanted, and the constructs below want `IVpc`.
+    // Every zone of the region, named by position: the stack is
+    // environment-agnostic, and `maxAzs` alone gives such a stack two zones
+    // (the two dummies it synthesises with). Two zones were not enough on
+    // 2026-11-17, when both were out of c8id.2xlarge and the other two had it.
+    // A launch tries every subnet.
     const vpc: ec2.IVpc = new ec2.Vpc(this, "RunnerVpc", {
-      maxAzs: 4,
+      availabilityZones: Array.from({ length: RUNNER_ZONES }, (_, index) =>
+        Fn.select(index, Fn.getAzs()),
+      ),
       natGateways: 0,
       subnetConfiguration: [{ name: "public", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 20 }],
     }) as unknown as ec2.IVpc;
